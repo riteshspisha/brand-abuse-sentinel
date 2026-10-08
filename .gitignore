@@ -10,3 +10,4 @@ data/
 *.db-wal
 *.sqlite*
 .DS_Store
+.compound-engineering/*.local.yaml
