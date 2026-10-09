@@ -13,6 +13,9 @@ stages:
   media: 2
   render: 1
   decision: 1
+  # Running jobs of one registrable domain allowed at once per stage, so a domain
+  # with many matching subdomains cannot occupy every worker.
+  per_domain_enrich: 2
   per_domain_fetch: 1
 
 jobs:
@@ -78,3 +81,55 @@ discovery:
     count_timeout_seconds: 60
     max_permutations: 100000
     max_output_bytes: 67108864    # 64 MiB
+
+# Per-registrable-domain backlog (subdomain flooding control). A domain may have
+# this many live jobs per stage; further work is deferred (kept in the store and
+# shown by `status`), never dropped, and promoted as its jobs finish. Manual
+# submissions bypass the allowance. Initial values; calibrate on live traffic.
+scheduling:
+  max_queued_per_domain_strong: 16
+  max_queued_per_domain_weak: 4
+  promote_interval_seconds: 5
+  promote_batch: 500
+  recheck_after_days: [1, 7]      # re-run enrichment and the static fetch
+
+# Network policy for every connection to an untrusted host (netguard). Only
+# public unicast addresses on these ports are ever contacted.
+net:
+  allowed_ports: [80, 443]
+  prefer_ipv6: false
+  dns:
+    nameservers: []               # empty: the system resolver configuration
+    timeout_seconds: 3
+    lifetime_seconds: 6
+  # Lab mode adds only the pinned lab subnet 172.31.250.0/24 for the listed
+  # hostnames. It requires both discovery sources to be disabled. The host-side
+  # fetcher refuses lab URLs until the lab proxy transport exists (M4).
+  lab:
+    enabled: false
+    subnet: 172.31.250.0/24
+    hosts: {}
+
+# Hardened static fetcher: GET/HEAD only, no cookies, no proxy, pinned DNS,
+# per-hop redirect validation, and caps on time and size.
+fetch:
+  enabled: true
+  user_agent: "BrandSentinel/0.1 (brand-protection research)"
+  max_redirects: 5
+  connect_timeout_seconds: 10
+  read_timeout_seconds: 15
+  total_timeout_seconds: 30       # whole fetch, all hops
+  max_raw_bytes: 5242880          # 5 MiB read from the wire
+  max_decoded_bytes: 10485760     # 10 MiB decoded; the stage also caps at artifacts.max_blob_bytes
+  max_addresses_tried: 2
+  accept_types: [text/html, application/xhtml+xml, text/plain]
+  retry_delay_seconds: 300        # before retrying a transient failure
+
+# Passive enrichment: DNS, RDAP, TLS and similarity.
+enrich:
+  enabled: true
+  rdap_bootstrap_url: https://data.iana.org/rdap/dns.json
+  rdap_bootstrap_max_age_days: 7
+  rdap_max_bytes: 524288          # 512 KiB per RDAP response
+  rdap_cache_hours: 24            # shared by every host under a registrable domain
+  tls_timeout_seconds: 10

@@ -41,6 +41,32 @@ def sanitize_value(value: object, max_chars: int, depth: int = 0) -> object:
     return sanitize_fact(str(value), max_chars)
 
 
+def _bounded_json(value: object, max_bytes: int) -> str:
+    """JSON for a stored value within `max_bytes`. An oversize object keeps its
+    small top-level fields (outcome, status, round, ...) and drops the large ones,
+    naming them, so the essentials survive an attacker inflating one field."""
+    encoded = json.dumps(value, sort_keys=True, ensure_ascii=False)
+    size = len(encoded.encode("utf-8"))
+    if size <= max_bytes:
+        return encoded
+    kept: dict = {"truncated": True, "original_bytes": size}
+    dropped = []
+    if isinstance(value, dict):
+        budget = max_bytes // 2
+        for k, v in sorted(value.items(), key=lambda kv: len(json.dumps(kv[1], default=str))):
+            piece = len(json.dumps({k: v}, ensure_ascii=False).encode("utf-8"))
+            if piece <= budget:
+                kept[k] = v
+                budget -= piece
+            else:
+                dropped.append(k)
+        kept["dropped_fields"] = sorted(dropped)[:100]
+    out = json.dumps(kept, sort_keys=True, ensure_ascii=False)
+    if len(out.encode("utf-8")) > max_bytes:
+        out = json.dumps({"truncated": True, "original_bytes": size})
+    return out
+
+
 def upsert_candidate(
     conn: sqlite3.Connection,
     name: str,
@@ -104,9 +130,7 @@ def add_fact(
 ) -> int:
     now = time.time() if now is None else now
     stored = sanitize_value(value, max_chars) if untrusted else value
-    encoded = json.dumps(stored, sort_keys=True, ensure_ascii=False)
-    if len(encoded.encode("utf-8")) > max_bytes:
-        encoded = json.dumps({"truncated": True, "original_bytes": len(encoded.encode("utf-8"))})
+    encoded = _bounded_json(stored, max_bytes)
     with transaction(conn):
         cur = conn.execute(
             "INSERT INTO facts (case_id, source, name, value_json, artifact_refs,"
@@ -120,5 +144,30 @@ def add_fact(
                 collector_version,
                 now,
             ),
+        )
+        return cur.lastrowid
+
+
+def add_feature(
+    conn: sqlite3.Connection,
+    case_id: int,
+    *,
+    name: str,
+    value: object,
+    extractor_version: str,
+    fact_refs: Iterable[int] = (),
+    max_chars: int = 4096,
+    max_bytes: int = 256 * 1024,
+    now: float | None = None,
+) -> int:
+    """Store a derived feature. Values derived from untrusted content (titles,
+    URLs from a page) are sanitized and bounded like facts."""
+    now = time.time() if now is None else now
+    encoded = _bounded_json(sanitize_value(value, max_chars), max_bytes)
+    with transaction(conn):
+        cur = conn.execute(
+            "INSERT INTO features (case_id, name, value_json, extractor_version, fact_refs,"
+            " computed_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (case_id, name, encoded, extractor_version, json.dumps(sorted(set(fact_refs))), now),
         )
         return cur.lastrowid

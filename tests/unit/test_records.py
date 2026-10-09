@@ -105,3 +105,27 @@ def test_non_json_values_are_stringified_and_sanitized(store):
 
     add_fact(store.conn, case, source="s", name="w", value={"v": Weird()}, collector_version="v")
     assert _stored(store) == {"v": "obj"}
+
+
+def test_oversize_fact_keeps_its_small_top_level_fields(store):
+    import json
+
+    from brandsentinel.store.records import add_fact, create_case, upsert_candidate
+
+    cand, _ = upsert_candidate(store.conn, "big.example", match_strength="weak")
+    case = create_case(store.conn, cand)
+    value = {"outcome": "ok", "status": 200, "analysis_round": 1, "hops": ["h" * 1000] * 50}
+    fid = add_fact(
+        store.conn,
+        case,
+        source="t",
+        name="http_fetch",
+        value=value,
+        collector_version="t/1",
+        max_bytes=4096,
+    )
+    stored = json.loads(
+        store.conn.execute("SELECT value_json FROM facts WHERE id = ?", (fid,)).fetchone()[0]
+    )
+    assert stored["truncated"] and stored["dropped_fields"] == ["hops"]
+    assert stored["outcome"] == "ok" and stored["status"] == 200 and stored["analysis_round"] == 1

@@ -111,3 +111,13 @@ def cert_message(
             },
         }
     )
+
+
+@pytest.fixture(scope="session")
+def harness(tmp_path_factory):
+    """The local adversarial DNS/HTTP/TLS harness (tests/security/harness.py)."""
+    from tests.security.harness import start_harness
+
+    h = start_harness(tmp_path_factory.mktemp("harness"))
+    yield h
+    h.close()

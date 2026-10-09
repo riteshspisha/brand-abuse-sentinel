@@ -43,6 +43,8 @@ class Stage:
     handler: Handler
     concurrency: int
     per_domain: bool = False
+    # Running jobs allowed per registrable domain (job group key) in this stage.
+    per_group_limit: int | None = None
     lease_seconds: float = 300.0
     poll_seconds: float = 1.0
     retry_delay_seconds: float = 60.0
@@ -115,7 +117,9 @@ class Orchestrator:
         errors = 0
         while True:
             try:
-                job = self.store.jobs.claim(stage.name, owner, stage.lease_seconds)
+                job = self.store.jobs.claim(
+                    stage.name, owner, stage.lease_seconds, per_group_limit=stage.per_group_limit
+                )
                 if job is not None:
                     await self.run_job(stage, job)
                 errors = 0
@@ -132,7 +136,9 @@ class Orchestrator:
     async def run_job(self, stage: Stage, job: Job) -> None:
         # The lease is renewed from claim onwards, including while the job waits
         # for its registrable domain's lock.
-        domain = job.payload.get("registrable_domain") if stage.per_domain else None
+        domain = (
+            (job.group_key or job.payload.get("registrable_domain")) if stage.per_domain else None
+        )
         work = asyncio.create_task(self._locked(stage, job, domain))
         renewer = asyncio.create_task(self._renew(stage, job, work))
         try:
@@ -225,6 +231,8 @@ def maintenance(store: Store, now: float) -> None:
         max_bytes=rl.firehose.max_total_bytes,
     )
     prune_discovery_events(store.conn, now=now, max_age_days=rl.discovery_max_age_days)
+    # Fairness bookkeeping for domains not served in a month carries no information.
+    store.conn.execute("DELETE FROM job_groups WHERE last_claimed_at < ?", (now - 30 * 86400,))
 
 
 async def run_service(
@@ -234,10 +242,18 @@ async def run_service(
     certstream_enabled: bool,
     dnstwist_enabled: bool,
     stop: asyncio.Event,
+    enrich_enabled: bool | None = None,
+    fetch_enabled: bool | None = None,
+    analysis=None,
     clock: Callable[[], float] | None = None,
 ) -> Orchestrator:
-    """Wire discovery sources and maintenance into an orchestrator and run it
-    until `stop` is set. Replays the discovery log before any source starts."""
+    """Wire discovery sources, analysis stages, deferred-work promotion and
+    maintenance into an orchestrator and run it until `stop` is set. Replays the
+    discovery log before any source starts. `analysis` (an AnalysisStages)
+    replaces the default network wiring, for tests."""
+    from brandsentinel.pipeline import scheduling
+    from brandsentinel.pipeline.stages import AnalysisStages, build_network
+
     clock = clock or time.time
     config = store.config
     matcher = Matcher(registry)
@@ -253,6 +269,24 @@ async def run_service(
     if certstream_enabled:
         consumer = CertStreamConsumer(store, matcher, config, clock=clock)
         orch.add_task("certstream", consumer.run)
+
+    enrich_on = config.enrich.enabled if enrich_enabled is None else enrich_enabled
+    fetch_on = config.fetch.enabled if fetch_enabled is None else fetch_enabled
+    if enrich_on or fetch_on:
+        if analysis is None:
+            guard, fetcher = build_network(config)
+            analysis = AnalysisStages(store, registry, guard=guard, fetcher=fetcher, clock=clock)
+        analysis.register(orch, enrich=enrich_on, fetch=fetch_on)
+
+    async def promote() -> None:
+        interval = config.scheduling.promote_interval_seconds
+        while True:
+            moved = scheduling.promote(store.conn, store.jobs, config.scheduling, now=clock())
+            if moved:
+                log.info("deferred work promoted", extra={"fields": {"jobs": moved}})
+            await asyncio.sleep(interval)
+
+    orch.add_task("promote", promote)
 
     async def maintain() -> None:
         while True:

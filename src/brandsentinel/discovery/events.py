@@ -35,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from brandsentinel.matching.matcher import Matcher, MatchResult
 from brandsentinel.matching.normalize import InvalidName
+from brandsentinel.pipeline import scheduling
 from brandsentinel.store import Store
 from brandsentinel.store.db import transaction
 from brandsentinel.store.rawlog import RawLog, read_segment
@@ -221,18 +222,34 @@ def ingest(
         )
         case_id, new_case = _open_case(conn, candidate_id, event, now)
         job_id = None
+        manual = event.source == "manual"
         if new_case:
-            job_id, _ = store.jobs.enqueue(
-                ENRICH_STAGE,
-                {
+            # Bounded per registrable domain: over its allowance the enrichment
+            # is deferred (recorded, promoted later), never dropped.
+            scheduled = scheduling.schedule(
+                conn,
+                store.jobs,
+                store.config.scheduling,
+                stage=ENRICH_STAGE,
+                payload={
                     "case_id": case_id,
                     "candidate_id": candidate_id,
                     "name": m.host,
                     "registrable_domain": m.registrable_domain,
+                    "round": 0,
                 },
+                group_key=scheduling.group_key_for(m.registrable_domain, m.host),
                 queue_class=strength,
-                dedupe_key=f"{ENRICH_STAGE}:case:{case_id}",
+                dedupe_key=f"{ENRICH_STAGE}:case:{case_id}:r0",
+                now=now,
+                escalated=manual,
+                case_id=case_id,
             )
+            job_id = scheduled.job_id
+        elif manual or strength == "strong":
+            scheduling.escalate_case(conn, case_id, manual=manual)
+        if manual:
+            conn.execute("UPDATE cases SET escalated = 1 WHERE id = ?", (case_id,))
     return IngestResult("candidate", m.host, candidate_id, case_id, new_candidate, new_case, job_id)
 
 
