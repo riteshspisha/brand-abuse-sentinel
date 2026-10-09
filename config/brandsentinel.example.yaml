@@ -1,0 +1,80 @@
+# BrandSentinel configuration. Every key is optional; values shown are defaults.
+# Unknown keys are rejected. BRANDSENTINEL_DATA_DIR overrides data_dir.
+
+data_dir: data
+
+# Brand Registry (brands, keywords, domains, exclusions). See registry/brands.yaml.
+registry_path: registry/brands.yaml
+
+# Maximum concurrent jobs per pipeline stage.
+stages:
+  enrich: 8
+  fetch: 4
+  media: 2
+  render: 1
+  decision: 1
+  per_domain_fetch: 1
+
+jobs:
+  max_attempts: 3
+  # Lease per stage, in seconds. Must exceed the stage's maximum wall time.
+  lease_seconds:
+    enrich: 120
+    fetch: 120
+    media: 180
+    render: 300
+    decision: 120
+  default_lease_seconds: 300
+
+# Artifact quotas, in bytes.
+artifacts:
+  max_blob_bytes: 10485760        # 10 MiB per artifact
+  max_case_count: 200
+  max_case_bytes: 52428800        # 50 MiB per case
+  max_domain_bytes: 209715200     # 200 MiB per registrable domain
+  max_store_bytes: 2147483648     # 2 GiB total
+  reserve_fraction: 0.1           # kept for strong-strength and manual cases
+
+rawlog:
+  flush_every_records: 100
+  discovery_rotation: day
+  discovery_max_age_days: 365     # discovery log segments and event rows
+  min_free_bytes: 1073741824      # 1 GiB; below this the firehose pauses
+  # Optional storage of the unmatched CertStream feed. Off by default.
+  firehose:
+    enabled: false
+    max_total_bytes: 2147483648   # 2 GiB
+    max_age_days: 7
+
+text:
+  max_fact_chars: 4096      # per string in a stored fact
+  max_fact_bytes: 262144    # per serialized fact value
+
+discovery:
+  certstream:
+    enabled: true
+    # certstream-server-go full stream; see docker/compose.yaml (profile certstream).
+    url: ws://localhost:8080/full-stream
+    ping_interval_seconds: 30
+    open_timeout_seconds: 15
+    max_message_bytes: 4194304    # 4 MiB
+    backoff_initial_seconds: 1
+    backoff_max_seconds: 60
+    dedupe_cache_size: 100000     # recent certificate fingerprints kept in memory
+    max_names_per_cert: 1000
+    stale_after_seconds: 300      # status reports the feed stale after this
+  dnstwist:
+    enabled: true
+    binary: dnstwist              # name (venv, then PATH) or absolute path
+    dictionary: registry/dictionaries/brand-words.dict
+    interval_hours: 24
+    retry_hours: 1                # after a failed or abandoned sweep
+    threads: 8
+    # Sweep timeout = timeout_floor_seconds + permutations / resolution_rate_per_second,
+    # capped at timeout_max_seconds.
+    resolution_rate_per_second: 20
+    timeout_floor_seconds: 120
+    timeout_max_seconds: 14400
+    count_timeout_seconds: 60
+    max_permutations: 100000
+    max_output_bytes: 67108864    # 64 MiB

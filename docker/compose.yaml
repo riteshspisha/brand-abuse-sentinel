@@ -1,0 +1,17 @@
+# Optional sidecars. Start the CertStream source with:
+#   docker compose -f docker/compose.yaml --profile certstream up -d
+# BrandSentinel connects to ws://localhost:8080/full-stream (discovery.certstream.url).
+name: brandsentinel
+
+services:
+  certstream:
+    profiles: ["certstream"]
+    image: 0rickyy0/certstream-server-go:v1.10.1
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"  # loopback only
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    pids_limit: 128

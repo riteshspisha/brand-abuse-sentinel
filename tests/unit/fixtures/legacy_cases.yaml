@@ -1,0 +1,166 @@
+# Matching regression cases: the Problem Frame defects of the legacy filter and
+# the M1 acceptance examples. `registry` names the registry the case runs against:
+#   committed  - registry/brands.yaml as committed (nothing confirmed yet)
+#   confirmed  - the same, with isha.in and sadhguru.org confirmed and suppressing
+# `hits` lists [type, keyword, reason-or-null] that must be present; `no_hits`
+# means the result has none. `legacy` records what the legacy script did.
+
+- name: sadhguru.org.verify-login.xyz
+  registry: confirmed
+  candidate: true
+  strength: strong
+  hits: [[official_lookalike, sadhguru.org, substring], [keyword, sadhguru, substring]]
+  legacy: dropped by substring whitelist (monitor_certstream.py:94)
+- name: login-sadhguru.org.ru
+  registry: confirmed
+  candidate: true
+  strength: strong
+  hits: [[official_lookalike, sadhguru.org, substring], [keyword, sadhguru, substring]]
+  legacy: dropped by substring whitelist
+- name: isha.in.secure-donate.com
+  registry: confirmed
+  candidate: true
+  strength: strong
+  hits: [[official_lookalike, isha.in, substring], [token, isha, null]]
+  legacy: dropped by substring whitelist
+- name: fakeisha.info
+  registry: confirmed
+  candidate: false
+  no_hits: true
+  notes: [isha_affix_uncontexted]
+  legacy: treated as official because it contains "isha.in"
+- name: www.sadhguru.org
+  registry: confirmed
+  candidate: false
+  suppressed_by: sadhguru.org
+- name: isha.in
+  registry: confirmed
+  candidate: false
+  suppressed_by: isha.in
+- name: notsadhguru.org
+  registry: confirmed
+  candidate: true
+  hits: [[keyword, sadhguru, substring]]
+  legacy: dropped by substring whitelist
+- name: shop.ishalife.com
+  registry: committed
+  candidate: true
+  strength: weak
+  hits: [[registry_domain, ishalife.com, null]]
+  labels: [legacy_whitelist_unverified]
+  legacy: dropped by substring whitelist (unverified entry)
+- name: www.sadhguru.org
+  registry: committed
+  candidate: true
+  hits: [[registry_domain, sadhguru.org, null]]
+  labels: [legacy_whitelist_unverified]
+- name: savesoil.org
+  registry: committed
+  candidate: true
+  hits: [[registry_domain, savesoil.org, null], [keyword, savesoil, substring]]
+  labels: [official_domain_candidate]
+- name: vishal-sadhguru-tickets.com
+  registry: committed
+  candidate: true
+  strength: strong
+  hits: [[keyword, sadhguru, substring]]
+  only_hit_types: [keyword]
+  notes: [excluded:vishal]
+  legacy: dropped by substring exclusion "vishal" (monitor_certstream.py:95)
+- name: odisha-isha.org
+  registry: committed
+  candidate: true
+  strength: weak
+  hits: [[token, isha, null]]
+  notes: [excluded:odisha]
+  legacy: dropped by substring exclusion "odisha"
+- name: odisha.gov.in
+  registry: committed
+  candidate: false
+  no_hits: true
+- name: shisha-lounge.com
+  registry: committed
+  candidate: false
+  no_hits: true
+- name: vaishali.co.in
+  registry: committed
+  candidate: false
+  no_hits: true
+- name: save-soil.shop
+  registry: committed
+  candidate: true
+  strength: strong
+  hits: [[keyword, savesoil, folded]]
+  legacy: not matched (hyphenated)
+- name: inner-engineering.online
+  registry: committed
+  candidate: true
+  strength: strong
+  hits: [[keyword, innerengineering, folded]]
+  legacy: not matched (hyphenated)
+- name: isha-foundation.co
+  registry: committed
+  candidate: true
+  hits: [[keyword, ishafoundation, folded], [token, isha, null]]
+- name: xn--sadhgur-t2a.com
+  registry: committed
+  candidate: true
+  strength: strong
+  hits: [[keyword, sadhguru, homoglyph]]
+  notes: [idn]
+  legacy: not matched (punycode)
+- name: xn--sadhgur-t2a.org
+  registry: committed
+  candidate: true
+  hits: [[official_lookalike, sadhguru.org, homoglyph], [keyword, sadhguru, homoglyph]]
+- name: manisha-boutique.com
+  registry: committed
+  candidate: false
+  no_hits: true
+  notes: [isha_affix_uncontexted]
+- name: ishaan-tech.in
+  registry: committed
+  candidate: false
+  no_hits: true
+  notes: [isha_affix_uncontexted]
+- name: manisha-sadhguru-retreat.com
+  registry: committed
+  candidate: true
+  strength: strong
+  hits: [[keyword, sadhguru, substring], [affix, isha, null]]
+- name: isha-yoga-donate.in
+  registry: committed
+  candidate: true
+  strength: weak
+  hits: [[token, isha, null]]
+  context: [yoga]
+- name: ishayoga.store
+  registry: committed
+  candidate: true
+  strength: weak
+  hits: [[affix, isha, null]]
+  context: [yoga]
+- name: isha-in.com
+  registry: committed
+  candidate: true
+  strength: strong
+  hits: [[official_lookalike, isha.in, substring]]
+- name: "*.sadhgurru.com"
+  registry: committed
+  candidate: true
+  strength: weak
+  hits: [[fuzzy, sadhguru, null]]
+  distance: 1
+  notes: [wildcard]
+- name: sadhgurru-donate.com
+  registry: committed
+  candidate: true
+  hits: [[fuzzy, sadhguru, null]]
+- name: isha2024.org
+  registry: committed
+  candidate: true
+  hits: [[token, isha, null]]
+- name: example.com
+  registry: committed
+  candidate: false
+  no_hits: true
