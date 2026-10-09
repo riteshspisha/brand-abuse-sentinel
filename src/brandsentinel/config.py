@@ -86,7 +86,58 @@ class FirehoseSettings(_Section):
 class RawLogSettings(_Section):
     flush_every_records: int = Field(100, ge=1)
     discovery_rotation: Literal["hour", "day"] = "day"
+    # Discovery log segments and discovery event rows older than this are pruned.
+    discovery_max_age_days: int = Field(365, gt=0)
+    # Below this much free disk the firehose pauses; discovery logging continues.
+    min_free_bytes: int = Field(1 * GiB, ge=0)
     firehose: FirehoseSettings = FirehoseSettings()
+
+
+class CertStreamSettings(_Section):
+    enabled: bool = True
+    # certstream-server-go full stream (docker/compose.yaml, profile certstream).
+    url: str = "ws://localhost:8080/full-stream"
+    ping_interval_seconds: float = Field(30.0, gt=0)  # the server requires client pings
+    open_timeout_seconds: float = Field(15.0, gt=0)
+    max_message_bytes: int = Field(4 * MiB, gt=0)
+    backoff_initial_seconds: float = Field(1.0, gt=0)
+    backoff_max_seconds: float = Field(60.0, gt=0)
+    # Recently seen certificate fingerprints kept in memory to skip duplicates
+    # cheaply; persistence is idempotent regardless.
+    dedupe_cache_size: int = Field(100_000, ge=1)
+    max_names_per_cert: int = Field(1000, ge=1, le=1000)
+    stale_after_seconds: float = Field(300.0, gt=0)
+
+    @field_validator("url")
+    @classmethod
+    def _websocket_url(cls, v: str) -> str:
+        if not v.startswith(("ws://", "wss://")):
+            raise ValueError("must be a ws:// or wss:// URL")
+        return v
+
+
+class DnstwistSettings(_Section):
+    enabled: bool = True
+    # Executable name or path; a bare name is looked up next to the running
+    # Python first, then on PATH.
+    binary: str = "dnstwist"
+    dictionary: Path | None = Path("registry/dictionaries/brand-words.dict")
+    interval_hours: float = Field(24.0, gt=0)
+    # Failed or abandoned sweeps retry after this, if shorter than the interval.
+    retry_hours: float = Field(1.0, gt=0)
+    threads: int = Field(8, ge=1, le=64)
+    # The sweep timeout is floor + permutations / rate, capped at max.
+    resolution_rate_per_second: float = Field(20.0, gt=0)
+    timeout_floor_seconds: float = Field(120.0, gt=0)
+    timeout_max_seconds: float = Field(4 * 3600.0, gt=0)
+    count_timeout_seconds: float = Field(60.0, gt=0)
+    max_permutations: int = Field(100_000, ge=1)
+    max_output_bytes: int = Field(64 * MiB, gt=0)
+
+
+class DiscoverySettings(_Section):
+    certstream: CertStreamSettings = CertStreamSettings()
+    dnstwist: DnstwistSettings = DnstwistSettings()
 
 
 class TextSettings(_Section):
@@ -102,6 +153,7 @@ class Config(_Section):
     artifacts: ArtifactQuotas = ArtifactQuotas()
     rawlog: RawLogSettings = RawLogSettings()
     text: TextSettings = TextSettings()
+    discovery: DiscoverySettings = DiscoverySettings()
 
     @property
     def db_path(self) -> Path:

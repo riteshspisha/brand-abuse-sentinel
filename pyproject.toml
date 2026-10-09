@@ -4,11 +4,14 @@ version = "0.1.0"
 description = "Local-first brand-abuse detection and triage for the Isha ecosystem"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "dnspython>=2.6",
+    "dnstwist>=20250130",
     "pydantic>=2.8",
     "pyyaml>=6.0",
     "rapidfuzz>=3.9",
     "tldextract>=5.3",  # top_domain_under_public_suffix
     "typer>=0.12",
+    "websockets>=13",
 ]
 
 [project.optional-dependencies]

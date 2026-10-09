@@ -1,0 +1,6 @@
+[
+  {"fuzzer": "*original", "domain": "sadhguru.org", "dns_a": ["198.51.100.1"], "dns_ns": ["ns1.example.net"]},
+  {"fuzzer": "repetition", "domain": "sadhgurru.org", "dns_a": ["203.0.113.5"], "dns_mx": ["mx.sadhgurru.org"]},
+  {"fuzzer": "tld-swap", "domain": "sadhguru.com", "dns_a": ["203.0.113.7"], "dns_aaaa": ["2001:db8::7"], "dns_ns": ["ns1.parking.example"]},
+  {"fuzzer": "dictionary", "domain": "sadhguru-login.org", "dns_ns": ["ns.example.org"]}
+]

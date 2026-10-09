@@ -22,7 +22,8 @@ MAX_FACT_ITEMS = 1000
 _TRUNCATED = "[truncated]"
 
 
-def _sanitize(value: object, max_chars: int, depth: int = 0) -> object:
+def sanitize_value(value: object, max_chars: int, depth: int = 0) -> object:
+    """Sanitize every string in a JSON-like value and bound its shape."""
     if isinstance(value, str):
         return sanitize_fact(value, max_chars)
     if isinstance(value, (dict, list, tuple)) and depth >= MAX_FACT_DEPTH:
@@ -30,10 +31,11 @@ def _sanitize(value: object, max_chars: int, depth: int = 0) -> object:
     if isinstance(value, dict):
         items = list(value.items())[:MAX_FACT_ITEMS]
         return {
-            sanitize_fact(str(k), max_chars): _sanitize(v, max_chars, depth + 1) for k, v in items
+            sanitize_fact(str(k), max_chars): sanitize_value(v, max_chars, depth + 1)
+            for k, v in items
         }
     if isinstance(value, (list, tuple)):
-        return [_sanitize(v, max_chars, depth + 1) for v in value[:MAX_FACT_ITEMS]]
+        return [sanitize_value(v, max_chars, depth + 1) for v in value[:MAX_FACT_ITEMS]]
     if value is None or isinstance(value, (bool, int, float)):
         return value
     return sanitize_fact(str(value), max_chars)
@@ -58,11 +60,12 @@ def upsert_candidate(
         )
         if cur.rowcount == 1:
             return cur.lastrowid, True
+        # MIN/MAX keep first/last seen right when older events are replayed late.
         conn.execute(
-            "UPDATE candidates SET last_seen = MAX(last_seen, ?),"
+            "UPDATE candidates SET first_seen = MIN(first_seen, ?), last_seen = MAX(last_seen, ?),"
             " match_strength = CASE WHEN ? = 'strong' THEN 'strong' ELSE match_strength END"
             " WHERE name = ?",
-            (now, match_strength, name),
+            (now, now, match_strength, name),
         )
         row = conn.execute("SELECT id FROM candidates WHERE name = ?", (name,)).fetchone()
         return row[0], False
@@ -100,7 +103,7 @@ def add_fact(
     now: float | None = None,
 ) -> int:
     now = time.time() if now is None else now
-    stored = _sanitize(value, max_chars) if untrusted else value
+    stored = sanitize_value(value, max_chars) if untrusted else value
     encoded = json.dumps(stored, sort_keys=True, ensure_ascii=False)
     if len(encoded.encode("utf-8")) > max_bytes:
         encoded = json.dumps({"truncated": True, "original_bytes": len(encoded.encode("utf-8"))})

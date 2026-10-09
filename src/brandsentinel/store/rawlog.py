@@ -54,6 +54,7 @@ class RawLog:
         self._period: str | None = None
         self._raw = None
         self._gz: gzip.GzipFile | None = None
+        self._path: Path | None = None
         self._unflushed = 0
 
     def _period_of(self, ts: float) -> str:
@@ -68,6 +69,7 @@ class RawLog:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         self._raw = os.fdopen(fd, "wb")
         self._gz = gzip.GzipFile(fileobj=self._raw, mode="wb", mtime=0)
+        self._path = path
         self._period = period
         fsync_dir(self.dir)  # the new file itself must survive a crash
 
@@ -75,7 +77,7 @@ class RawLog:
         """Drop a segment whose compressor state may no longer match the file.
         No gzip trailer is written; readers stop at the last decodable record."""
         raw = self._raw
-        self._gz = self._raw = None
+        self._gz = self._raw = self._path = None
         self._period = None
         self._unflushed = 0
         if raw is not None:
@@ -128,9 +130,14 @@ class RawLog:
         except BaseException:
             self._abandon_segment()
             raise
-        self._gz = self._raw = None
+        self._gz = self._raw = self._path = None
         self._period = None
         self._unflushed = 0
+
+    @property
+    def current_segment(self) -> Path | None:
+        """The segment this writer has open, which retention must not delete."""
+        return self._path
 
     def segments(self) -> list[Path]:
         if not self.dir.exists():

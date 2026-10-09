@@ -36,7 +36,7 @@ def test_help_lists_every_registered_command():
         assert name in result.output
 
 
-@pytest.mark.parametrize("name", ["run", "analyze", "sandbox", "eval"])
+@pytest.mark.parametrize("name", ["analyze", "sandbox", "eval"])
 def test_planned_commands_exit_non_zero_with_milestone(name):
     result = runner.invoke(app, [name, "--anything", "x"])
     assert result.exit_code == 2
@@ -47,7 +47,7 @@ def test_status_on_empty_store(tmp_path, monkeypatch):
     monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output
-    assert "schema v1" in result.output
+    assert "schema v2" in result.output
     assert "jobs: none" in result.output
     assert "artifacts: 0 blobs" in result.output
     assert "firehose off" in result.output
@@ -182,3 +182,47 @@ def test_match_unreadable_file_exits_1(tmp_path):
     result = runner.invoke(app, ["match", "--file", str(tmp_path / "missing.txt")])
     assert result.exit_code == 1
     assert "cannot read" in result.output
+
+
+def test_submit_creates_case_and_status_shows_discovery(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
+    result = runner.invoke(app, ["submit", "https://sadhguru-donate.example.com/x", "isha.in"])
+    assert result.exit_code == 0, result.output
+    assert "sadhguru-donate.example.com: new case #1" in result.output
+    again = runner.invoke(app, ["submit", "sadhguru-donate.example.com"])
+    assert "existing case #1" in again.output
+
+    status = runner.invoke(app, ["status"])
+    assert status.exit_code == 0, status.output
+    assert "candidates: 2" in status.output
+    assert "seen by manual" in status.output
+    assert "certstream: STALE, last message never" in status.output
+    assert "dnstwist: no sweeps yet" in status.output
+
+
+def test_submit_rejects_bad_input(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
+    result = runner.invoke(app, ["submit", "ftp://\x1bx.com"])
+    assert result.exit_code == 1
+    assert "\x1b" not in result.output
+
+
+def test_replay_is_idempotent_from_the_cli(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
+    runner.invoke(app, ["submit", "sadhguru-x.com"])
+    result = runner.invoke(app, ["replay"])
+    assert result.exit_code == 0, result.output
+    assert "0 ingested, 1 already present" in result.output
+
+
+def test_sweep_refuses_targets_outside_the_registry(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
+    result = runner.invoke(app, ["sweep", "evil.com"])
+    assert result.exit_code == 2
+    assert "not registry dnstwist targets" in result.output
+
+
+def test_run_with_sources_disabled_starts_and_stops(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
+    result = runner.invoke(app, ["run", "--no-certstream", "--no-dnstwist", "--duration", "0.2"])
+    assert result.exit_code == 0, result.output

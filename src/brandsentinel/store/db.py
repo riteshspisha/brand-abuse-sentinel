@@ -16,7 +16,15 @@ _MIGRATIONS = "brandsentinel.store.migrations"
 
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    """BEGIN IMMEDIATE so concurrent writers serialize instead of failing on upgrade."""
+    """BEGIN IMMEDIATE so concurrent writers serialize instead of failing on upgrade.
+
+    Nested use joins the enclosing transaction, so store helpers compose into one
+    atomic write; an exception anywhere rolls back the whole outer transaction.
+    The connection is in autocommit mode, so only an explicit outer BEGIN can
+    leave it in a transaction."""
+    if conn.in_transaction:
+        yield conn
+        return
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn

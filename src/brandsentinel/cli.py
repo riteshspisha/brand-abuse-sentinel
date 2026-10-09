@@ -4,6 +4,8 @@ Commands that later milestones implement are registered now as stubs, so the
 command surface is stable and `--help` documents where each one lands.
 """
 
+import asyncio
+import signal
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,8 +15,15 @@ import typer
 
 from brandsentinel import __version__
 from brandsentinel.config import Config, ConfigError, load_config
+from brandsentinel.discovery.dnstwist_runner import DnstwistRunner
+from brandsentinel.discovery.events import replay as replay_events
+from brandsentinel.discovery.submit import SubmissionError
+from brandsentinel.discovery.submit import submit as submit_name
+from brandsentinel.logging import configure_logging
 from brandsentinel.matching.matcher import Matcher
 from brandsentinel.matching.normalize import InvalidName
+from brandsentinel.pipeline import health
+from brandsentinel.pipeline.orchestrator import run_service
 from brandsentinel.registry.legacy_import import LegacyImportError, missing_legacy, read_legacy
 from brandsentinel.registry.loader import RegistryError, ValidationReport, load_registry
 from brandsentinel.registry.model import Registry
@@ -31,8 +40,6 @@ app = typer.Typer(
 
 # Command -> milestone that implements it.
 _PLANNED = {
-    "run": ("M2", "Run discovery and the analysis pipeline."),
-    "submit": ("M2", "Submit a URL or domain for analysis."),
     "analyze": ("M3", "Analyze one domain (e.g. --passive enrichment)."),
     "sandbox": ("M4", "Sandbox runtime checks and self-tests."),
     "cases": ("M5", "List, inspect and label cases."),
@@ -107,6 +114,8 @@ def status(ctx: typer.Context) -> None:
                 " manual cases can add artifacts"
             )
 
+        _print_discovery(health.collect(store, config, time.time()), time.time())
+
         sources = store.raw_sources()
         firehose = "on" if config.rawlog.firehose.enabled else "off"
         typer.echo(
@@ -118,6 +127,188 @@ def status(ctx: typer.Context) -> None:
             typer.echo(f"  {source:<20} {store.raw_bytes(source)} bytes")
     finally:
         store.close()
+
+
+def _ago(ts: float | None, now: float) -> str:
+    if ts is None:
+        return "never"
+    when = datetime.fromtimestamp(ts, UTC).isoformat(timespec="seconds")
+    return f"{when} ({int(now - ts)}s ago)"
+
+
+def _print_discovery(h: health.DiscoveryHealth, now: float) -> None:
+    typer.echo(f"candidates: {h.candidates_total}")
+    for source, n in sorted(h.candidates_by_source.items()):
+        typer.echo(f"  seen by {source:<10} {n}")
+    if h.certstream_enabled:
+        state = "STALE" if h.certstream_stale else "live"
+        typer.echo(f"certstream: {state}, last message {_ago(h.certstream_last_message_at, now)}")
+        c = h.certstream_counters
+        if c:
+            typer.echo(
+                f"  hour {c.get('hour')}: {c.get('certificates', 0)} certificates,"
+                f" {c.get('matched_certificates', 0)} matched, {c.get('events', 0)} events,"
+                f" {c.get('new_candidates', 0)} new candidates, {c.get('malformed', 0)} malformed"
+            )
+        typer.echo(f"  coverage gaps in last 24h: {int(h.open_gaps_seconds_24h)}s")
+        for g in h.recent_gaps:
+            end = _ago(g["ended_at"], now) if g["ended_at"] else "open"
+            jumps = g["detail"].get("cert_index_jumps", {})
+            missed = sum(j["missed"] for j in jumps.values())
+            extra = f", ~{missed} log entries skipped" if jumps else ""
+            typer.echo(
+                f"  gap {_ago(g['started_at'], now)} -> {end}"
+                f" ({escape_terminal(g['reason'])}{extra})"
+            )
+    else:
+        typer.echo("certstream: disabled")
+    if h.dnstwist_enabled:
+        typer.echo("dnstwist sweeps:" if h.sweeps else "dnstwist: no sweeps yet")
+        for sw in h.sweeps:
+            line = f"  {sw.target:<24} {sw.status:<10} {_ago(sw.started_at, now)}"
+            if sw.registered is not None:
+                line += f" registered {sw.registered}, new {sw.new_count}"
+            if sw.error:
+                line += f" error: {escape_terminal(sw.error)}"
+            typer.echo(line)
+        for target in h.unhealthy_targets:
+            typer.echo(f"  UNHEALTHY: {target} timed out on its last two sweeps")
+    else:
+        typer.echo("dnstwist: disabled")
+    typer.echo(f"free disk: {h.free_disk_bytes} bytes" + (" (LOW)" if h.low_disk else ""))
+
+
+@app.command()
+def run(
+    ctx: typer.Context,
+    certstream: Annotated[
+        bool | None, typer.Option(help="Consume CertStream (config default).")
+    ] = None,
+    dnstwist: Annotated[bool | None, typer.Option(help="Run scheduled dnstwist sweeps.")] = None,
+    duration: Annotated[
+        float | None, typer.Option(help="Stop after this many seconds (default: run forever).")
+    ] = None,
+    log_level: Annotated[str, typer.Option(help="Log level.")] = "INFO",
+) -> None:
+    """Run discovery (CertStream, dnstwist) and the pipeline until interrupted."""
+    config = _load(ctx)
+    configure_logging(log_level.upper())
+    registry, _ = _load_registry(config.registry_path)
+    store = open_store(config)
+
+    async def main() -> None:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+        if duration is not None:
+            loop.call_later(duration, stop.set)
+        await run_service(
+            store,
+            registry,
+            certstream_enabled=config.discovery.certstream.enabled
+            if certstream is None
+            else certstream,
+            dnstwist_enabled=config.discovery.dnstwist.enabled if dnstwist is None else dnstwist,
+            stop=stop,
+        )
+
+    try:
+        asyncio.run(main())
+    finally:
+        store.close()
+
+
+@app.command()
+def submit(
+    ctx: typer.Context,
+    targets: Annotated[list[str], typer.Argument(help="URLs or domain names.")],
+) -> None:
+    """Submit URLs or domains for analysis (never suppressed)."""
+    config = _load(ctx)
+    registry, _ = _load_registry(config.registry_path)
+    matcher = Matcher(registry)
+    store = open_store(config)
+    failed = False
+    try:
+        for target in targets:
+            try:
+                r = submit_name(store, matcher, target)
+            except OSError as e:
+                typer.echo(f"error: cannot write discovery log: {e}", err=True)
+                raise typer.Exit(1) from e
+            except SubmissionError as e:
+                failed = True
+                typer.echo(
+                    f"rejected {escape_terminal(target)}: {escape_terminal(str(e))}", err=True
+                )
+                continue
+            state = "new case" if r.new_case else "existing case"
+            typer.echo(f"{escape_terminal(r.host)}: {state} #{r.case_id}")
+    finally:
+        store.close()
+    if failed:
+        raise typer.Exit(1)
+
+
+@app.command()
+def sweep(
+    ctx: typer.Context,
+    targets: Annotated[
+        list[str] | None, typer.Argument(help="Registry dnstwist targets (default: all).")
+    ] = None,
+) -> None:
+    """Run dnstwist sweeps now, ignoring the schedule."""
+    config = _load(ctx)
+    configure_logging("WARNING")
+    registry, _ = _load_registry(config.registry_path)
+    store = open_store(config)
+    runner = DnstwistRunner(store, Matcher(registry), registry, config)
+    known = runner.targets()
+    chosen = targets or known
+    unknown = [t for t in chosen if t not in known]
+    if unknown:
+        store.close()
+        typer.echo(
+            f"not registry dnstwist targets: {escape_terminal(', '.join(unknown))}", err=True
+        )
+        raise typer.Exit(2)
+    failed = False
+    try:
+        for target in chosen:
+            r = asyncio.run(runner.sweep(target))
+            failed |= r.status not in ("ok",)
+            line = f"{target}: {r.status}, {r.permutations} permutations, {r.registered} registered"
+            line += f", {r.candidates} candidates, {len(r.new)} new"
+            if r.error:
+                line += f" ({escape_terminal(r.error)})"
+            typer.echo(line)
+    finally:
+        store.close()
+    if failed:
+        raise typer.Exit(1)
+
+
+@app.command()
+def replay(
+    ctx: typer.Context,
+    since_hours: Annotated[
+        float | None, typer.Option(help="Only records logged in the last N hours.")
+    ] = None,
+) -> None:
+    """Re-ingest the discovery raw log (idempotent: nothing is duplicated)."""
+    config = _load(ctx)
+    registry, _ = _load_registry(config.registry_path)
+    store = open_store(config)
+    try:
+        since = time.time() - since_hours * 3600 if since_hours is not None else None
+        stats = replay_events(store, Matcher(registry), since=since)
+    finally:
+        store.close()
+    typer.echo(
+        f"replayed {stats.records} records from {stats.segments} segments:"
+        f" {stats.ingested} ingested, {stats.duplicates} already present, {stats.invalid} invalid"
+    )
 
 
 def _load_registry(path: Path) -> tuple[Registry, ValidationReport]:
