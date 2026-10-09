@@ -22,17 +22,26 @@ from brandsentinel.textsafe import sanitize_fact
 
 QueueClass = Literal["strong", "weak"]
 
-# Next runnable job for a stage; strong-strength work is claimed before weak.
+# Next runnable job for a stage. Strong-strength work is claimed before weak;
+# within a class the least recently served registrable domain (group) goes
+# first, so one domain with many jobs cannot starve the others. A group already
+# running `per_group_limit` jobs in this stage is skipped (NULL: no limit).
 _NEXT_JOB_SQL = (
-    "SELECT * FROM jobs WHERE stage = ? AND ("
-    " (status = 'pending' AND available_at <= ?)"
-    " OR (status = 'running' AND lease_expires_at <= ?))"
-    " ORDER BY CASE queue_class WHEN 'strong' THEN 0 ELSE 1 END, available_at, id LIMIT 1"
+    "SELECT j.* FROM jobs j LEFT JOIN job_groups g"
+    " ON g.stage = j.stage AND g.group_key = j.group_key"
+    " WHERE j.stage = :stage AND ("
+    " (j.status = 'pending' AND j.available_at <= :now)"
+    " OR (j.status = 'running' AND j.lease_expires_at <= :now))"
+    " AND (:limit IS NULL OR j.group_key IS NULL OR ("
+    "  SELECT COUNT(*) FROM jobs r WHERE r.stage = j.stage AND r.group_key = j.group_key"
+    "  AND r.status = 'running' AND r.lease_expires_at > :now) < :limit)"
+    " ORDER BY CASE j.queue_class WHEN 'strong' THEN 0 ELSE 1 END,"
+    " COALESCE(g.last_claimed_at, 0), j.available_at, j.id LIMIT 1"
 )
 _INSERT_SQL = (
-    "INSERT INTO jobs (stage, queue_class, dedupe_key, payload_json, status,"
+    "INSERT INTO jobs (stage, queue_class, dedupe_key, group_key, payload_json, status,"
     " max_attempts, available_at, created_at, updated_at)"
-    " VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?)"
+    " VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)"
     " ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL"
     " AND status IN ('pending', 'running') DO NOTHING RETURNING id"
 )
@@ -71,6 +80,7 @@ class Job:
     lease_owner: str
     lease_token: str
     lease_expires_at: float
+    group_key: str | None = None
 
 
 class JobQueue:
@@ -92,19 +102,30 @@ class JobQueue:
         *,
         queue_class: QueueClass = "strong",
         dedupe_key: str | None = None,
+        group_key: str | None = None,
         max_attempts: int | None = None,
         delay: float = 0.0,
+        once: bool = False,
     ) -> tuple[int, bool]:
         """Add a job. While a job with the same dedupe_key is pending or running,
-        that job is returned instead of a new one. Returns (job_id, created)."""
+        that job is returned instead of a new one; with `once`, any earlier job
+        with the key (whatever its status) is. Returns (job_id, created)."""
         with transaction(self._conn):
             now = self._clock()
+            if once and dedupe_key is not None:
+                prior = self._conn.execute(
+                    "SELECT id FROM jobs WHERE dedupe_key = ? ORDER BY id DESC LIMIT 1",
+                    (dedupe_key,),
+                ).fetchone()
+                if prior:
+                    return prior[0], False
             row = self._conn.execute(
                 _INSERT_SQL,
                 (
                     stage,
                     queue_class,
                     dedupe_key,
+                    group_key,
                     json.dumps(payload, sort_keys=True),
                     max_attempts or self._default_max_attempts,
                     now + delay,
@@ -117,14 +138,23 @@ class JobQueue:
             existing = self._conn.execute(_LIVE_BY_KEY_SQL, (dedupe_key,)).fetchone()
             return existing[0], False
 
-    def claim(self, stage: str, owner: str, lease_seconds: float) -> Job | None:
+    def claim(
+        self,
+        stage: str,
+        owner: str,
+        lease_seconds: float,
+        *,
+        per_group_limit: int | None = None,
+    ) -> Job | None:
         """Lease the next runnable job for `stage`, or return None."""
         with transaction(self._conn):
             # Read the clock after acquiring the write lock, so time spent waiting
             # on a busy database does not shorten the lease.
             now = self._clock()
             while True:
-                row = self._conn.execute(_NEXT_JOB_SQL, (stage, now, now)).fetchone()
+                row = self._conn.execute(
+                    _NEXT_JOB_SQL, {"stage": stage, "now": now, "limit": per_group_limit}
+                ).fetchone()
                 if row is None:
                     return None
                 if row["attempts"] >= row["max_attempts"]:
@@ -144,9 +174,18 @@ class JobQueue:
                     " lease_expires_at = ?, attempts = attempts + 1, updated_at = ? WHERE id = ?",
                     (owner, token, expires, now, row["id"]),
                 )
+                if row["group_key"] is not None:
+                    self._conn.execute(
+                        "INSERT INTO job_groups (stage, group_key, last_claimed_at)"
+                        " VALUES (?, ?, ?)"
+                        " ON CONFLICT (stage, group_key) DO UPDATE"
+                        " SET last_claimed_at = excluded.last_claimed_at",
+                        (stage, row["group_key"], now),
+                    )
                 return Job(
                     id=row["id"],
                     stage=row["stage"],
+                    group_key=row["group_key"],
                     queue_class=row["queue_class"],
                     payload=json.loads(row["payload_json"]),
                     attempts=row["attempts"] + 1,

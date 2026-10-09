@@ -4,18 +4,26 @@ import threading
 import pytest
 
 from brandsentinel.store import open_store
-from brandsentinel.store.db import SchemaTooNew, connect, migrate, schema_version
+from brandsentinel.store.db import (
+    SchemaTooNew,
+    _migration_files,
+    connect,
+    migrate,
+    schema_version,
+)
+
+LATEST = _migration_files()[-1][0]
 
 
 def test_restart_applies_no_duplicate_migrations(config):
     first = open_store(config)
-    assert schema_version(first.conn) == 2
+    assert schema_version(first.conn) == LATEST
     first.jobs.enqueue("fetch", {"keep": True})
     first.close()
 
     second = open_store(config)
     assert migrate(second.conn) == []
-    assert second.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+    assert second.conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == LATEST
     assert second.conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
     second.close()
 
@@ -40,7 +48,7 @@ def test_concurrent_first_start_migrates_exactly_once(tmp_path):
     for t in threads:
         t.join()
     assert errors == []
-    assert counts == [2, 2, 2, 2]
+    assert counts == [LATEST] * 4
 
 
 def test_newer_schema_is_refused(config):

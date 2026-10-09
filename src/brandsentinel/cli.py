@@ -5,6 +5,7 @@ command surface is stable and `--help` documents where each one lands.
 """
 
 import asyncio
+import json
 import signal
 import time
 from datetime import UTC, datetime
@@ -22,7 +23,7 @@ from brandsentinel.discovery.submit import submit as submit_name
 from brandsentinel.logging import configure_logging
 from brandsentinel.matching.matcher import Matcher
 from brandsentinel.matching.normalize import InvalidName
-from brandsentinel.pipeline import health
+from brandsentinel.pipeline import health, scheduling
 from brandsentinel.pipeline.orchestrator import run_service
 from brandsentinel.registry.legacy_import import LegacyImportError, missing_legacy, read_legacy
 from brandsentinel.registry.loader import RegistryError, ValidationReport, load_registry
@@ -40,7 +41,6 @@ app = typer.Typer(
 
 # Command -> milestone that implements it.
 _PLANNED = {
-    "analyze": ("M3", "Analyze one domain (e.g. --passive enrichment)."),
     "sandbox": ("M4", "Sandbox runtime checks and self-tests."),
     "cases": ("M5", "List, inspect and label cases."),
     "report": ("M5", "Render analyst reports."),
@@ -115,6 +115,7 @@ def status(ctx: typer.Context) -> None:
             )
 
         _print_discovery(health.collect(store, config, time.time()), time.time())
+        _print_analysis(store, config)
 
         sources = store.raw_sources()
         firehose = "on" if config.rawlog.firehose.enabled else "off"
@@ -127,6 +128,25 @@ def status(ctx: typer.Context) -> None:
             typer.echo(f"  {source:<20} {store.raw_bytes(source)} bytes")
     finally:
         store.close()
+
+
+def _print_analysis(store, config: Config) -> None:
+    conn = store.conn
+    enrich = "on" if config.enrich.enabled else "off"
+    fetch = "on" if config.fetch.enabled else "off"
+    lab = (
+        " LAB MODE (fetching disabled until the lab proxy exists)" if config.net.lab.enabled else ""
+    )
+    typer.echo(f"analysis: enrich {enrich}, fetch {fetch}{lab}")
+    for stage, outcome, n in conn.execute(
+        "SELECT stage, outcome, COUNT(*) FROM stage_runs GROUP BY stage, outcome ORDER BY 1, 2"
+    ):
+        typer.echo(f"  {stage:<10} {escape_terminal(outcome):<26} {n}")
+    d = scheduling.deferred_summary(conn, time.time())
+    if d["total"]:
+        typer.echo(f"deferred work: {d['total']} ({d['due']} due)")
+        for domain, n in d["top_domains"]:
+            typer.echo(f"  over allowance: {escape_terminal(domain)} {n}")
 
 
 def _ago(ts: float | None, now: float) -> str:
@@ -185,6 +205,12 @@ def run(
         bool | None, typer.Option(help="Consume CertStream (config default).")
     ] = None,
     dnstwist: Annotated[bool | None, typer.Option(help="Run scheduled dnstwist sweeps.")] = None,
+    enrich: Annotated[
+        bool | None, typer.Option(help="Run passive enrichment (config default).")
+    ] = None,
+    fetch: Annotated[
+        bool | None, typer.Option(help="Run the hardened static fetch (config default).")
+    ] = None,
     duration: Annotated[
         float | None, typer.Option(help="Stop after this many seconds (default: run forever).")
     ] = None,
@@ -210,6 +236,8 @@ def run(
             if certstream is None
             else certstream,
             dnstwist_enabled=config.discovery.dnstwist.enabled if dnstwist is None else dnstwist,
+            enrich_enabled=enrich,
+            fetch_enabled=fetch,
             stop=stop,
         )
 
@@ -309,6 +337,58 @@ def replay(
         f"replayed {stats.records} records from {stats.segments} segments:"
         f" {stats.ingested} ingested, {stats.duplicates} already present, {stats.invalid} invalid"
     )
+
+
+@app.command()
+def analyze(
+    ctx: typer.Context,
+    domain: Annotated[str, typer.Argument(help="Domain name to analyze.")],
+    passive: Annotated[
+        bool,
+        typer.Option(
+            "--passive/--fetch",
+            help="DNS, RDAP, TLS and similarity only (default), or also a static fetch.",
+        ),
+    ] = True,
+) -> None:
+    """Collect enrichment facts for one domain and print them. No case is created
+    (RDAP answers are cached for reuse)."""
+    from brandsentinel.enrich import run_sources
+    from brandsentinel.matching.normalize import canonical_host, registrable_domain
+    from brandsentinel.pipeline.stages import HTTP_FALLBACK, AnalysisStages, build_network
+
+    config = _load(ctx)
+    registry, _ = _load_registry(config.registry_path)
+    try:
+        host, _ = canonical_host(domain)
+    except InvalidName as e:
+        typer.echo(f"invalid domain: {escape_terminal(str(e))}", err=True)
+        raise typer.Exit(2) from e
+    store = open_store(config)  # for the shared RDAP cache only
+    try:
+        guard, fetcher = build_network(config)
+        stages = AnalysisStages(store, registry, guard=guard, fetcher=fetcher)
+
+        async def main() -> list:
+            obs = await run_sources(stages.context(host, registrable_domain(host)))
+            out = [(o.source, o.name, o.value) for o in obs]
+            if not passive:
+                for url in (f"https://{host}/", f"http://{host}/"):
+                    r = await fetcher.fetch(url, mode="evidence")
+                    out.append(("fetcher", "http_fetch", r.to_fact()))
+                    if r.outcome not in HTTP_FALLBACK:
+                        break
+            return out
+
+        for source, name, value in asyncio.run(main()):
+            text = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+            typer.echo(f"== {source} / {name}")
+            # split("\n"), not splitlines(): U+2028, NEL and friends inside values
+            # must reach escape_terminal rather than become real line breaks.
+            for line in text.split("\n"):
+                typer.echo(escape_terminal(line))
+    finally:
+        store.close()
 
 
 def _load_registry(path: Path) -> tuple[Registry, ValidationReport]:

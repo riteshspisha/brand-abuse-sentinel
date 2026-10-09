@@ -36,7 +36,7 @@ def test_help_lists_every_registered_command():
         assert name in result.output
 
 
-@pytest.mark.parametrize("name", ["analyze", "sandbox", "eval"])
+@pytest.mark.parametrize("name", ["sandbox", "eval"])
 def test_planned_commands_exit_non_zero_with_milestone(name):
     result = runner.invoke(app, [name, "--anything", "x"])
     assert result.exit_code == 2
@@ -47,7 +47,7 @@ def test_status_on_empty_store(tmp_path, monkeypatch):
     monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output
-    assert "schema v2" in result.output
+    assert "schema v3" in result.output
     assert "jobs: none" in result.output
     assert "artifacts: 0 blobs" in result.output
     assert "firehose off" in result.output
@@ -226,3 +226,45 @@ def test_run_with_sources_disabled_starts_and_stops(tmp_path, monkeypatch):
     monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
     result = runner.invoke(app, ["run", "--no-certstream", "--no-dnstwist", "--duration", "0.2"])
     assert result.exit_code == 0, result.output
+
+
+def test_analyze_rejects_invalid_domains(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
+    for bad in ["bad..name", "127.0.0.1", "x" * 300 + ".com"]:
+        result = runner.invoke(app, ["analyze", bad])
+        assert result.exit_code == 2 and "invalid domain" in result.output
+
+
+def test_run_with_analysis_stages_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
+    args = ["run", "--no-certstream", "--no-dnstwist", "--no-enrich", "--no-fetch"]
+    result = runner.invoke(app, [*args, "--duration", "0.2"])
+    assert result.exit_code == 0, result.output
+
+
+def test_status_reports_analysis_and_deferred_work(tmp_path, monkeypatch):
+    from brandsentinel.config import Config
+    from brandsentinel.pipeline import scheduling
+    from brandsentinel.store import open_store
+
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
+    config = Config(data_dir=tmp_path / "data")
+    store = open_store(config)
+    for i in range(20):
+        scheduling.schedule(
+            store.conn,
+            store.jobs,
+            config.scheduling,
+            stage="enrich",
+            payload={},
+            group_key="flood\x1b[31m.com",
+            queue_class="weak",
+            dedupe_key=f"k{i}",
+            now=0.0,
+        )
+    store.close()
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "analysis: enrich on, fetch on" in result.output
+    assert "deferred work: 16 (16 due)" in result.output
+    assert "over allowance: flood\\x1b[31m.com 16" in result.output

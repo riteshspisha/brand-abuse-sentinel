@@ -59,3 +59,36 @@ Observed false positives (weak, matcher tuning for later): `*.anthemishackingfin
 matches `isha` as an affix contexted by `retreat` (context terms match anywhere in the
 name), and each subdomain becomes its own candidate; `makesoil.de` is a distance-2 fuzzy
 match of `savesoil`.
+
+## M3 - Guarded fetch and enrichment (2026-10-09)
+
+```bash
+uv run pytest -m security                       # netguard, fetcher, quotas against the local harness
+uv run brandsentinel analyze isha.in            # passive: DNS, RDAP, TLS, similarity (no case created)
+uv run brandsentinel analyze --fetch <domain>   # plus one static fetch, evidence mode
+uv run brandsentinel submit ishayoga.in shopisha.in ishain.com isha9.in
+uv run brandsentinel run --no-certstream --no-dnstwist --duration 75
+uv run brandsentinel status                     # stage outcomes, deferred work per domain
+```
+
+Live run on the development machine (scratch data dir, four registered lookalikes
+from the M2 dnstwist sweep):
+
+| Case | Enrichment | Static fetch |
+|---|---|---|
+| `isha.in` (`analyze`) | A/AAAA on Cloudflare, Google MX; RDAP via the NIXI registry (registered 2005, GoDaddy, redacted); TLS 1.3, Google Trust Services cert verifies; `tls_official_san` for `isha.in` | - |
+| `ishayoga.in` | RDAP age 4243 days; TLS on 443 timed out | https timed out, http fallback followed `ishayoga.in` 301 -> `www.ishayoga.org` 301 -> `https://www.ishayoga.org/` 301 -> `isha.sadhguru.org/in/en/yoga-meditation` 200; 292 KB HTML stored as a blob; `page_basics`: canonical, 51 scripts, 16 images |
+| `shopisha.in`, `ishain.com`, `isha9.in` | DNS and RDAP ok (`isha9.in` registered 43 days ago); TLS timeout or refused | connect or read timeouts on both schemes, recorded as `http_fetch_attempt` facts and retried after `fetch.retry_delay_seconds` |
+| `sadhgurru.com` (`analyze --fetch`) | NXDOMAIN on every record type; RDAP `not_found`; similarity distance 1 to `sadhguru` | `dns_error` / `dns_nxdomain`, not retried |
+
+The several connect timeouts on 443 from this network are not explained yet (the
+sites may be down or filtered); each is kept as an error fact with its reason.
+
+Domain age, registrar privacy, the certificate issuer and hosting provider are
+recorded as context only. None of them is treated as a maliciousness indicator by
+itself; that judgment belongs to the policy scorer (M5).
+
+Subdomain flooding: 30 CertStream events for `sadhguru-N.evil-flood.com` keep 30
+candidates and 30 open cases, but only 16 enrichment jobs are queued; the other 14 are
+`deferred_jobs` rows (`domain_queue_full`) promoted as the domain's jobs finish
+(`tests/integration/test_scheduling.py`).
