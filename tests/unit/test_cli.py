@@ -1,9 +1,19 @@
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
 from brandsentinel.cli import app
 
 runner = CliRunner()
+REPO = Path(__file__).parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _repo_cwd(monkeypatch):
+    # The default registry and legacy paths are relative to the repository root.
+    monkeypatch.chdir(REPO)
+
 
 COMMANDS = [
     "run",
@@ -26,7 +36,7 @@ def test_help_lists_every_registered_command():
         assert name in result.output
 
 
-@pytest.mark.parametrize("name", ["run", "analyze", "registry", "eval"])
+@pytest.mark.parametrize("name", ["run", "analyze", "sandbox", "eval"])
 def test_planned_commands_exit_non_zero_with_milestone(name):
     result = runner.invoke(app, [name, "--anything", "x"])
     assert result.exit_code == 2
@@ -107,3 +117,68 @@ def test_status_skips_invalid_raw_directories(tmp_path, monkeypatch):
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output
     assert "discovery" in result.output and "Not A Source" not in result.output
+
+
+def _write_registry(tmp_path, data):
+    import yaml
+
+    path = tmp_path / "brands.yaml"
+    path.write_text(yaml.safe_dump(data))
+    return path
+
+
+def test_registry_validate_reports_counts_and_legacy_coverage():
+    result = runner.invoke(app, ["registry", "validate"])
+    assert result.exit_code == 0, result.output
+    assert "high/legacy-unverified 10" in result.output
+    assert "legacy-unverified 7" in result.output
+    assert "abhishek" in result.output  # warning: exclusion can never apply
+    assert "legacy coverage not checked" not in result.output
+    assert result.output.rstrip().endswith("ok")
+
+
+def test_registry_validate_fails_on_unconfirmed_suppression(tmp_path, registry_data):
+    registry_data["domains"][0]["suppresses"] = True
+    path = _write_registry(tmp_path, registry_data)
+    result = runner.invoke(app, ["registry", "validate", "--path", str(path)])
+    assert result.exit_code == 1
+    assert "only confirmed domains may suppress" in result.output
+
+
+def test_registry_validate_fails_when_legacy_input_is_missing(tmp_path, registry_data):
+    registry_data["exclusions"] = registry_data["exclusions"][1:]
+    path = _write_registry(tmp_path, registry_data)
+    result = runner.invoke(app, ["registry", "validate", "--path", str(path)])
+    assert result.exit_code == 1
+    assert "odisha" in result.output
+
+
+def test_registry_errors_are_escaped(tmp_path, registry_data):
+    registry_data["domains"][0]["brand"] = "x\x1b[31m"
+    path = _write_registry(tmp_path, registry_data)
+    result = runner.invoke(app, ["registry", "validate", "--path", str(path)])
+    assert result.exit_code == 1
+    assert "\x1b" not in result.output
+
+
+def test_match_prints_one_json_line_per_name(tmp_path):
+    names = tmp_path / "names.txt"
+    names.write_text("fakeisha.info\n\nsave-soil.shop\n")
+    result = runner.invoke(app, ["match", "sadhguru.org.verify-login.xyz", "--file", str(names)])
+    assert result.exit_code == 0, result.output
+    lines = [line for line in result.output.splitlines() if line.startswith("{")]
+    assert len(lines) == 3
+    assert '"candidate":true' in lines[0] and '"candidate":false' in lines[1]
+
+
+def test_match_escapes_invalid_names_and_exits_1():
+    result = runner.invoke(app, ["match", "bad\x1b[2Jname.com"])
+    assert result.exit_code == 1
+    assert "\x1b" not in result.output
+    assert "invalid name" in result.output
+
+
+def test_match_unreadable_file_exits_1(tmp_path):
+    result = runner.invoke(app, ["match", "--file", str(tmp_path / "missing.txt")])
+    assert result.exit_code == 1
+    assert "cannot read" in result.output

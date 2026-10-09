@@ -32,3 +32,34 @@ def store(config: Config) -> Store:
     s = open_store(config)
     yield s
     s.close()
+
+
+REPO = Path(__file__).parents[1]
+REGISTRY_PATH = REPO / "registry" / "brands.yaml"
+
+
+@pytest.fixture
+def registry_data() -> dict:
+    """The committed registry as plain data, for tests to modify."""
+    import yaml
+
+    return yaml.safe_load(REGISTRY_PATH.read_text(encoding="utf-8"))
+
+
+def confirm_domain(data: dict, name: str, *, suppresses: bool = True) -> None:
+    """Mark a registry domain confirmed by a test maintainer."""
+    for d in data["domains"]:
+        if d["name"] == name:
+            d["status"] = "confirmed"
+            d["suppresses"] = suppresses
+            d["provenance"].append(
+                {
+                    "source": "maintainer",
+                    "recorded_by": "test",
+                    "recorded_at": "2026-10-08",
+                    "verified_by": "test-maintainer",
+                    "verified_at": "2026-10-08",
+                }
+            )
+            return
+    raise KeyError(name)

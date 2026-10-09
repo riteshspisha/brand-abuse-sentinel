@@ -96,6 +96,7 @@ class TextSettings(_Section):
 
 class Config(_Section):
     data_dir: Path = Path("data")
+    registry_path: Path = Path("registry/brands.yaml")
     stages: StageLimits = StageLimits()
     jobs: JobSettings = JobSettings()
     artifacts: ArtifactQuotas = ArtifactQuotas()

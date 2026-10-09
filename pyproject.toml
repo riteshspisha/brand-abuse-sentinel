@@ -6,6 +6,8 @@ requires-python = ">=3.12,<3.14"
 dependencies = [
     "pydantic>=2.8",
     "pyyaml>=6.0",
+    "rapidfuzz>=3.9",
+    "tldextract>=5.3",  # top_domain_under_public_suffix
     "typer>=0.12",
 ]
 
@@ -36,6 +38,8 @@ packages = ["src/brandsentinel"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Lets tests import shared helpers from tests/conftest.py wherever pytest starts.
+pythonpath = ["."]
 addopts = "--strict-markers -ra"
 markers = [
     "security: security-control tests (run on every change to net/ or sandbox/)",

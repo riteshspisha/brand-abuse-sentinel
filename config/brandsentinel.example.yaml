@@ -3,6 +3,9 @@
 
 data_dir: data
 
+# Brand Registry (brands, keywords, domains, exclusions). See registry/brands.yaml.
+registry_path: registry/brands.yaml
+
 # Maximum concurrent jobs per pipeline stage.
 stages:
   enrich: 8

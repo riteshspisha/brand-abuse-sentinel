@@ -1,0 +1,267 @@
+# BrandSentinel Brand Registry.
+#
+# Status: confirmed | candidate | legacy-unverified | rejected.
+# Only confirmed domains flagged `suppresses: true` (and third-party domains with
+# a confirmed relationship) suppress findings. A confirmed entry must name who
+# verified it and when. Legacy entries cite the legacy script line they came from.
+# Check with: brandsentinel registry validate
+version: 1
+
+brands:
+  - id: isha-foundation
+    name: Isha Foundation
+    aliases: [Isha]
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md", recorded_by: project-brief, recorded_at: 2026-10-08}
+    keywords:
+      - term: ishafoundation
+        tier: high
+        fuzzy: true
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:26", recorded_by: legacy-import, recorded_at: 2026-10-08}
+          - {source: "legacy/monitor_certstream.py:29", recorded_by: legacy-import, recorded_at: 2026-10-08}
+      - term: isha
+        tier: low
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:22", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - id: sadhguru
+    name: Sadhguru
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md", recorded_by: project-brief, recorded_at: 2026-10-08}
+    keywords:
+      - term: sadhguru
+        tier: high
+        fuzzy: true
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:25", recorded_by: legacy-import, recorded_at: 2026-10-08}
+          - {source: "legacy/monitor_certstream.py:29", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - id: inner-engineering
+    name: Inner Engineering
+    aliases: [Shambhavi Mahamudra]
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md", recorded_by: project-brief, recorded_at: 2026-10-08}
+    keywords:
+      - term: innerengineering
+        tier: high
+        fuzzy: true
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:25", recorded_by: legacy-import, recorded_at: 2026-10-08}
+          - {source: "legacy/monitor_certstream.py:29", recorded_by: legacy-import, recorded_at: 2026-10-08}
+      - term: shambhavi
+        tier: high
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:26", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - id: save-soil
+    name: Save Soil
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md", recorded_by: project-brief, recorded_at: 2026-10-08}
+    keywords:
+      - term: savesoil
+        tier: high
+        fuzzy: true
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:25", recorded_by: legacy-import, recorded_at: 2026-10-08}
+          - {source: "legacy/monitor_certstream.py:29", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - id: adiyogi
+    name: Adiyogi
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md", recorded_by: project-brief, recorded_at: 2026-10-08}
+    keywords:
+      - term: adiyogi
+        tier: high
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:25", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - id: conscious-planet
+    name: Conscious Planet
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md", recorded_by: project-brief, recorded_at: 2026-10-08}
+    keywords:
+      - term: consciousplanet
+        tier: high
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:25", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - id: dhyanalinga
+    name: Dhyanalinga
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md", recorded_by: project-brief, recorded_at: 2026-10-08}
+    keywords:
+      - term: dhyanalinga
+        tier: high
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:26", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - id: linga-bhairavi
+    name: Linga Bhairavi
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md", recorded_by: project-brief, recorded_at: 2026-10-08}
+    keywords:
+      - term: lingabhairavi
+        tier: high
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:26", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - id: cauvery-calling
+    name: Cauvery Calling
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md", recorded_by: project-brief, recorded_at: 2026-10-08}
+    keywords:
+      - term: cauverycalling
+        tier: high
+        status: legacy-unverified
+        provenance:
+          - {source: "legacy/monitor_certstream.py:26", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - id: isha-life
+    name: Isha Life
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md", recorded_by: project-brief, recorded_at: 2026-10-08}
+
+# Ecosystem terms that qualify an affix hit of the low-tier keyword `isha`.
+# Initial list from plan KTD16; refine from M2 candidate samples.
+context_terms:
+  - term: yoga
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md#KTD16", recorded_by: plan, recorded_at: 2026-10-08}
+  - term: foundation
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md#KTD16", recorded_by: plan, recorded_at: 2026-10-08}
+  - term: donate
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md#KTD16", recorded_by: plan, recorded_at: 2026-10-08}
+  - term: donation
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md#KTD16", recorded_by: plan, recorded_at: 2026-10-08}
+  - term: seva
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md#KTD16", recorded_by: plan, recorded_at: 2026-10-08}
+  - term: meditation
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md#KTD16", recorded_by: plan, recorded_at: 2026-10-08}
+  - term: ashram
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md#KTD16", recorded_by: plan, recorded_at: 2026-10-08}
+  - term: retreat
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md#KTD16", recorded_by: plan, recorded_at: 2026-10-08}
+
+# Each exclusion cancels only `isha` hits whose span lies inside the word.
+exclusions:
+  - term: odisha
+    scope: isha
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:31", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - term: vaishali
+    scope: isha
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:31", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - term: shisha
+    scope: isha
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:31", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - term: mishan
+    scope: isha
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:31", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - term: vishal
+    scope: isha
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:31", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - term: ehtisham
+    scope: isha
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:31", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - term: abhishek
+    scope: isha
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:31", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - term: rishana
+    scope: isha
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:31", recorded_by: legacy-import, recorded_at: 2026-10-08}
+
+# Legacy whitelist and dnstwist targets: presumed official, not yet verified.
+# They do not suppress; sightings are reported as legacy_whitelist_unverified.
+domains:
+  - name: isha.in
+    brand: isha-foundation
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:32", recorded_by: legacy-import, recorded_at: 2026-10-08}
+      - {source: "legacy/dnstwist.py:9", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - name: sadhguru.org
+    brand: sadhguru
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:32", recorded_by: legacy-import, recorded_at: 2026-10-08}
+      - {source: "legacy/dnstwist.py:9", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - name: innerengineering.com
+    brand: inner-engineering
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:32", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - name: consciousplanet.org
+    brand: conscious-planet
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:32", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - name: ishalife.com
+    brand: isha-life
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:32", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - name: ishaoutreach.org
+    brand: isha-foundation
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/monitor_certstream.py:32", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - name: ishafoundation.org
+    brand: isha-foundation
+    status: legacy-unverified
+    provenance:
+      - {source: "legacy/dnstwist.py:9", recorded_by: legacy-import, recorded_at: 2026-10-08}
+  - name: savesoil.org
+    brand: save-soil
+    status: candidate
+    provenance:
+      - {source: "docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md#R12", recorded_by: project-brief, recorded_at: 2026-10-08}
+
+relationships: []
+
+# Payment destinations; only confirmed entries count as known payees.
+payees: []
+
+# Official pages for the reference collector; collected only once confirmed.
+reference_pages: []
