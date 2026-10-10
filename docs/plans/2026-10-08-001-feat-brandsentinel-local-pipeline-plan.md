@@ -462,6 +462,14 @@ U20 can start once M5 completes, in parallel with M6 and M7, as long as it does 
 
 **Operational hardening (M9):** supervision and restart policy, health thresholds, retention, disk guards, log rotation.
 
+**Open prerequisites carried from the M4 review (2026-10-10).** M4 merged as a development milestone with these isolation limits retained (`docs/runbooks/sandbox.md`, `docs/residual-review-findings/feat-m4-sandbox-egress-lab.md`). They do not change M5 scope; each must be closed before the milestone it blocks.
+
+| ID | Prerequisite | Blocks | Done when |
+|---|---|---|---|
+| SP1 | Validate the dedicated unprivileged `brandsentinel` service account deployment (R50): its own rootless Docker, not in the `docker` group, not owner of the code; remove `runtime.allow_developer_account` from every non-development config. Reassess sandbox-to-sandbox traffic on `bs_sandbox` and reachability of the bridge address 172.31.251.1. | M6 and M7 execution of real hostile content | `brandsentinel sandbox check` passes under the service account with no warnings; the Docker security suites pass there; a recorded decision (and test) on inter-sandbox and bridge-address access |
+| SP2 | Prevent `sandbox sweep`, `sandbox check` or a second process of the same instance from removing another process's active sandbox jobs (for example an instance lock held by the service). | M9 unattended operation | a test shows a concurrent sweep/check leaves a running service's job container untouched |
+| SP3 | Keep the adversarial proxy and isolation tests as a standing gate: protocol framing (`tests/security/test_proxy.py`), network bypass with its positive control (`tests/security/test_docker_isolation.py`), connection exhaustion (global and per-client caps) and destination validation (netguard ranges, rebinding, Host/target match, lab-only refusal). | Any change under `src/brandsentinel/net/` or `src/brandsentinel/sandbox/`, and M7 | the security and `security and docker` gates pass with no skipped tests; removing or weakening one of these tests needs an explicit review note |
+
 **Deferred beyond this plan:** VM-level isolation (gVisor or Kata), a non-attributable egress network such as a VPN, image vulnerability scanning in CI, per-destination egress rate limiting, moving HTML parsing into the sandbox.
 
 ### Testing Strategy
