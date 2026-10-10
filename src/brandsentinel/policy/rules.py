@@ -4,13 +4,21 @@ Three kinds of rule add or subtract points; weights live in `config/policy.yaml`
 
 - `abuse`: independently observed abuse evidence. Only these can lift a case to
   P1 or P2. Each needs a protected brand tied to the behaviour (a credential
-  form whose surrounding text names the brand, a payee claiming the brand) on a
-  host that is not a confirmed official domain.
+  form whose surrounding text names the brand, a payee claiming the brand). Most
+  apply only to hosts the registry does not vouch for; the destination rules
+  below apply to the hosts it does.
 - `supporting`: signals that describe risk but cannot reach P1/P2 alone (domain
   similarity, recent registration, parking, lure language, redirects).
 - `relief`: registry-derived facts only (confirmed official domain, confirmed
   payee, confirmed relationship). Page-provided signals (article markup,
   bylines, parody labels, disclaimers) are never relief (R29, AE15).
+
+A confirmed official domain or relationship says who may present a brand, not
+where that site may send credentials or money. So on a vouched host, a
+brand-tied credential form that submits to a domain the registry does not
+confirm, or a payee the registry does not confirm, is still abuse evidence
+(`offset_by_relief=False`: registry relief cannot cancel it), which catches a
+compromised official or partner site.
 
 Context labels are computed separately in the scorer and never change points.
 Nothing here asserts fraud: explanations say what was observed.
@@ -42,16 +50,25 @@ class Rule:
     category: str | None
     summary: str
     fn: Callable[[EvidenceBundle, dict], Fired | None]
+    # False: points stand whatever registry relief applies (destination rules).
+    offset_by_relief: bool = True
 
 
 RULES: dict[str, Rule] = {}
 
 
-def rule(id: str, kind: Kind, summary: str, category: str | None = None):
+def rule(
+    id: str,
+    kind: Kind,
+    summary: str,
+    category: str | None = None,
+    *,
+    offset_by_relief: bool = True,
+):
     def deco(fn):
         if id in RULES:
             raise ValueError(f"rule {id!r} already defined")
-        RULES[id] = Rule(id, kind, category, summary, fn)
+        RULES[id] = Rule(id, kind, category, summary, fn, offset_by_relief)
         return fn
 
     return deco
@@ -84,7 +101,11 @@ def related(b: EvidenceBundle) -> bool:
 
 def registry_cleared(b: EvidenceBundle) -> bool:
     """The registry vouches for this host or the page it served: a confirmed
-    official domain (or the fetch ended on one), or a confirmed relationship."""
+    official domain (or the fetch ended on one), or a confirmed relationship.
+
+    This confirms brand affiliation only. It clears rules about presenting the
+    brand, never where the site sends credentials or payments (see the
+    destination rules)."""
     return official(b) or redirected_to_official(b) or related(b)
 
 
@@ -158,6 +179,31 @@ def _registrable(url: str) -> str | None:
 
 def _brand_present(b: EvidenceBundle) -> bool:
     return b.association.strong_mention or bool(b.association.presented)
+
+
+def _vouched_by(b: EvidenceBundle) -> str:
+    if official(b):
+        return f"the confirmed official domain {b.registry.official_domain}"
+    if redirected_to_official(b):
+        return f"the confirmed official domain {b.registry.final_url_official_domain}"
+    rels = b.registry.confirmed_relationships
+    return (
+        "a confirmed relationship ("
+        + ", ".join(f"{r['from']} {r['type']} {r['to']}" for r in rels[:2])
+        + ")"
+    )
+
+
+def _registry_refs(b: EvidenceBundle) -> list[str]:
+    out = [
+        f"registry:domain:{d}"
+        for d in (b.registry.official_domain, b.registry.final_url_official_domain)
+        if d
+    ]
+    if not out:
+        rels = b.registry.confirmed_relationships[:3]
+        out = [f"registry:relationship:{r['from']}>{r['to']}" for r in rels]
+    return out
 
 
 # --- abuse evidence ------------------------------------------------------------------
@@ -261,7 +307,9 @@ def _donation_unconfirmed(b: EvidenceBundle, p: dict) -> Fired | None:
         return None
     if not (_brand_present(b) or b.discovery.domain_match == "strong"):
         return None
-    payees = unconfirmed_payees(b, ("claims_brand_unconfirmed", "unrelated"))
+    # Payees that claim the brand are already counted by
+    # payment_brand_unconfirmed_payee; this rule adds only the ones it cannot see.
+    payees = unconfirmed_payees(b, ("unrelated",))
     if not payees:
         return None
     brands = b.association.presented or [
@@ -272,6 +320,97 @@ def _donation_unconfirmed(b: EvidenceBundle, p: dict) -> Fired | None:
         f" of {_names(b, brands)} and directs them to {_payee_text(payees)}, which is not a"
         " confirmed registry payee.",
         _uniq(b.payment.refs, b.association.refs),
+    )
+
+
+@rule(
+    "credential_unapproved_destination",
+    "abuse",
+    "Registry-vouched host sends brand-tied credentials to a domain the registry does not confirm",
+    "credential_phishing",
+    offset_by_relief=False,
+)
+def _credential_unapproved(b: EvidenceBundle, p: dict) -> Fired | None:
+    if not registry_cleared(b):
+        return None  # credential_form_brand and credential_cross_origin cover these hosts
+    tie = credential_tie(b)
+    if tie is None:
+        return None
+    brands, how = tie
+    unapproved = unapproved_destinations(b, brands)
+    if not unapproved:
+        return None
+    detail = "; ".join(f"{d['domain']} ({d['why']})" for d in unapproved)
+    return Fired(
+        f"A credential form ({how}) submits to {detail}. The host is vouched for by"
+        f" {_vouched_by(b)}, but that confirms brand affiliation, not this credential"
+        " destination; it may be compromised.",
+        _uniq(b.credential.refs, b.association.refs, _registry_refs(b)),
+        details={"brands": brands, "destinations": [d["domain"] for d in unapproved]},
+    )
+
+
+def unapproved_destinations(b: EvidenceBundle, tie_brands: list[str]) -> list[dict]:
+    """Off-site credential destinations the registry does not approve for the
+    brand of this credential flow: the brands the form is tied to, or the host's
+    vouching brands when the tie names none. Approval for another brand does not
+    count, even one the host is affiliated with, and a relationship that names
+    no brand approves nothing (it is reported as ambiguous)."""
+    flow = set(tie_brands) or set(b.registry.vouching_brands)
+    out = []
+    for d in b.registry.credential_destinations:
+        approved = set(d.get("approved_for") or [])
+        if flow and approved & flow:
+            continue
+        if not flow:
+            why = "the credential flow's brand could not be determined"
+        elif approved:
+            why = "confirmed only for " + _names(b, sorted(approved))
+        elif d.get("ambiguous"):
+            why = "only a confirmed relationship that names no brand: " + ", ".join(
+                d["ambiguous"][:2]
+            )
+        else:
+            why = "no confirmed registry domain or relationship"
+        out.append({"domain": d["domain"], "why": why})
+    return out
+
+
+@rule(
+    "payee_unapproved_on_vouched_host",
+    "abuse",
+    "Registry-vouched host directs brand payments or donations to a payee the registry"
+    " does not confirm",
+    "payment_fraud",
+    offset_by_relief=False,
+)
+def _payee_unapproved_vouched(b: EvidenceBundle, p: dict) -> Fired | None:
+    if not registry_cleared(b):
+        return None  # the payment and donation rules cover these hosts
+    donation = bool(b.payment.donation_cues) and _brand_present(b)
+    # A partner taking payment under its own name is ordinary; a payee that claims
+    # the brand by name, or a donation appeal in the brand's name, needs a
+    # confirmed registry payee.
+    payees = [
+        o
+        for o in unconfirmed_payees(b, ("claims_brand_unconfirmed", "unrelated"))
+        # The reason wording comes from analysis.payment._attribute.
+        if donation or (o.attribution_reason or "").startswith("payee name")
+    ]
+    if not payees:
+        return None
+    what = (
+        f"a donation appeal ({', '.join(b.payment.donation_cues[:5])})"
+        if donation
+        else "a payee named for the brand"
+    )
+    return Fired(
+        f"The page directs {what} to {_payee_text(payees)}, which is not a confirmed registry"
+        f" payee. The host is vouched for by {_vouched_by(b)}, but that confirms brand"
+        " affiliation, not this payment recipient.",
+        _uniq(b.payment.refs, b.association.refs, _registry_refs(b)),
+        "donation_fraud" if donation else "payment_fraud",
+        {"payees": [o.payee_identifier for o in payees]},
     )
 
 

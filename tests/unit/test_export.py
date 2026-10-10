@@ -41,7 +41,7 @@ def test_csv_has_stable_columns_and_one_row_per_case(store):
     assert first["priority"] == "P1" and first["category"] == "donation_fraud"
     assert "rivers.relief.fund@quickpaybank=claims_brand_unconfirmed" in first["payee_attribution"]
     assert first["reasons"].startswith("payment_brand_unconfirmed_payee(+55)")
-    assert first["policy_version"] == "policy/1" and len(first["bundle_sha256"]) == 64
+    assert first["policy_version"] == "policy/2" and len(first["bundle_sha256"]) == 64
 
 
 def test_hostile_page_values_cannot_become_formulas(store):

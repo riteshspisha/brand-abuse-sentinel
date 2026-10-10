@@ -4,6 +4,9 @@
 advisory judgments. It returns every fired rule as a reason with its points, an
 explanation and evidence references, so a decision can be audited without
 reading code. Context labels describe a case and never change its score.
+Relief subtracts from every point except those of rules marked
+`offset_by_relief=False` (unconfirmed credential destinations and payees on a
+registry-vouched host), so a compromised official or partner site still ranks.
 `CaseScorer` builds a case's bundle from the store, evaluates it and records
 the result (policy version and bundle hash included) when anything changed.
 
@@ -264,7 +267,11 @@ def evaluate(b: EvidenceBundle, policy: Policy, judgments: Iterable[dict] = ()) 
     abuse = sum(r.points for r in reasons if r.kind == "abuse")
     supporting = sum(r.points for r in reasons if r.kind == "supporting")
     relief = -sum(r.points for r in reasons if r.kind == "relief")
-    score = max(0, abuse + supporting - relief)
+    # Registry relief offsets everything except destination evidence: confirmed
+    # affiliation does not authorize an unconfirmed credential destination or payee.
+    unrelieved = [r for r in reasons if r.kind == "abuse" and not RULES[r.rule].offset_by_relief]
+    fixed = sum(r.points for r in unrelieved)
+    score = fixed + max(0, abuse - fixed + supporting - relief)
     priority = _priority(score, policy)
     capped = False
     has_abuse = any(r.kind == "abuse" for r in reasons)
@@ -323,6 +330,13 @@ def evaluate(b: EvidenceBundle, policy: Policy, judgments: Iterable[dict] = ()) 
             "Abuse evidence appears alongside page-provided editorial/parody signals; those"
             " signals did not lower the priority (AE15)."
         )
+    for d in b.registry.credential_destinations:
+        if d.get("ambiguous"):
+            manual.append(
+                f"Credential destination {d['domain']} has a confirmed relationship that names"
+                f" no brand ({', '.join(d['ambiguous'][:2])}); it was not treated as authorized."
+                " Record which brand it serves in the registry."
+            )
     for d in b.registry.registry_domains:
         manual.append(
             f"{d['host']} is under registry domain {d['domain']} with status {d['status']};"
@@ -359,6 +373,11 @@ def evaluate(b: EvidenceBundle, policy: Policy, judgments: Iterable[dict] = ()) 
         summary += f" Capped at {priority} without abuse evidence."
     if floored:
         summary += f" Kept at {priority} because the content could not be observed."
+    if unrelieved and relief:
+        summary += (
+            f" Registry relief did not offset {', '.join(r.rule for r in unrelieved)}:"
+            " confirmed affiliation does not authorize that destination."
+        )
     return PolicyResult(
         policy_version=policy.version,
         bundle_schema=b.schema_version,

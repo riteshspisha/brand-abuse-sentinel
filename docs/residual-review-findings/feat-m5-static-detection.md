@@ -110,7 +110,57 @@ finding by reading the code, or by reproducing it with
   - the facts SQL in `reextract` duplicates what the evidence loaders do;
   - `AnalysisStages.offline_enrich` has a config default overridden by `register`.
 - **Untested:**
-  - migrating a populated v3 database to v4 (only fresh migration is covered);
   - the event loop's responsiveness during extraction is not measured.
 - **Lab demo test** (`tests/lab/test_static_demo.py`) runs only with the lab and
   Docker markers.
+
+## Independent PR review: affiliation is not authorization
+
+A review of PR #5 found that `registry_cleared()` (official domain, redirect to
+an official domain, or a confirmed relationship) suppressed every credential and
+payment rule, and that official-domain relief (1000 points) cancelled any
+remaining abuse points. A compromised official or partner site could therefore
+send brand credentials to an unknown domain, or direct donations to an unknown
+payee, and still score `no_action`. This came from the overbroad fix for
+"confirmed partners scored as abuse" above. Each finding below was reproduced
+end to end (real extractors and policy) before it was fixed.
+
+- **P1, compromised official or partner site cleared** (security). Registry
+  affiliation now clears only the rules about presenting the brand: lookalike,
+  false association, commerce, and the on-site credential and payment rules. Two
+  destination rules apply to vouched hosts:
+  - `credential_unapproved_destination` (55 points): a brand-tied credential
+    form submits to a registrable domain that no confirmed registry domain (any
+    kind) or relationship approves.
+  - `payee_unapproved_on_vouched_host` (50 points): a donation appeal in the
+    brand's name, or a payee named for the brand, uses a payee the registry does
+    not confirm.
+
+  Both rules are `offset_by_relief=False`, so registry relief cannot cancel them.
+- **Destination approval is per brand.** The bundle records each off-site
+  credential destination and which brands confirmed registry entries approve it
+  for (`registry.credential_destinations`), plus the brands the host is vouched
+  under (`registry.vouching_brands`). A destination is approved only for the
+  brands the form is tied to (or, when the tie names none, the host's vouching
+  brands). A domain confirmed only for another brand approves nothing, even when
+  the host is also affiliated with that brand. A confirmed relationship that
+  names no brand (domain to domain) is reported for manual review and does not
+  approve the destination.
+- **Versioning.** The policy is now `policy/2` and the bundle `bundle/2`. Stored
+  results are never re-evaluated: reports and score history show each row's own
+  policy and bundle versions. Rescoring adds a new row and never rewrites an old
+  one. `bundle/1` still parses, so earlier rows load with their original labels.
+- **P2, one payee counted twice** (correctness). On a donation page,
+  `payment_brand_unconfirmed_payee` (55) and `donation_appeal_unconfirmed_payee`
+  (30) both scored the same brand-claiming payee. That pushed a single UPI ID
+  from P2 to P1. The donation rule now counts only payees attributed to no brand,
+  which the payment rule cannot see. `credential_form_brand` plus
+  `credential_cross_origin` is kept on purpose: the second rule adds an
+  observation, the off-site destination.
+- **Still not abuse.** These cases stay `no_action`:
+  - an official page with its own login, lures or a confirmed payee;
+  - a partner whose login goes through a confirmed SSO domain;
+  - a partner whose checkout uses a payee under the partner's own name.
+- **Tests added:** a `policy/1` row keeps its provenance through a rescore,
+  and a populated v3 store migrates to v4 without changing existing
+  rows, and the migrated case can then be scored.

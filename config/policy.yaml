@@ -2,9 +2,16 @@
 # src/brandsentinel/policy/rules.py; this file holds their points and thresholds.
 # Every rule must be listed here (and nothing else), so a typo fails loudly.
 # Change `version` whenever you change a number: each stored score records it.
-version: policy/1
+version: policy/2
+# policy/2 (M5 review): registry affiliation no longer clears credential
+# destinations or payees (credential_unapproved_destination,
+# payee_unapproved_on_vouched_host, not offset by relief), and the donation rule
+# no longer re-counts payees the payment rule scores. Rows scored under policy/1
+# keep that label; rescoring adds a new row and never rewrites the old one.
 
 # score = abuse + supporting - relief (floored at 0); priority by threshold.
+# Relief never offsets the destination rules (credential_unapproved_destination,
+# payee_unapproved_on_vouched_host): affiliation does not authorize them.
 thresholds:
   P1: 80
   P2: 50
@@ -33,6 +40,11 @@ points:
   credential_cross_origin: 10
   payment_brand_unconfirmed_payee: 55
   donation_appeal_unconfirmed_payee: 30
+  # Registry-vouched host (official, redirected to official, or confirmed
+  # relationship) sending credentials or payments where the registry does not
+  # confirm: a compromise indicator, not offset by relief.
+  credential_unapproved_destination: 55
+  payee_unapproved_on_vouched_host: 50
   false_association_claim: 45
   lookalike_domain_brand_content: 50
   unauthorized_commerce: 25

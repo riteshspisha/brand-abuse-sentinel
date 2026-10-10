@@ -79,17 +79,30 @@ def brand_page(**kw) -> AssociationBlock:
     )
 
 
-def payee(attribution="claims_brand_unconfirmed", ident="fake@okaxis", **kw) -> PaymentObservation:
+def payee(
+    attribution="claims_brand_unconfirmed",
+    ident="fake@okaxis",
+    payee_name="Isha Foundation",
+    **kw,
+) -> PaymentObservation:
     return PaymentObservation(
         kind="upi",
         identifier_type="upi_vpa",
         payee_identifier=ident,
-        payee_name="Isha Foundation",
+        payee_name=payee_name,
         attribution=attribution,
         attributed_brands=["lumina-foundation"],
         extractor_version="payment/1",
         refs=["feature:4", "fact:1"],
         **kw,
+    )
+
+
+def known_payee() -> PaymentObservation:
+    return payee(
+        "registry_known_payee",
+        "lumina.foundation@lumenbank",
+        registry_payee={"id": "lumina-upi", "name": "L", "brand": "lumina-foundation"},
     )
 
 
@@ -121,6 +134,15 @@ def credential_form(**kw) -> CredentialBlock:
         cross_origin_forms=int(form["cross_origin"]),
         refs=["feature:2"],
     )
+
+
+def dest(domain, *brands, ambiguous=()):
+    return {
+        "domain": domain,
+        "approved_for": list(brands),
+        "approved_by": [f"registry:domain:{domain}"] if brands else [],
+        "ambiguous": list(ambiguous),
+    }
 
 
 def rules_of(result):
@@ -267,8 +289,9 @@ def test_conflicting_indicators_known_and_unknown_payees_with_parody_label():
         "credential_form_brand",
         "credential_cross_origin",
         "payment_brand_unconfirmed_payee",
-        "donation_appeal_unconfirmed_payee",
     } <= fired
+    # The same brand-claiming payee is not counted again as a donation payee.
+    assert "donation_appeal_unconfirmed_payee" not in fired
     # A known payee beside an unconfirmed one earns no relief (decoy payee).
     assert "confirmed_payee" not in fired
     assert r.category == "credential_phishing" and r.priority == "P1"
@@ -282,16 +305,22 @@ def test_credential_form_without_brand_tie_is_not_abuse_but_flagged():
     assert any("credential form is present" in m for m in r.manual_review)
 
 
-def test_official_domain_is_no_action_whatever_the_content():
+def test_official_domain_is_no_action_for_its_own_login_lures_and_confirmed_payee():
     b = bundle(
         association=brand_page(),
         credential=credential_form(),
-        payment=PaymentBlock(observations=[payee()], donation_cues=["donate"]),
+        page=PageBlock(
+            available=True,
+            lures=[{"category": "account_verification", "cue": "verify your account"}],
+            refs=["feature:2"],
+        ),
+        discovery=Discovery(domain_match="strong", hits=[{"type": "keyword"}]),
+        payment=PaymentBlock(observations=[known_payee()], donation_cues=["donate"]),
         registry=RegistryContext(official_domain="luminafoundation.test"),
     )
     r = evaluate(b, policy())
     assert r.priority == "no_action" and r.category == "benign_related"
-    assert rules_of(r) == {"official_domain"} and "official_domain" in r.labels
+    assert rules_of(r) == {"official_domain", "confirmed_payee"} and "official_domain" in r.labels
 
 
 def test_redirect_to_official_domain_is_relief_not_impersonation():
@@ -578,17 +607,288 @@ def test_weak_term_near_a_form_does_not_tie_credentials_to_the_brand():
     assert "credential_form_brand" not in rules_of(r)
 
 
+PARTNER = [{"from": "domain:x.test", "to": "brand:lumina-foundation", "type": "partner"}]
+
+
 def test_confirmed_partner_login_and_checkout_are_not_abuse():
-    rel = [{"from": "domain:x.test", "to": "brand:lumina-foundation", "type": "partner"}]
+    # Login through an SSO domain the registry confirms, donations to the confirmed
+    # payee, and a checkout under the partner's own name: affiliation covers all of it.
+    sso = credential_form(
+        cross_origin=True, action="https://sso.test/auth", action_registrable_domain="sso.test"
+    )
+    own_checkout = payee("unrelated", "partnershop@okaxis", payee_name="Partner Shop")
     b = bundle(
         association=brand_page(),
-        credential=credential_form(cross_origin=True),
-        payment=PaymentBlock(observations=[payee()], donation_cues=["donate"]),
-        registry=RegistryContext(confirmed_relationships=rel),
+        credential=sso,
+        payment=PaymentBlock(observations=[known_payee(), own_checkout], donation_cues=[]),
+        registry=RegistryContext(
+            confirmed_relationships=PARTNER,
+            vouching_brands=["lumina-foundation"],
+            credential_destinations=[dest("sso.test", "lumina-foundation")],
+        ),
     )
     r = evaluate(b, policy())
     assert not [x for x in r.reasons if x.kind == "abuse"]
     assert r.priority == "no_action" and "confirmed_relationship" in rules_of(r)
+
+
+def test_compromised_partner_sending_credentials_off_site_is_not_cleared():
+    # The relationship confirms affiliation, not a credential destination.
+    b = bundle(
+        association=brand_page(),
+        credential=credential_form(
+            cross_origin=True,
+            action="https://collect.evil.test/p",
+            action_registrable_domain="evil.test",
+        ),
+        registry=RegistryContext(
+            confirmed_relationships=PARTNER,
+            vouching_brands=["lumina-foundation"],
+            credential_destinations=[dest("evil.test")],
+        ),
+    )
+    r = evaluate(b, policy())
+    reason = next(x for x in r.reasons if x.rule == "credential_unapproved_destination")
+    assert r.priority == "P2" and r.category == "credential_phishing"
+    assert r.score == reason.points and r.relief_points == 40  # relief did not offset it
+    assert "evil.test" in reason.explanation and "affiliation" in reason.explanation
+    assert "registry:relationship:domain:x.test>brand:lumina-foundation" in reason.evidence
+    assert "Registry relief did not offset credential_unapproved_destination" in r.summary
+    # Rules about presenting the brand stay cleared for the partner.
+    assert not {"credential_form_brand", "credential_cross_origin"} & rules_of(r)
+
+
+def test_official_site_with_unexpected_off_domain_credential_submission():
+    official = RegistryContext(
+        official_domain="luminafoundation.test", vouching_brands=["lumina-foundation"]
+    )
+    form = credential_form(
+        cross_origin=True,
+        action="https://lumina-verify.test/session",
+        action_registrable_domain="lumina-verify.test",
+    )
+    unexpected = official.model_copy(
+        update={"credential_destinations": [dest("lumina-verify.test")]}
+    )
+    r = evaluate(bundle(association=brand_page(), credential=form, registry=unexpected), policy())
+    assert r.priority == "P2" and r.category == "credential_phishing"
+    assert rules_of(r) == {"credential_unapproved_destination", "official_domain"}
+    reason = r.reasons[0]
+    assert "luminafoundation.test" in reason.explanation and "compromised" in reason.explanation
+    assert "registry:domain:luminafoundation.test" in reason.evidence
+    # The same form posting to a destination the registry confirms stays cleared.
+    approved = official.model_copy(
+        update={"credential_destinations": [dest("lumina-verify.test", "lumina-foundation")]}
+    )
+    ok = evaluate(bundle(association=brand_page(), credential=form, registry=approved), policy())
+    assert ok.priority == "no_action" and rules_of(ok) == {"official_domain"}
+
+
+def test_destination_confirmed_for_another_brand_does_not_approve_this_flow():
+    # The form is tied to Lumina; the destination is confirmed only for another
+    # brand. That holds even when the partner host is also affiliated with that
+    # other brand: approval follows the credential flow's brand, not the host's.
+    form = credential_form(
+        cross_origin=True, action="https://sso.other.test/a", action_registrable_domain="other.test"
+    )
+    for vouching in (["lumina-foundation"], ["lumina-foundation", "other-brand"]):
+        reg = RegistryContext(
+            confirmed_relationships=PARTNER,
+            vouching_brands=vouching,
+            credential_destinations=[dest("other.test", "other-brand")],
+        )
+        r = evaluate(bundle(association=brand_page(), credential=form, registry=reg), policy())
+        reason = next(x for x in r.reasons if x.rule == "credential_unapproved_destination")
+        assert r.priority == "P2", vouching
+        assert "other.test (confirmed only for other-brand)" in reason.explanation
+    # Confirmed for both brands: approved.
+    both = RegistryContext(
+        confirmed_relationships=PARTNER,
+        vouching_brands=["lumina-foundation"],
+        credential_destinations=[dest("other.test", "other-brand", "lumina-foundation")],
+    )
+    ok = evaluate(bundle(association=brand_page(), credential=form, registry=both), policy())
+    assert ok.priority == "no_action"
+
+
+def test_relationship_naming_no_brand_is_flagged_not_authorized():
+    ref = "registry:relationship:domain:shared-sso.test>domain:x.test"
+    form = credential_form(
+        cross_origin=True,
+        action="https://shared-sso.test/a",
+        action_registrable_domain="shared-sso.test",
+    )
+    reg = RegistryContext(
+        confirmed_relationships=PARTNER,
+        vouching_brands=["lumina-foundation"],
+        credential_destinations=[dest("shared-sso.test", ambiguous=[ref])],
+    )
+    r = evaluate(bundle(association=brand_page(), credential=form, registry=reg), policy())
+    reason = next(x for x in r.reasons if x.rule == "credential_unapproved_destination")
+    assert r.priority == "P2" and "names no brand" in reason.explanation
+    assert "manual_review" in r.flags
+    assert any("shared-sso.test" in m and "not treated as authorized" in m for m in r.manual_review)
+
+
+def test_confirmed_partner_with_unapproved_donation_payee():
+    b = bundle(
+        association=brand_page(),
+        payment=PaymentBlock(observations=[payee()], donation_cues=["donate"], refs=["feature:4"]),
+        registry=RegistryContext(confirmed_relationships=PARTNER),
+    )
+    r = evaluate(b, policy())
+    reason = next(x for x in r.reasons if x.rule == "payee_unapproved_on_vouched_host")
+    assert r.priority == "P2" and r.category == "donation_fraud"
+    assert "fake@okaxis" in reason.explanation and "payment recipient" in reason.explanation
+    assert not {"payment_brand_unconfirmed_payee", "donation_appeal_unconfirmed_payee"} & (
+        rules_of(r)
+    )
+    # The confirmed payee beside a decoy earns no relief and does not hide the decoy.
+    decoy = b.model_copy(
+        update={"payment": b.payment.model_copy(update={"observations": [known_payee(), payee()]})}
+    )
+    d = evaluate(decoy, policy())
+    assert d.priority == "P2" and "confirmed_payee" not in rules_of(d)
+
+
+def test_vouched_host_payee_named_for_the_brand_outside_a_donation_appeal():
+    named = payee(attribution_reason="payee name 'Isha Foundation' names Lumina Foundation")
+    rel = RegistryContext(confirmed_relationships=PARTNER)
+    r = evaluate(bundle(payment=PaymentBlock(observations=[named]), registry=rel), policy())
+    assert r.category == "payment_fraud" and r.priority == "P2"
+    # A page-presented brand alone does not make a partner's own checkout suspicious.
+    by_page = payee(attribution_reason="page presents Lumina Foundation")
+    quiet = evaluate(
+        bundle(
+            association=brand_page(), payment=PaymentBlock(observations=[by_page]), registry=rel
+        ),
+        policy(),
+    )
+    assert not [x for x in quiet.reasons if x.kind == "abuse"] and quiet.priority == "no_action"
+
+
+def test_one_payee_on_a_donation_page_is_counted_once():
+    # The brand-claiming payee is payment abuse; the donation rule adds only payees
+    # the payment rule cannot see (attributed to no brand), so one UPI ID never
+    # earns both rules' points.
+    b = bundle(
+        association=brand_page(),
+        payment=PaymentBlock(observations=[payee()], donation_cues=["donate"]),
+    )
+    r = evaluate(b, policy())
+    assert rules_of(r) & {
+        "payment_brand_unconfirmed_payee",
+        "donation_appeal_unconfirmed_payee",
+    } == {"payment_brand_unconfirmed_payee"}
+    assert r.score == policy().points["payment_brand_unconfirmed_payee"] and r.priority == "P2"
+    unattributed = bundle(
+        association=brand_page(),
+        payment=PaymentBlock(observations=[payee("unrelated")], donation_cues=["donate"]),
+    )
+    u = evaluate(unattributed, policy())
+    assert rules_of(u) & {
+        "payment_brand_unconfirmed_payee",
+        "donation_appeal_unconfirmed_payee",
+    } == {"donation_appeal_unconfirmed_payee"}
+
+
+def test_bundle_records_which_credential_destinations_the_registry_approves():
+    from brandsentinel.registry.model import Domain, Relationship
+
+    prov = [
+        {
+            "source": "maintainer",
+            "recorded_by": "t",
+            "recorded_at": "2026-10-09",
+            "verified_by": "t",
+            "verified_at": "2026-10-09",
+        }
+    ]
+    base = lab_registry()
+    registry = base.model_copy(
+        update={
+            "domains": [
+                *base.domains,
+                Domain.model_validate(
+                    {
+                        "name": "other-sso.test",
+                        "brand": "other-brand",
+                        "kind": "third_party",
+                        "status": "confirmed",
+                        "provenance": prov,
+                    }
+                ),
+                Domain.model_validate(
+                    {
+                        "name": "lumina-sso.test",
+                        "brand": "lumina-foundation",
+                        "kind": "third_party",
+                        "status": "confirmed",
+                        "provenance": prov,
+                    }
+                ),
+            ],
+            "relationships": [
+                Relationship.model_validate(
+                    {
+                        "from": "domain:friends-of-lumina.test",
+                        "to": "brand:lumina-foundation",
+                        "type": "partner",
+                        "status": "confirmed",
+                        "provenance": prov,
+                    }
+                ),
+                Relationship.model_validate(
+                    {
+                        "from": "domain:shared-sso.test",
+                        "to": "domain:friends-of-lumina.test",
+                        "type": "login_provider",
+                        "status": "confirmed",
+                        "provenance": prov,
+                    }
+                ),
+            ],
+        }
+    )
+
+    def login(action: str) -> str:
+        return (
+            "<title>Lumina Foundation</title><h1>Lumina Foundation</h1>"
+            f'<form method="post" action="{action}"><p>Sign in to your Lumina Foundation'
+            ' account</p><input name="u"><input type="password" name="p"></form>'
+        )
+
+    def run(action, url="http://friends-of-lumina.test/"):
+        b = bundle_for_html(login(action), url, registry=registry)
+        return b, evaluate(b, policy())
+
+    b, r = run("http://collect-evil.test/p")
+    assert b.registry.vouching_brands == ["lumina-foundation"]
+    assert b.registry.credential_destinations == [
+        {"domain": "collect-evil.test", "approved_for": [], "approved_by": [], "ambiguous": []}
+    ]
+    assert r.priority == "P2" and r.category == "credential_phishing"
+    for action, approver in [
+        ("https://lumina-sso.test/auth", "registry:domain:lumina-sso.test"),
+        ("http://luminafoundation.test/login", "registry:domain:luminafoundation.test"),
+    ]:
+        b, r = run(action)
+        (d,) = b.registry.credential_destinations
+        assert d["approved_for"] == ["lumina-foundation"] and d["approved_by"] == [approver]
+        assert r.priority == "no_action", action
+    # Cross-brand: an SSO domain confirmed for another brand approves nothing here.
+    b, r = run("https://other-sso.test/auth")
+    assert b.registry.credential_destinations[0]["approved_for"] == ["other-brand"]
+    assert r.priority == "P2" and "confirmed only for other-brand" in r.reasons[0].explanation
+    # A relationship between two domains names no brand: flagged, not authorized.
+    b, r = run("https://shared-sso.test/auth")
+    (d,) = b.registry.credential_destinations
+    assert d["approved_for"] == [] and d["ambiguous"]
+    assert r.priority == "P2" and any("not treated as authorized" in m for m in r.manual_review)
+    b, r = run("/login")  # on-site
+    assert b.registry.credential_destinations == [] and r.priority == "no_action"
+    b, r = run("http://lumina-verify.test/s", "http://luminafoundation.test/login")
+    assert r.priority == "P2" and "credential_unapproved_destination" in rules_of(r)
 
 
 def test_redirect_to_official_is_explained_but_gives_no_points():

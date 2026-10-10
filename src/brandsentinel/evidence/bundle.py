@@ -31,7 +31,10 @@ from brandsentinel.matching.normalize import InvalidName, normalize
 from brandsentinel.registry.model import Registry
 from brandsentinel.textsafe import sanitize_fact
 
-SCHEMA_VERSION = "bundle/1"
+# bundle/2 (M5 corrections): RegistryContext gained credential_destinations and
+# vouching_brands. bundle/1 is still accepted, only so stored scores made with it
+# load with their original label.
+SCHEMA_VERSION = "bundle/2"
 MAX_SNIPPETS = 20
 MAX_SNIPPET_CHARS = 300
 MAX_EXCERPT_CHARS = 1000
@@ -107,6 +110,16 @@ class RegistryContext(_Block):
     final_url_official_domain: str | None = None
     confirmed_relationships: list[dict[str, str]] = []
     registry_domains: list[dict[str, str]] = []  # non-confirmed registry matches (context)
+    # Brands the registry vouches for this host under: the brand of its confirmed
+    # official domain (or of the official domain the fetch ended on), and the brand
+    # side of its confirmed relationships.
+    vouching_brands: list[str] = []
+    # Off-site registrable domains that credential forms submit to. Approval is
+    # per brand: `approved_for` lists the brands a confirmed registry domain or
+    # brand relationship approves the destination for, with `approved_by` refs;
+    # `ambiguous` holds confirmed relationships that name no brand, which approve
+    # nothing. Confirming a host's affiliation does not approve its destinations.
+    credential_destinations: list[dict[str, Any]] = []
 
 
 class Infrastructure(_Block):
@@ -249,7 +262,7 @@ class Snippet(_Block):
 
 
 class EvidenceBundle(_Block):
-    schema_version: Literal["bundle/1"] = SCHEMA_VERSION
+    schema_version: Literal["bundle/1", "bundle/2"] = SCHEMA_VERSION
     subject: Subject
     discovery: Discovery = Discovery()
     registry: RegistryContext = RegistryContext()
@@ -410,6 +423,61 @@ def _registry_matches(registry: Registry | None, *hosts: str | None) -> list[dic
                 item = {"domain": d.name, "status": d.status, "kind": d.kind, "host": h}
                 if item not in out:
                     out.append(item)
+    return out
+
+
+def _brand_side(relationship: dict, own: str) -> str | None:
+    """The brand id on the other side of a relationship from `own`, if it is one."""
+    other = relationship["to"] if relationship["from"] == own else relationship["from"]
+    return other.removeprefix("brand:") if other.startswith("brand:") else None
+
+
+def _vouching_brands(lexicon: BrandLexicon, host_refs: list[str | None]) -> list[str]:
+    brands = []
+    for official in host_refs[:2]:
+        if official and lexicon.official_domains.get(official):
+            brands.append(lexicon.official_domains[official])
+    for host in host_refs[2:]:
+        for rel in lexicon.confirmed_relationships(host) if host else []:
+            brand = _brand_side(rel, f"domain:{host}")
+            if brand:
+                brands.append(brand)
+    return sorted(set(brands))
+
+
+def _credential_destinations(
+    forms: list[dict], lexicon: BrandLexicon, registry: Registry | None
+) -> list[dict]:
+    out: list[dict] = []
+    for f in forms:
+        d = f.get("action_registrable_domain")
+        if not f.get("cross_origin") or not d or any(x["domain"] == d for x in out):
+            continue
+        approved_for, approved_by, ambiguous = set(), [], []
+        for entry in registry.domains if registry is not None else []:
+            if entry.status == "confirmed" and (d == entry.name or d.endswith("." + entry.name)):
+                approved_for.add(entry.brand)
+                approved_by.append(f"registry:domain:{entry.name}")
+        official = lexicon.official_domain(d)
+        if registry is None and official:
+            approved_for.add(lexicon.official_domains[official])
+            approved_by.append(f"registry:domain:{official}")
+        for rel in lexicon.confirmed_relationships(d):
+            ref = f"registry:relationship:{rel['from']}>{rel['to']}"
+            brand = _brand_side(rel, f"domain:{d}")
+            if brand:
+                approved_for.add(brand)
+                approved_by.append(ref)
+            else:
+                ambiguous.append(ref)
+        out.append(
+            {
+                "domain": d,
+                "approved_for": sorted(approved_for),
+                "approved_by": approved_by,
+                "ambiguous": ambiguous,
+            }
+        )
     return out
 
 
@@ -754,6 +822,16 @@ def build_bundle(
             final_url_official_domain=lexicon.official_domain(http.final_host),
             confirmed_relationships=lexicon.confirmed_relationships(*hosts),
             registry_domains=_registry_matches(registry, inputs.host, http.final_host),
+            vouching_brands=_vouching_brands(
+                lexicon,
+                [
+                    lexicon.official_domain(inputs.host),
+                    lexicon.official_domain(http.final_host),
+                    inputs.host,
+                    inputs.registrable_domain,
+                ],
+            ),
+            credential_destinations=_credential_destinations(cred_forms, lexicon, registry),
         )
     return EvidenceBundle(
         subject=Subject(
