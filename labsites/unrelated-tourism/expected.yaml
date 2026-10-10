@@ -1,0 +1,16 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: unrelated-tourism
+hostname: lumina-valley-tourism.test
+url: http://lumina-valley-tourism.test/
+http_status: 200
+expected:
+  category: unrelated
+  priority:
+  - P4
+  - no_action
+  labels: []
+  evidence:
+  - brand_term_without_context
+detected_by: static
+notes: Low-distinctiveness keyword used for a place name.

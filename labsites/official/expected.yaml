@@ -1,0 +1,16 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: official
+hostname: luminafoundation.test
+url: http://luminafoundation.test/
+http_status: 200
+expected:
+  category: benign_related
+  priority:
+  - no_action
+  labels:
+  - official_domain
+  evidence:
+  - registry_official_domain
+detected_by: static
+notes: The lab brand's confirmed official domain; suppressed by the registry overlay.

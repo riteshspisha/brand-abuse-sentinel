@@ -1,0 +1,19 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: news-critical
+hostname: dailyledger-news.test
+url: http://dailyledger-news.test/
+http_status: 200
+expected:
+  category: editorial_or_critical
+  priority:
+  - P4
+  - no_action
+  labels:
+  - editorial_or_critical
+  evidence:
+  - article_markup
+  - byline
+  - brand_mention
+detected_by: static
+notes: Critical journalism; content-derived context never subtracts points but no abuse rule fires.

@@ -1,0 +1,75 @@
+# The controlled lab (U11, KTD13): its own compose project, offline, on the
+# service account's rootless Docker. Start it with
+#   docker compose -f docker/lab.compose.yaml up -d
+#
+# lab-web serves the sites in labsites/ on the internal bs_lab network
+# (172.31.250.0/24, pinned in netguard). lab-proxy is a separate egress-proxy
+# instance in lab-only mode: it reads config/lab.yaml (read-only), reaches only
+# lab hostnames, and is the host fetcher's lab transport on 127.0.0.1:3129.
+name: brandsentinel-lab
+
+services:
+  lab-web:
+    image: nginxinc/nginx-unprivileged:1.30.5-alpine@sha256:15c994d10d6d78658721c3bcafff14cb281fba2a4bdf9d5ba92c416a472516e3
+    container_name: bs-lab-web
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 64
+    cpus: 0.5
+    volumes:
+      - ../labsites:/srv/labsites:ro
+      - ../labsites/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      bs_lab:
+        ipv4_address: 172.31.250.10
+
+  lab-proxy:
+    image: brandsentinel-sandbox:local
+    pull_policy: never
+    container_name: bs-lab-proxy
+    command:
+      ["brandsentinel", "-c", "/etc/brandsentinel/lab.yaml", "proxy", "--listen", "0.0.0.0:3128"]
+    user: pwuser
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
+    cpus: 1.0
+    labels:
+      brandsentinel.service: lab-proxy
+    volumes:
+      - ../config/lab.yaml:/etc/brandsentinel/lab.yaml:ro
+    ports:
+      - "127.0.0.1:3129:3128"  # loopback only: the host fetcher's lab transport
+    networks:
+      bs_lab:
+        ipv4_address: 172.31.250.2
+      # Published ports need a non-internal network; the lab-only policy refuses
+      # every destination that is not a lab hostname.
+      bs_lab_edge: {}
+
+networks:
+  bs_lab:
+    name: bs_lab
+    internal: true
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
+  bs_lab_edge:
+    name: bs_lab_edge
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.31.253.0/24

@@ -1,0 +1,20 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: donation-fraud
+hostname: donate-luminafoundation.test
+url: http://donate-luminafoundation.test/
+http_status: 200
+expected:
+  category: donation_fraud
+  priority:
+  - P1
+  - P2
+  labels: []
+  evidence:
+  - donation_appeal
+  - upi_deep_link
+  - unknown_payee
+  - brand_claim
+  - qr_image
+detected_by: static
+notes: 'M5 demo site: unknown payee rivers.relief.fund@quickpaybank.'

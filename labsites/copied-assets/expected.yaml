@@ -1,0 +1,18 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: copied-assets
+hostname: lumina-foundation-org.test
+url: http://lumina-foundation-org.test/
+http_status: 200
+expected:
+  category: impersonation
+  priority:
+  - P1
+  - P2
+  labels: []
+  evidence:
+  - copied_asset_match
+  - brand_claim
+  - lookalike_domain
+detected_by: media
+notes: Re-encoded copy of the official logo; matched against the synthetic corpus in M6.

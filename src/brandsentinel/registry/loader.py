@@ -28,14 +28,33 @@ class ValidationReport:
     counts: dict[str, Counter] = field(default_factory=dict)
 
 
-def load_registry(path: Path) -> tuple[Registry, ValidationReport]:
-    """Parse, schema-check and cross-check a registry file. Raises RegistryError."""
+def _read(path: Path) -> dict:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except OSError as e:
         raise RegistryError([f"cannot read registry {path}: {e}"]) from e
     except yaml.YAMLError as e:
         raise RegistryError([f"invalid YAML in {path}: {e}"]) from e
+    if not isinstance(raw, dict):
+        raise RegistryError([f"registry {path} must be a mapping"])
+    return raw
+
+
+def load_registry(path: Path, overlay: Path | None = None) -> tuple[Registry, ValidationReport]:
+    """Parse, schema-check and cross-check a registry file. Raises RegistryError.
+
+    An `overlay` (the lab registry) is appended entry by entry; it can add but
+    never replace, since duplicates fail validation."""
+    raw = _read(path)
+    if overlay is not None:
+        extra = _read(overlay)
+        if extra.get("version") != raw.get("version"):
+            raise RegistryError([f"overlay {overlay}: version differs from {path}"])
+        for key, value in extra.items():
+            if key != "version":
+                if not isinstance(value, list):
+                    raise RegistryError([f"overlay {overlay}: {key} must be a list"])
+                raw[key] = [*(raw.get(key) or []), *value]
     try:
         registry = Registry.model_validate(raw)
     except ValidationError as e:

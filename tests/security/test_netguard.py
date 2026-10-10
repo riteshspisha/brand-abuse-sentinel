@@ -255,7 +255,15 @@ def test_lab_mode_with_live_discovery_fails_validation():
     Config(
         net={"lab": {"enabled": True}},
         discovery={"certstream": {"enabled": False}, "dnstwist": {"enabled": False}},
+        sandbox={"enabled": False},
     )
+
+
+def test_lab_mode_cannot_use_the_production_sandbox_network():
+    offline = {"certstream": {"enabled": False}, "dnstwist": {"enabled": False}}
+    with pytest.raises(ValueError, match="production sandbox network"):
+        Config(net={"lab": {"enabled": True}}, discovery=offline)
+    Config(net={"lab": {"enabled": True}}, discovery=offline, sandbox={"network": "bs_lab_sb"})
 
 
 def test_test_address_ranges_cannot_come_from_config_or_environment(tmp_path, monkeypatch):

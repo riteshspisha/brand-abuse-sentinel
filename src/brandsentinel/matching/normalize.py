@@ -51,8 +51,10 @@ _CONFUSABLES = {
     0x0237: "j", 0x0262: "g",
 }  # fmt: skip
 
+# `test` (RFC 6761, never delegated) is a suffix so lab sites under it have
+# registrable domains like real ones; no Internet name can end in it.
 _EXTRACT = tldextract.TLDExtract(
-    suffix_list_urls=(), cache_dir=None, include_psl_private_domains=True
+    suffix_list_urls=(), cache_dir=None, include_psl_private_domains=True, extra_suffixes=("test",)
 )
 
 

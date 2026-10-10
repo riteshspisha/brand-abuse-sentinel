@@ -1,0 +1,18 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: js-payment
+hostname: pay-luminafoundation.test
+url: http://pay-luminafoundation.test/
+http_status: 200
+expected:
+  category: payment_fraud
+  priority:
+  - P1
+  - P2
+  labels: []
+  evidence:
+  - card_fields_rendered
+  - qr_upi_payee
+  - brand_claim
+detected_by: browser
+notes: Gateway-like script builds card fields and shows a UPI QR.

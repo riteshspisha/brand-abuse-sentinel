@@ -25,6 +25,7 @@ COMMANDS = [
     "export",
     "registry",
     "sandbox",
+    "proxy",
     "eval",
 ]
 
@@ -36,7 +37,7 @@ def test_help_lists_every_registered_command():
         assert name in result.output
 
 
-@pytest.mark.parametrize("name", ["sandbox", "eval"])
+@pytest.mark.parametrize("name", ["eval"])
 def test_planned_commands_exit_non_zero_with_milestone(name):
     result = runner.invoke(app, [name, "--anything", "x"])
     assert result.exit_code == 2
@@ -222,10 +223,74 @@ def test_sweep_refuses_targets_outside_the_registry(tmp_path, monkeypatch):
     assert "not registry dnstwist targets" in result.output
 
 
-def test_run_with_sources_disabled_starts_and_stops(tmp_path, monkeypatch):
-    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
-    result = runner.invoke(app, ["run", "--no-certstream", "--no-dnstwist", "--duration", "0.2"])
+def _dev_config(tmp_path, **sections) -> str:
+    """A config for running the service from this checkout: the developer
+    override (the test account owns the code) and no sandbox runtime."""
+    import yaml
+
+    data = {
+        "data_dir": str(tmp_path / "data"),
+        "runtime": {"allow_developer_account": True},
+        "sandbox": {"enabled": False},
+        **sections,
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return str(path)
+
+
+def test_run_with_sources_disabled_starts_and_stops(tmp_path):
+    args = ["-c", _dev_config(tmp_path), "run", "--no-certstream", "--no-dnstwist"]
+    result = runner.invoke(app, [*args, "--duration", "0.2"])
     assert result.exit_code == 0, result.output
+
+
+def test_run_refuses_uid_0_even_with_the_developer_override(tmp_path, monkeypatch):
+    monkeypatch.setattr("brandsentinel.sandbox.preflight.os.getuid", lambda: 0)
+    args = ["-c", _dev_config(tmp_path), "run", "--no-certstream", "--no-dnstwist"]
+    result = runner.invoke(app, [*args, "--duration", "0.2"])
+    assert result.exit_code == 2
+    assert "refusing to start: not_root" in result.output
+
+
+def test_run_as_code_owner_refuses_without_the_developer_override(tmp_path):
+    import yaml
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump({"data_dir": str(tmp_path / "data"), "sandbox": {"enabled": False}})
+    )
+    result = runner.invoke(
+        app, ["-c", str(path), "run", "--no-certstream", "--no-dnstwist", "--duration", "0.2"]
+    )
+    assert result.exit_code == 2
+    assert "refusing to start: not_code_owner" in result.output
+
+
+def test_run_with_the_developer_override_warns(tmp_path):
+    args = ["-c", _dev_config(tmp_path), "run", "--no-certstream", "--no-dnstwist"]
+    result = runner.invoke(app, [*args, "--duration", "0.2"])
+    assert result.exit_code == 0, result.output
+    assert "WARNING not_code_owner" in result.output
+
+
+def test_status_reports_sandbox_disabled_with_reasons(tmp_path):
+    cfg = _dev_config(
+        tmp_path,
+        sandbox={"enabled": True},
+        runtime={"docker_host": f"unix://{tmp_path}/missing.sock"},
+    )
+    result = runner.invoke(app, ["-c", cfg, "status"])
+    assert result.exit_code == 0, result.output
+    assert "sandbox: DISABLED" in result.output
+    assert "FAIL endpoint" in result.output
+
+
+def test_sandbox_check_fails_closed_without_a_runtime(tmp_path):
+    cfg = _dev_config(tmp_path, runtime={"docker_host": f"unix://{tmp_path}/missing.sock"})
+    result = runner.invoke(app, ["-c", cfg, "sandbox", "check"])
+    assert result.exit_code == 1
+    assert "runtime: FAILED" in result.output
 
 
 def test_analyze_rejects_invalid_domains(tmp_path, monkeypatch):
@@ -235,9 +300,9 @@ def test_analyze_rejects_invalid_domains(tmp_path, monkeypatch):
         assert result.exit_code == 2 and "invalid domain" in result.output
 
 
-def test_run_with_analysis_stages_disabled(tmp_path, monkeypatch):
-    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
-    args = ["run", "--no-certstream", "--no-dnstwist", "--no-enrich", "--no-fetch"]
+def test_run_with_analysis_stages_disabled(tmp_path):
+    args = ["-c", _dev_config(tmp_path), "run", "--no-certstream", "--no-dnstwist"]
+    args += ["--no-enrich", "--no-fetch"]
     result = runner.invoke(app, [*args, "--duration", "0.2"])
     assert result.exit_code == 0, result.output
 

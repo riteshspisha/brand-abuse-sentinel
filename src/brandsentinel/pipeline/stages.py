@@ -102,7 +102,8 @@ def build_network(
     verify_context: ssl.SSLContext | None = None,
 ) -> tuple[NetGuard, Fetcher]:
     guard = guard or NetGuard(config.net, DnsResolver(make_dns_resolver(config.net.dns)))
-    return guard, Fetcher(config.fetch, guard, verify_context=verify_context)
+    lab_proxy = config.sandbox.lab_proxy_url if config.net.lab.enabled else None
+    return guard, Fetcher(config.fetch, guard, verify_context=verify_context, lab_proxy=lab_proxy)
 
 
 class AnalysisStages:

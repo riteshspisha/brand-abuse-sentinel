@@ -1,0 +1,18 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: parody
+hostname: lumina-parody.test
+url: http://lumina-parody.test/
+http_status: 200
+expected:
+  category: editorial_or_critical
+  priority:
+  - P4
+  - no_action
+  labels:
+  - editorial_or_critical
+  evidence:
+  - parody_disclaimer
+  - brand_mention
+detected_by: static
+notes: Benign parody without forms or payments.

@@ -92,3 +92,25 @@ Subdomain flooding: 30 CertStream events for `sadhguru-N.evil-flood.com` keep 30
 candidates and 30 open cases, but only 16 enrichment jobs are queued; the other 14 are
 `deferred_jobs` rows (`domain_queue_full`) promoted as the domain's jobs finish
 (`tests/integration/test_scheduling.py`).
+
+## M4: sandbox runtime, egress proxy and lab (2026-10-09)
+
+On the development host's rootless Docker (developer account, override set; the
+dedicated-account setup is documented but not yet performed):
+
+```sh
+scripts/build-sandbox-image.sh
+docker compose -f docker/compose.yaml --profile sandbox up -d
+docker compose -f docker/lab.compose.yaml up -d
+brandsentinel -c <dev config> sandbox check     # account warnings, runtime ok, network ok + probe
+uv run pytest -m docker                          # 30 real-container tests
+```
+
+- Runner: OOM kill, PID limit, wall-time kill by name, output caps, AE18 orphan
+  removal before lease recovery — all on real containers.
+- Bypass suite: no direct TCP/UDP/DNS/IPv6/gateway/metadata route out of
+  `bs_sandbox`; a positive control on an ordinary network sees the leaks.
+- Egress proxy: our own (Squid forwarded Host-mismatched requests); see
+  `docs/runbooks/sandbox.md` for the evaluation table and verification record.
+- Lab: 16 sites reachable only through the lab proxy; the host fetcher refuses
+  public URLs in lab mode.

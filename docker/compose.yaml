@@ -1,6 +1,10 @@
-# Optional sidecars. Start the CertStream source with:
+# BrandSentinel services on the service account's rootless Docker.
+#
+# Sandbox networks and the egress proxy (U18):
+#   docker compose -f docker/compose.yaml --profile sandbox up -d
+# Optional CertStream source:
 #   docker compose -f docker/compose.yaml --profile certstream up -d
-# BrandSentinel connects to ws://localhost:8080/full-stream (discovery.certstream.url).
+# The lab is a separate project: docker/lab.compose.yaml.
 name: brandsentinel
 
 services:
@@ -15,3 +19,47 @@ services:
     security_opt: ["no-new-privileges:true"]
     mem_limit: 512m
     pids_limit: 128
+
+  # The only way out of bs_sandbox (KTD10). netguard decides every request and
+  # the proxy connects only to the address it validated. It listens only on its
+  # bs_sandbox address; bs_egress is its route out.
+  egress-proxy:
+    profiles: ["sandbox"]
+    image: brandsentinel-sandbox:local
+    pull_policy: never
+    container_name: bs-egress-proxy
+    command: ["brandsentinel", "proxy", "--listen", "172.31.251.2:3128"]
+    user: pwuser
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
+    cpus: 1.0
+    labels:
+      brandsentinel.service: egress-proxy
+    networks:
+      bs_sandbox:
+        ipv4_address: 172.31.251.2
+      bs_egress: {}
+
+networks:
+  # Sandbox containers join only this network. internal: no route out, so
+  # isolation does not depend on any setting inside the sandbox (KTD9).
+  bs_sandbox:
+    name: bs_sandbox
+    internal: true
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.31.251.0/24
+  bs_egress:
+    name: bs_egress
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.31.252.0/24
