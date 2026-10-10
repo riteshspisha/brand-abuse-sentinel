@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="{{ csp }}">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}BrandSentinel{% endblock %}</title>
+<style>
+:root { --bg:#fbfbfa; --fg:#1d1d1b; --muted:#66655f; --line:#dedcd5; --card:#fff;
+  --p1:#b3261e; --p2:#c25e00; --p3:#8a6d00; --p4:#3d6b8c; --none:#5f6b5f; --mono:ui-monospace,SFMono-Regular,Menlo,monospace; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#161615; --fg:#e8e6df; --muted:#a3a197; --line:#34332f; --card:#1f1f1d;
+    --p1:#ff8a80; --p2:#ffb366; --p3:#e6c84d; --p4:#8fc1e3; --none:#a8b5a8; }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,sans-serif; }
+main { max-width:1100px; margin:0 auto; padding:24px 16px 64px; }
+h1 { font-size:1.45rem; margin:.2rem 0; word-break:break-all; }
+h2 { font-size:1.05rem; margin:2rem 0 .6rem; padding-bottom:.3rem; border-bottom:1px solid var(--line); }
+h3 { font-size:.95rem; margin:1.2rem 0 .4rem; }
+.muted { color:var(--muted); }
+.note { font-size:.85rem; color:var(--muted); }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 16px; }
+.badge { display:inline-block; padding:2px 10px; border-radius:999px; font-weight:700; color:#fff; font-size:.85rem; }
+.P1 { background:var(--p1); } .P2 { background:var(--p2); } .P3 { background:var(--p3); }
+.P4 { background:var(--p4); } .no_action, .unscored { background:var(--none); }
+.chip { display:inline-block; border:1px solid var(--line); border-radius:4px; padding:0 6px; margin:2px 4px 2px 0; font-size:.8rem; }
+table { width:100%; border-collapse:collapse; font-size:.9rem; }
+th, td { text-align:left; vertical-align:top; padding:6px 8px; border-bottom:1px solid var(--line); }
+th { color:var(--muted); font-weight:600; }
+.wrap { overflow-x:auto; }
+code, .mono { font-family:var(--mono); font-size:.85rem; word-break:break-all; }
+.pts-pos { color:var(--p1); font-weight:700; } .pts-neg { color:#2e7d32; font-weight:700; }
+.excerpt { white-space:pre-wrap; font-family:var(--mono); font-size:.82rem; max-height:22rem; overflow:auto; }
+dl { display:grid; grid-template-columns:minmax(9rem,max-content) 1fr; gap:4px 16px; margin:0; }
+dt { color:var(--muted); } dd { margin:0; word-break:break-word; }
+ul { margin:.3rem 0; padding-left:1.2rem; }
+</style>
+</head>
+<body><main>
+{% block body %}{% endblock %}
+<p class="note">{{ disclaimer }} Every URL and page string above is quoted as inert text.</p>
+</main></body>
+</html>

@@ -1,0 +1,182 @@
+{% extends "_base.html.j2" %}
+{% block title %}Case #{{ s.case_id }} - BrandSentinel{% endblock %}
+{% block body %}
+<p class="muted">BrandSentinel case #{{ s.case_id }} &middot; status {{ s.status }}</p>
+<h1 class="mono">{{ s.host }}</h1>
+{% if b and b.subject.unicode_host and b.subject.unicode_host != s.host %}<p class="muted">Displayed as <span class="mono">{{ b.subject.unicode_host }}</span> (IDN)</p>{% endif %}
+
+{% if p is none or b is none %}
+<div class="card"><span class="badge unscored">unscored</span> No static analysis result yet. Discovered by {{ s.sources | join(', ') }}.</div>
+{% else %}
+<div class="card">
+  <span class="badge {{ p.priority }}">{{ p.priority }}</span>
+  <strong>{{ p.category }}</strong> &middot; score {{ p.score }}
+  <span class="muted">(abuse {{ p.abuse_points }}, supporting {{ p.supporting_points }}, registry relief {{ p.relief_points }}{% if p.capped %}; capped without abuse evidence{% endif %})</span>
+  <p>{{ p.summary }}</p>
+  {% for l in p.labels %}<span class="chip">{{ l }}</span>{% endfor %}
+  {% for f in p.flags %}<span class="chip">flag: {{ f }}</span>{% endfor %}
+</div>
+
+<h2>Why: policy reasons</h2>
+{% if p.reasons %}
+<div class="wrap"><table>
+<tr><th>Points</th><th>Rule</th><th>Explanation</th><th>Evidence</th></tr>
+{% for r in p.reasons %}
+<tr>
+  <td class="{{ 'pts-neg' if r.points < 0 else 'pts-pos' }}">{{ '%+d' | format(r.points) }}</td>
+  <td><code>{{ r.rule }}</code><br><span class="note">{{ r.kind }}{% if r.category %} &middot; {{ r.category }}{% endif %}</span></td>
+  <td>{{ r.explanation }}</td>
+  <td>{% for e in r.evidence %}<code>{{ e }}</code><br>{% endfor %}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% else %}<p>No rule fired.</p>{% endif %}
+
+{% if p.context %}
+<h3>Context labels (never change the score)</h3>
+<ul>{% for c in p.context %}<li><strong>{{ c.label }}</strong>: {{ c.explanation }}</li>{% endfor %}</ul>
+{% endif %}
+
+{% if p.manual_review or p.unknowns %}
+<h2>Manual review and unknowns</h2>
+{% if p.manual_review %}<ul>{% for m in p.manual_review %}<li>{{ m }}</li>{% endfor %}</ul>{% endif %}
+{% if p.unknowns %}<p class="muted">Not observed: {% for u in p.unknowns %}<span class="chip">{{ u }}</span>{% endfor %}</p>{% endif %}
+{% endif %}
+
+<h2>Discovery (how the name matched)</h2>
+<div class="wrap"><table>
+<tr><th>Source</th><th>First seen (UTC)</th><th>Last seen (UTC)</th><th>Observations</th></tr>
+{% for src in b.discovery.sources %}<tr><td>{{ src.source }}</td><td>{{ src.first_seen }}</td><td>{{ src.last_seen }}</td><td>{{ src.observations }}</td></tr>{% endfor %}
+</table></div>
+<dl style="margin-top:.6rem">
+  <dt>Domain match</dt><dd>{{ b.discovery.domain_match }}{% if b.discovery.suppressed_by %} &middot; under official {{ b.discovery.suppressed_by }}{% endif %}</dd>
+  <dt>Matcher hits</dt><dd>{% for h in b.discovery.hits %}<span class="chip">{{ h.get('type') }}:{{ h.get('keyword') }} ({{ h.get('brand') }}{% if h.get('reason') %}, {{ h.get('reason') }}{% endif %})</span>{% else %}none{% endfor %}</dd>
+  {% if b.discovery.labels %}<dt>Matcher labels</dt><dd>{{ b.discovery.labels | join(', ') }}</dd>{% endif %}
+  {% if b.discovery.recent_events %}<dt>Recent events</dt><dd>{% for e in b.discovery.recent_events[:5] %}<div>{{ e.observed_at }} {{ e.source }} <span class="mono">{{ e.detail }}</span></div>{% endfor %}</dd>{% endif %}
+</dl>
+
+<h2>HTTP evidence (static fetch, evidence mode)</h2>
+{% set h = b.http %}
+{% if not h.fetched %}
+<p>Not fetched{% if h.attempts %}; attempts: {% for a in h.attempts %}<span class="chip">{{ a.get('outcome') }} {{ a.get('error') or '' }}</span>{% endfor %}{% endif %}.</p>
+{% else %}
+<dl>
+  <dt>Requested</dt><dd class="mono">{{ h.requested_url }}</dd>
+  <dt>Outcome</dt><dd>{{ h.outcome }}{% if h.error %} &middot; <span class="mono">{{ h.error }}</span>{% endif %}</dd>
+  <dt>Final URL</dt><dd class="mono">{{ h.final_url or '' }}</dd>
+  <dt>Status</dt><dd>{{ h.status or '' }}</dd>
+  <dt>Body</dt><dd>{{ h.content_type or '' }} &middot; {{ h.body_bytes or 0 }} bytes{% if h.body_truncated %} &middot; truncated ({{ h.body_truncated }}){% endif %}<br><span class="mono">sha256 {{ h.body_sha256 or '' }}</span></dd>
+  <dt>TLS</dt><dd>{{ 'verification failed (evidence mode)' if h.tls_verification_failed else 'no failure recorded' }}</dd>
+</dl>
+{% if h.redirect_chain %}
+<h3>Redirect chain</h3>
+<div class="wrap"><table>
+<tr><th>#</th><th>URL</th><th>Status</th><th>Address</th><th>Location / error</th></tr>
+{% for hop in h.redirect_chain %}<tr><td>{{ loop.index }}</td><td class="mono">{{ hop.url }}</td><td>{{ hop.status or '' }}</td><td class="mono">{{ hop.address or '' }}{% if hop.via %} via {{ hop.via }}{% endif %}</td><td class="mono">{{ hop.location or '' }} {{ hop.error or '' }}</td></tr>{% endfor %}
+</table></div>
+{% endif %}
+{% endif %}
+
+<h2>Observed page indicators</h2>
+{% set pg = b.page %}
+<dl>
+  <dt>Title</dt><dd>{{ pg.title or '' }}</dd>
+  <dt>Headings</dt><dd>{{ pg.headings | join(' | ') }}</dd>
+  <dt>Brands mentioned</dt><dd>{% for x in b.association.brands %}<span class="chip">{{ x.get('name') }} &middot; {{ x.get('strength') }} &middot; {{ x.get('locations', []) | join('/') }}</span>{% else %}none{% endfor %}</dd>
+  <dt>Presents brand</dt><dd>{{ b.association.presented | join(', ') or 'no' }}</dd>
+  <dt>Page shape</dt><dd>{{ pg.text_chars }} chars of text{% if pg.js_shell %} &middot; JavaScript shell{% endif %}{% if pg.image_only %} &middot; image-only{% endif %}{% if pg.empty %} &middot; empty{% endif %}</dd>
+  {% if pg.parked_cues %}<dt>Parking cues</dt><dd>{% for c in pg.parked_cues %}<span class="chip">{{ c.get('category') }}: {{ c.get('cue') }}</span>{% endfor %}</dd>{% endif %}
+  {% if pg.lures %}<dt>Lure language</dt><dd>{% for l in pg.lures %}<div><strong>{{ l.get('category') }}</strong>: &ldquo;{{ l.get('snippet') or l.get('cue') }}&rdquo;</div>{% endfor %}</dd>{% endif %}
+  {% if pg.meta_refresh or pg.script_redirects %}<dt>Client redirects</dt><dd>{% for r in pg.meta_refresh %}<div class="mono">meta refresh &rarr; {{ r.get('url') }}</div>{% endfor %}{% for r in pg.script_redirects %}<div class="mono">{{ r.get('kind') }} &rarr; {{ r.get('url') }}</div>{% endfor %}</dd>{% endif %}
+  {% if pg.external_domains %}<dt>Outbound domains</dt><dd class="mono">{{ pg.external_domains | join(', ') }}</dd>{% endif %}
+  {% if pg.messaging_links %}<dt>Messaging links</dt><dd>{% for m in pg.messaging_links %}<div class="mono">{{ m.get('channel') }}: {{ m.get('url') }}</div>{% endfor %}</dd>{% endif %}
+</dl>
+
+{% if b.association.claims or b.association.disclaimers %}
+<h3>Association claims</h3>
+<ul>
+{% for c in b.association.claims %}<li><strong>claim ({{ c.get('kind') }})</strong>: &ldquo;{{ c.get('snippet') }}&rdquo;</li>{% endfor %}
+{% for c in b.association.disclaimers %}<li><strong>disclaimer, page-provided ({{ c.get('kind') }})</strong>: &ldquo;{{ c.get('snippet') }}&rdquo;</li>{% endfor %}
+</ul>
+{% endif %}
+
+{% if b.credential.forms or b.credential.password_fields_outside_forms %}
+<h3>Credential collection</h3>
+<div class="wrap"><table>
+<tr><th>Form</th><th>Submits to</th><th>Fields</th><th>Brands near form</th><th>Context</th></tr>
+{% for f in b.credential.forms %}
+<tr><td>#{{ f.index }} {{ f.method }}</td><td class="mono">{{ f.action }}{% if f.cross_origin %}<br><strong>cross-origin: {{ f.action_registrable_domain }}</strong>{% endif %}</td>
+<td>password {{ f.password_fields }}, one-time code {{ f.otp_fields }}, identity {{ f.identity_fields }}</td>
+<td>{% for x in f.brands_in_context %}<span class="chip">{{ x.get('brand') }} ({{ x.get('strength') }})</span>{% else %}none{% endfor %}</td>
+<td>{{ f.context_excerpt or '' }}</td></tr>
+{% endfor %}
+</table></div>
+{% if b.credential.password_fields_outside_forms %}<p>{{ b.credential.password_fields_outside_forms }} password field(s) outside any form.</p>{% endif %}
+{% endif %}
+
+{% if b.payment.observations or b.payment.donation_cues or b.payment.qr_images %}
+<h3>Payment and donation: facts, attribution, evidence</h3>
+{% if b.payment.observations %}
+<div class="wrap"><table>
+<tr><th>Observed fact</th><th>Attribution</th><th>Evidence</th></tr>
+{% for o in b.payment.observations %}
+<tr>
+<td><strong>{{ o.kind }}</strong>{% if o.provider %} &middot; {{ o.provider }}{% endif %}<br>
+{% if o.payee_identifier %}<span class="mono">{{ o.payee_identifier }}</span><br>{% endif %}
+{% if o.payee_name %}payee name &ldquo;{{ o.payee_name }}&rdquo;<br>{% endif %}
+{% if o.amount %}amount {{ o.amount }} {{ o.currency or '' }}<br>{% endif %}
+{% if o.ifsc %}IFSC {{ o.ifsc }}<br>{% endif %}
+{% if o.destination %}<span class="mono note">{{ o.destination }}</span>{% endif %}</td>
+<td><strong>{{ o.attribution }}</strong><br>{{ o.attribution_reason or '' }}</td>
+<td>{% for e in o.refs %}<code>{{ e }}</code><br>{% endfor %}<span class="note">{{ o.extractor_version }}</span></td>
+</tr>
+{% endfor %}
+</table></div>
+{% endif %}
+{% if b.payment.donation_cues %}<p>Donation vocabulary: {% for d in b.payment.donation_cues %}<span class="chip">{{ d }}</span>{% endfor %}</p>{% endif %}
+{% if b.payment.qr_images %}<p>Candidate QR images (decoded in media analysis, M6): {% for q in b.payment.qr_images %}<span class="mono chip">{{ q }}</span>{% endfor %}</p>{% endif %}
+{% endif %}
+
+{% if b.commerce.commerce %}
+<h3>Commerce</h3>
+<p>Prices {{ b.commerce.prices | join(', ') or 'none' }}; calls to action {{ b.commerce.calls_to_action | join(', ') or 'none' }}{% if b.commerce.cart %}; cart{% endif %}{% if b.commerce.product_markup %}; product markup {{ b.commerce.product_markup | join(', ') }}{% endif %}.</p>
+{% endif %}
+
+{% set e = b.editorial %}
+{% if e.editorial or e.parody_cues or e.critical_cues or e.disclaimer_cues %}
+<h3>Editorial signals (page-provided; context only)</h3>
+<p>{% if e.article_markup.get('present') %}Article markup {{ e.article_markup.get('schema_types', []) | join(', ') }} {{ e.article_markup.get('og_type') or '' }}. {% endif %}{% if e.byline %}Byline &ldquo;{{ e.byline }}&rdquo;. {% endif %}{% if e.parody_cues %}Parody cues: {{ e.parody_cues | join(', ') }}. {% endif %}{% if e.critical_cues %}Critical cues: {{ e.critical_cues | join(', ') }}. {% endif %}{% if e.disclaimer_cues %}Disclaimer cues: {{ e.disclaimer_cues | join(', ') }}.{% endif %}</p>
+{% endif %}
+
+<h2>Infrastructure (enrichment {{ b.infrastructure.enrichment }})</h2>
+{% set inf = b.infrastructure %}
+<dl>
+  {% if inf.dns %}<dt>DNS</dt><dd class="mono">{{ inf.dns.status }} &middot; A {{ inf.dns.a | join(', ') }} &middot; AAAA {{ inf.dns.aaaa | join(', ') }}{% if inf.dns.mx %} &middot; MX {{ inf.dns.mx | join(', ') }}{% endif %}</dd>{% endif %}
+  {% if inf.rdap %}<dt>RDAP</dt><dd>registered {{ inf.rdap.registered_at or 'unknown' }} ({{ inf.domain_age_days if inf.domain_age_days is not none else '?' }} days) &middot; registrar {{ inf.rdap.registrar or 'unknown' }}{% if inf.rdap.redacted %} &middot; redacted{% endif %}</dd>{% endif %}
+  {% if inf.tls %}<dt>TLS</dt><dd>issuer {{ inf.tls.issuer }} &middot; valid {{ inf.tls.not_before }} to {{ inf.tls.not_after }} &middot; verifies {{ inf.tls.verification_passes }}</dd>{% endif %}
+  {% if inf.similarity %}<dt>Similarity</dt><dd>closest official: {% for c in inf.similarity.closest_official_domains %}<span class="chip">{{ c.get('domain') }} (distance {{ c.get('distance') }})</span>{% endfor %}</dd>{% endif %}
+  {% if inf.dns_mixed_private %}<dt>DNS policy</dt><dd>answers mix public and private addresses</dd>{% endif %}
+  {% for err in inf.errors %}<dt>Error</dt><dd class="mono">{{ err }}</dd>{% endfor %}
+</dl>
+<p class="note">Domain age, registrar privacy, hosting and certificate issuer are context; none is a maliciousness indicator alone.</p>
+
+{% if pg.text_excerpt %}
+<h2>Visible text excerpt</h2>
+<div class="card excerpt">{{ pg.text_excerpt }}</div>
+{% endif %}
+
+<h2>Provenance</h2>
+<dl>
+  <dt>Policy</dt><dd>{{ p.policy_version }}</dd>
+  <dt>Evidence bundle</dt><dd class="mono">{{ p.bundle_schema }} sha256 {{ p.bundle_sha256 }}</dd>
+  <dt>Scored</dt><dd>{{ s.scored_at | iso }} UTC</dd>
+  <dt>Artifacts</dt><dd class="mono">{% for x in h.refs if x.startswith('artifact:') %}{{ x }} {% else %}none{% endfor %}</dd>
+  {% if r.history | length > 1 %}<dt>History</dt><dd>{% for x in r.history %}<div>{{ x.at | iso }} {{ x.priority }} {{ x.category }} ({{ x.score }}, {{ x.policy_version }})</div>{% endfor %}</dd>{% endif %}
+</dl>
+{% endif %}
+
+{% if r.analyst_labels %}
+<h2>Analyst labels</h2>
+<ul>{% for q, v in r.analyst_labels.items() %}<li>{{ q }}: <strong>{{ v.value }}</strong>{% if v.by %} by {{ v.by }}{% endif %}</li>{% endfor %}</ul>
+{% endif %}
+{% endblock %}

@@ -48,7 +48,7 @@ def test_status_on_empty_store(tmp_path, monkeypatch):
     monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
     result = runner.invoke(app, ["status"])
     assert result.exit_code == 0, result.output
-    assert "schema v3" in result.output
+    assert "schema v4" in result.output
     assert "jobs: none" in result.output
     assert "artifacts: 0 blobs" in result.output
     assert "firehose off" in result.output

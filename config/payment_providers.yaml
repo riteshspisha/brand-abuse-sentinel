@@ -1,0 +1,48 @@
+# Payment provider catalog (U12). Read by the `payment` extractor.
+#
+# A provider is recognized from a script, form action, link or frame whose host
+# equals (or is a subdomain of) one of its hosts, or from a publishable key in
+# inline script. Recognizing a provider is a fact, never a verdict: a gateway
+# alone carries zero policy points (AE7, FA6). Change `version` when you edit
+# this file so stored features name the catalog they were made with.
+version: payment_providers/1
+
+providers:
+  - id: razorpay
+    name: Razorpay
+    script_hosts: [checkout.razorpay.com, cdn.razorpay.com]
+    checkout_hosts: [api.razorpay.com, pages.razorpay.com, rzp.io, razorpay.me]
+    key_patterns: ['rzp_(?:live|test)_[A-Za-z0-9]{8,32}']
+  - id: payu
+    name: PayU
+    script_hosts: [jssdk.payu.in, jssdk-uat.payu.in]
+    checkout_hosts: [secure.payu.in, test.payu.in, pmny.in, u.payu.in]
+  - id: paytm
+    name: Paytm
+    script_hosts: [securegw.paytm.in, securegw-stage.paytm.in]
+    checkout_hosts: [securegw.paytm.in, paytm.me, p.paytm.me]
+  - id: phonepe
+    name: PhonePe
+    script_hosts: [mercury.phonepe.com]
+    checkout_hosts: [mercury-t2.phonepe.com, api.phonepe.com, phon.pe]
+  - id: ccavenue
+    name: CCAvenue
+    script_hosts: [secure.ccavenue.com]
+    checkout_hosts: [secure.ccavenue.com, test.ccavenue.com, secure.ccavenue.ae]
+  - id: instamojo
+    name: Instamojo
+    script_hosts: [js.instamojo.com]
+    checkout_hosts: [www.instamojo.com, imjo.in]
+  - id: cashfree
+    name: Cashfree
+    script_hosts: [sdk.cashfree.com]
+    checkout_hosts: [payments.cashfree.com, payments-test.cashfree.com, cfre.in]
+  - id: stripe
+    name: Stripe
+    script_hosts: [js.stripe.com]
+    checkout_hosts: [checkout.stripe.com, buy.stripe.com, donate.stripe.com]
+    key_patterns: ['pk_(?:live|test)_[A-Za-z0-9_]{8,120}']
+  - id: paypal
+    name: PayPal
+    script_hosts: [www.paypal.com, www.paypalobjects.com]
+    checkout_hosts: [www.paypal.com, paypal.me, www.paypal.me]

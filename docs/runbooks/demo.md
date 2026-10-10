@@ -114,3 +114,53 @@ uv run pytest -m docker                          # 30 real-container tests
   `docs/runbooks/sandbox.md` for the evaluation table and verification record.
 - Lab: 16 sites reachable only through the lab proxy; the host fetcher refuses
   public URLs in lab mode.
+
+## M5: static detection, policy, reports (2026-10-10)
+
+```sh
+docker compose -f docker/lab.compose.yaml up -d --force-recreate   # see docs/solutions/2026-10-10-*
+brandsentinel -c <lab dev config> submit http://donate-luminafoundation.test/ ...   # every lab site
+brandsentinel -c <lab dev config> run --duration 25
+brandsentinel -c <lab dev config> cases list
+brandsentinel -c <lab dev config> cases show 4
+brandsentinel -c <lab dev config> report --index        # <data_dir>/reports/*.html
+brandsentinel -c <lab dev config> export csv -o cases.csv
+uv run pytest -m lab                                     # includes tests/lab/test_static_demo.py
+```
+
+Pipeline per case: intake → enrichment (offline similarity only in lab mode) →
+guarded static fetch through the lab proxy → extractors (`page_content`,
+`payment`, `brand_references`, `commerce`, `editorial`) → EvidenceBundle →
+policy (`config/policy.yaml`) → case report and CSV row.
+
+Lab results (all 16 sites, real service, lab proxy):
+
+| Site | Priority | Category | Score | Notes |
+|---|---|---|---|---|
+| donation-fraud | P1 | donation_fraud | 150 | UPI `rivers.relief.fund@quickpaybank` and a bank account, both `claims_brand_unconfirmed`; QR left for M6 (`needs_media`) |
+| copied-assets | P1 | impersonation | 120 | lookalike domain presents the brand; "Lumina Foundation Official" claim |
+| disguised-credential | P1 | credential_phishing | 85 | article markup, byline and parody disclaimer only add `editorial_or_critical` (AE15) |
+| false-association | P2 | false_association | 70 | "official partner of Lumina Foundation"; commerce label |
+| redirects | P2 | impersonation | 65 | lookalike presenting the brand; blocked redirects tested in the harness |
+| cloaking | P3 | typosquat_parked | 65 | static fetch sees "Under construction"; browser comparison is M7 |
+| typosquat-parked | P3 | typosquat_parked | 40 | parking cues on a fuzzy lookalike, capped at P3 |
+| js-login, js-payment | P3 | insufficient_evidence | 30 | JavaScript shells: `needs_render` (M7) |
+| parody | P4 | editorial_or_critical | 5 | |
+| unrelated-tourism | P4 | unrelated | 5 | weak keyword only |
+| image-only | P4 | insufficient_evidence | 0 | image-only page kept at P4: `needs_media` (M6) |
+| news-critical | no_action | editorial_or_critical | 0 | AE16 |
+| official | no_action | benign_related | 0 | confirmed official domain (relief) |
+| unrelated-lounge, unrelated-yoga | no_action | unrelated | 0 | Stripe gateway alone scores zero (AE7) |
+
+Every static-stage site reaches its `expected.yaml` band, category and labels.
+The four media/browser sites are reported as not observable, never as benign.
+
+Real candidate (production config, scratch data dir): `ishayoga.in` (an M2
+dnstwist lookalike) → P4 `benign_related`, score 5 (weak `isha` affix match). The
+report shows the four-hop redirect chain to `isha.sadhguru.org`, RDAP age 4244
+days, a TLS timeout on the candidate itself, eight Isha brands on the page, and a
+manual-review note that `sadhguru.org` is `legacy-unverified` in the registry, so
+it cannot give relief until a maintainer confirms it.
+
+Review fixes and accepted limits: `docs/residual-review-findings/feat-m5-static-detection.md`.
+Analyst workflow: `docs/runbooks/triage.md`.

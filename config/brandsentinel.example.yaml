@@ -135,6 +135,15 @@ enrich:
   rdap_max_bytes: 524288          # 512 KiB per RDAP response
   rdap_cache_hours: 24            # shared by every host under a registrable domain
   tls_timeout_seconds: 10
+# With enabled: false (as in lab mode) only the offline similarity source runs,
+# so cases still reach the static fetch.
+
+# Static detection and triage (M5). Every fetched page is run through the
+# extractors and scored by the deterministic policy; reports go to
+# <data_dir>/reports.
+analysis:
+  payment_providers: config/payment_providers.yaml   # provider catalog
+  policy: config/policy.yaml                         # rule points and thresholds
 
 # The account and container runtime (U23, R50). `brandsentinel run` refuses to
 # start as root; as the owner of the application code or with access to a

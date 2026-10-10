@@ -1,0 +1,21 @@
+{% extends "_base.html.j2" %}
+{% block title %}BrandSentinel cases{% endblock %}
+{% block body %}
+<h1>BrandSentinel cases</h1>
+<p class="muted">Generated {{ generated_at | iso }} UTC. {{ cases | length }} case(s), highest priority first.</p>
+<div class="wrap"><table>
+<tr><th>Case</th><th>Priority</th><th>Category</th><th>Score</th><th>Host</th><th>Sources</th><th>Labels / flags</th><th>Summary</th></tr>
+{% for c in cases %}
+<tr>
+  <td><a href="case-{{ c.case_id }}.html">#{{ c.case_id }}</a></td>
+  <td><span class="badge {{ c.priority or 'unscored' }}">{{ c.priority or 'unscored' }}</span></td>
+  <td>{{ c.category or '' }}</td>
+  <td>{{ c.score if c.score is not none else '' }}</td>
+  <td class="mono">{{ c.host }}</td>
+  <td>{{ c.sources | join(', ') }}</td>
+  <td>{% for l in c.labels %}<span class="chip">{{ l }}</span>{% endfor %}{% for f in c.flags %}<span class="chip">{{ f }}</span>{% endfor %}</td>
+  <td>{{ c.summary or '' }}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% endblock %}

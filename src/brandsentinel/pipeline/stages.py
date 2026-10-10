@@ -1,13 +1,17 @@
-"""Analysis stages: passive enrichment and the hardened static fetch (M3).
+"""Analysis stages: passive enrichment, the hardened static fetch, and scoring.
 
 `enrich` runs every registered enrichment source for a case's host, writes the
-observations as facts, then schedules the case's static fetch. `fetch` retrieves
-the case's page through the hardened fetcher in evidence mode, stores an
-accepted body in the blob store, writes the fetch and extractor results, and
-records an analysis fingerprint. On a recheck round the fingerprint is compared
-with the previous round's and a `material_change` fact says which of DNS
-answers, HTTP status, final URL, title or body hash changed (AE19); re-scoring
-on change belongs to the policy stage (M5).
+observations as facts, then schedules the case's static fetch. With enrichment
+disabled (lab mode) the stage still runs, with only the offline similarity
+source, so cases reach the fetch. `fetch` retrieves the case's page through the
+hardened fetcher in evidence mode, stores an accepted body in the blob store,
+writes the fetch and extractor results (with the registry's brand lexicon and
+the payment provider catalog), and records an analysis fingerprint. On a
+recheck round the fingerprint is compared with the previous round's and a
+`material_change` fact says which of DNS answers, HTTP status, final URL, title
+or body hash changed (AE19). After every final fetch result (success or
+failure) the case is re-scored by the deterministic policy (M5), so a recheck
+that sees new content re-scores the case.
 
 Each (case, stage, round) finishes exactly once: its facts and a `stage_runs`
 marker are written in one transaction, so a redelivered job is a no-op. A fetch
@@ -17,6 +21,7 @@ recorded as the result. Facts carry `analysis_round` (0 first analysis, then 1
 and 2 for the rechecks).
 """
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -26,7 +31,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from brandsentinel.analysis import run_extractors
+from brandsentinel.analysis import AnalysisContext, ExtractorResult, run_extractors
+from brandsentinel.analysis.association import BrandLexicon
+from brandsentinel.analysis.payment import ProviderCatalog
 from brandsentinel.config import Config
 from brandsentinel.enrich import Cache, EnrichContext, Observation, run_sources
 from brandsentinel.enrich.rdap import RdapClient
@@ -36,6 +43,7 @@ from brandsentinel.net.fetcher import Fetcher, FetchResult
 from brandsentinel.net.netguard import DnsResolver, NetGuard, make_dns_resolver
 from brandsentinel.pipeline import scheduling
 from brandsentinel.pipeline.orchestrator import Orchestrator, Stage
+from brandsentinel.policy.scorer import CaseScorer, Policy
 from brandsentinel.registry.model import Registry
 from brandsentinel.store import Store
 from brandsentinel.store.blobs import QuotaExceeded
@@ -50,6 +58,8 @@ FETCH = "fetch"
 FINGERPRINT_FIELDS = ("addresses", "status", "final_url", "title", "body_sha256")
 # A failed https attempt for these reasons is followed by a plain-http attempt.
 HTTP_FALLBACK = frozenset({"connect_error", "tls_error", "timeout", "protocol_error"})
+# Enrichment sources that need no network, run even when enrichment is disabled.
+OFFLINE_SOURCES = ["similarity"]
 
 
 class TransientFetchFailure(Exception):
@@ -106,6 +116,69 @@ def build_network(
     return guard, Fetcher(config.fetch, guard, verify_context=verify_context, lab_proxy=lab_proxy)
 
 
+def write_features(
+    conn: sqlite3.Connection,
+    case_id: int,
+    results: list[ExtractorResult],
+    *,
+    fact_id: int,
+    rnd: int,
+    now: float,
+) -> str | None:
+    """Store one feature per extractor result, referencing the fetch fact.
+    Returns the page title (for the analysis fingerprint)."""
+    title = None
+    for res in results:
+        value = res.value if res.value is not None else {"error": res.error}
+        add_feature(
+            conn,
+            case_id,
+            name=res.extractor.name,
+            value={**value, "analysis_round": rnd},
+            extractor_version=res.extractor.version,
+            fact_refs=[fact_id],
+            now=now,
+        )
+        if res.extractor.name == "page_basics" and res.value:
+            title = res.value.get("title")
+    return title
+
+
+def reextract(store: Store, case_id: int, context: AnalysisContext, *, now: float) -> bool:
+    """Re-run the extractors over the stored page of a case's latest final fetch
+    (offline: the blob store, never the network), adding features that reference
+    the same fetch fact. Returns False when no stored page exists."""
+    row = store.conn.execute(
+        "SELECT id, value_json, artifact_refs FROM facts WHERE case_id = ? AND name = 'http_fetch'"
+        " AND json_extract(value_json, '$.final') AND artifact_refs != '[]' ORDER BY id DESC"
+        " LIMIT 1",
+        (case_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    value, refs = json.loads(row[1]), json.loads(row[2])
+    body = value.get("body") or {}
+    if not value.get("final_url") or body.get("sha256") not in refs:
+        return False
+    try:
+        data = store.blobs.read(body["sha256"])
+    except OSError:
+        return False
+    results = run_extractors(
+        data, body.get("content_type"), body.get("charset"), value["final_url"], context
+    )
+    with transaction(store.conn):
+        write_features(
+            store.conn,
+            case_id,
+            results,
+            fact_id=row[0],
+            rnd=int(value.get("analysis_round", 0)),
+            now=now,
+        )
+    return True
+
+
 class AnalysisStages:
     def __init__(
         self,
@@ -134,10 +207,20 @@ class AnalysisStages:
         self.tls_port = tls_port
         self.clock = clock
         self.cache = StoreCache(store.conn, clock)
+        analysis = self.config.analysis
+        self.analysis_context = AnalysisContext(
+            lexicon=BrandLexicon.from_registry(registry),
+            providers=ProviderCatalog.load(analysis.payment_providers),
+        )
+        self.scorer = CaseScorer(store.conn, registry, Policy.load(analysis.policy), clock=clock)
+        self.offline_enrich = not self.config.enrich.enabled
 
     def register(self, orch: Orchestrator, *, enrich: bool = True, fetch: bool = True) -> None:
         c = self.config
-        if enrich:
+        # Without enrichment the stage still runs offline sources and schedules the
+        # fetch; otherwise intake's enrich jobs would never be claimed.
+        self.offline_enrich = not enrich
+        if enrich or fetch:
             orch.register_stage(
                 Stage(
                     ENRICH,
@@ -249,14 +332,17 @@ class AnalysisStages:
         case = self._case(case_id)
         if case is None or case.status != "open" or self._done(case_id, ENRICH, rnd):
             return
-        observations = await run_sources(self.context(case.host, case.registrable_domain or ""))
+        sources = OFFLINE_SOURCES if self.offline_enrich else None
+        ctx = self.context(case.host, case.registrable_domain or "")
+        observations = await run_sources(ctx, sources)
         errors = sorted(o.source for o in observations if o.name.endswith("_error"))
         with transaction(self.store.conn):
             if self._done(case_id, ENRICH, rnd):  # a redelivery finished first
                 return
             ids = {o.name: self._write(case_id, o, rnd) for o in observations}
             self._derive_age(case_id, observations, ids)
-            self._finish(case_id, ENRICH, rnd, "partial" if errors else "ok")
+            outcome = "partial" if errors else ("offline" if self.offline_enrich else "ok")
+            self._finish(case_id, ENRICH, rnd, outcome)
             self._schedule(case, FETCH, rnd)
             if rnd == 0:
                 now = self.clock()
@@ -298,7 +384,12 @@ class AnalysisStages:
     async def fetch(self, job: Job) -> None:
         case_id, rnd = int(job.payload["case_id"]), int(job.payload.get("round", 0))
         case = self._case(case_id)
-        if case is None or case.status != "open" or self._done(case_id, FETCH, rnd):
+        if case is None or case.status != "open":
+            return
+        if self._done(case_id, FETCH, rnd):
+            # Redelivered after the fetch was recorded: make sure it was scored
+            # (a crash or scoring error may have happened in between).
+            self.score(case_id)
             return
         results: list[FetchResult] = []
         for url in self.urls_for(case):
@@ -324,22 +415,62 @@ class AnalysisStages:
                     )
             raise TransientFetchFailure(f"{final.outcome}: {final.error}")
 
+        # Parsing hostile HTML is CPU-bound: run the (pure) extractors in a worker
+        # thread so CertStream pings and lease renewal keep running.
+        extracted = await self._extract(final)
         # One transaction for the blob reference, facts, features and the marker:
         # a crash leaves either all of them or none (an orphan file is swept).
         with transaction(self.store.conn):
-            if self._done(case_id, FETCH, rnd):  # a redelivery finished first
-                return
-            blob = self._store_body(case, final)
-            fact_ids = []
-            for r in results:
-                refs = [blob] if r is final and blob else []
-                value = {**r.to_fact(), "attempt": job.attempts, "final": r is final}
-                fact_ids.append(
-                    self._fact(case_id, "fetcher", "http_fetch", value, FETCH_VERSION, rnd, refs)
-                )
-            title = self._extract(case_id, final, fact_ids[-1], rnd)
-            self._fingerprint(case_id, final, title, fact_ids[-1], rnd)
-            self._finish(case_id, FETCH, rnd, final.outcome)
+            if not self._done(case_id, FETCH, rnd):  # else a redelivery finished first
+                self._record_fetch(case, job, results, final, extracted, rnd)
+        self.score(case_id)
+
+    def _record_fetch(
+        self,
+        case: CaseRow,
+        job: Job,
+        results: list[FetchResult],
+        final: FetchResult,
+        extracted: list[ExtractorResult],
+        rnd: int,
+    ) -> None:
+        """Blob reference, fetch facts, features, fingerprint and the stage marker
+        (called inside the fetch transaction)."""
+        case_id = case.case_id
+        blob = self._store_body(case, final)
+        fact_ids = []
+        for r in results:
+            refs = [blob] if r is final and blob else []
+            value = {**r.to_fact(), "attempt": job.attempts, "final": r is final}
+            fact_ids.append(
+                self._fact(case_id, "fetcher", "http_fetch", value, FETCH_VERSION, rnd, refs)
+            )
+        title = write_features(
+            self.store.conn, case_id, extracted, fact_id=fact_ids[-1], rnd=rnd, now=self.clock()
+        )
+        self._fingerprint(case_id, final, title, fact_ids[-1], rnd)
+        self._finish(case_id, FETCH, rnd, final.outcome)
+
+    def score(self, case_id: int) -> None:
+        """Re-score from stored evidence. A scoring failure is logged, never fatal
+        to the fetch already recorded; `brandsentinel cases rescore` repeats it."""
+        try:
+            out = self.scorer.score(case_id)
+        except Exception:
+            log.exception("scoring failed", extra={"fields": {"case_id": case_id}})
+            return
+        if out is not None and out.changed:
+            log.info(
+                "case scored",
+                extra={
+                    "fields": {
+                        "case_id": case_id,
+                        "priority": out.result.priority,
+                        "category": out.result.category,
+                        "score": out.result.score,
+                    }
+                },
+            )
 
     def _store_body(self, case: CaseRow, r: FetchResult) -> str | None:
         if r.body is None or not r.body.data:
@@ -358,24 +489,17 @@ class AnalysisStages:
         r.body_stored = True
         return sha
 
-    def _extract(self, case_id: int, r: FetchResult, fact_id: int, rnd: int) -> str | None:
+    async def _extract(self, r: FetchResult) -> list[ExtractorResult]:
         if r.body is None or not r.body.data or r.final_url is None:
-            return None
-        title = None
-        for res in run_extractors(r.body.data, r.body.content_type, r.body.charset, r.final_url):
-            value = res.value if res.value is not None else {"error": res.error}
-            add_feature(
-                self.store.conn,
-                case_id,
-                name=res.extractor.name,
-                value={**value, "analysis_round": rnd},
-                extractor_version=res.extractor.version,
-                fact_refs=[fact_id],
-                now=self.clock(),
-            )
-            if res.extractor.name == "page_basics" and res.value:
-                title = res.value.get("title")
-        return title
+            return []
+        return await asyncio.to_thread(
+            run_extractors,
+            r.body.data,
+            r.body.content_type,
+            r.body.charset,
+            r.final_url,
+            self.analysis_context,
+        )
 
     def _round_fact(self, case_id: int, name: str, rnd: int) -> dict | None:
         row = self.store.conn.execute(
