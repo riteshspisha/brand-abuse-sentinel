@@ -17,7 +17,7 @@
 set -u
 
 PREFIX=${PREFIX:-/opt/brandsentinel}
-ACCOUNT=${BRANDSENTINEL_ACCOUNT:-brandsentinel}
+ACCOUNT=${SP1_ACCOUNT:-brandsentinel}
 SOCK=unix://${XDG_RUNTIME_DIR:?run inside the user manager}/docker.sock
 OUT=$HOME/sp1-validation-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$OUT"
@@ -42,8 +42,10 @@ check "$PREFIX owned by root" test "$(stat -c %U "$PREFIX")" = root
 WRITABLE=$(find "$PREFIX" -writable 2>/dev/null | head -5)
 check "nothing under $PREFIX is writable (${WRITABLE:-none})" test -z "$WRITABLE"
 check "cannot create files in $PREFIX/src" not touch "$PREFIX/src/.sp1-write-test"
-check "service config has no developer override" \
-    not grep -q allow_developer_account "$PREFIX/etc/service.yaml"
+check "service config has no developer override" "$PREFIX/venv/bin/python" -c "
+import sys, yaml
+data = yaml.safe_load(open('$PREFIX/etc/service.yaml')) or {}
+sys.exit(1 if (data.get('runtime') or {}).get('allow_developer_account') else 0)"
 check "code owner is not this account" \
     test "$(stat -c %u "$("$PREFIX/venv/bin/python" -c 'import brandsentinel,os;print(os.path.dirname(brandsentinel.__file__))')")" != "$(id -u)"
 

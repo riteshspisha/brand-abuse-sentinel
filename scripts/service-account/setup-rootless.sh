@@ -12,7 +12,7 @@
 set -eu
 
 PREFIX=${PREFIX:-/opt/brandsentinel}
-ACCOUNT=${BRANDSENTINEL_ACCOUNT:-brandsentinel}
+ACCOUNT=${SP1_ACCOUNT:-brandsentinel}
 die() { echo "setup-rootless: FAIL: $*" >&2; exit 1; }
 ok() { echo "setup-rootless: ok: $*"; }
 

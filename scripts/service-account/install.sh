@@ -15,6 +15,10 @@
 #   /opt/brandsentinel/etc          service.yaml (no developer override)
 #   /opt/brandsentinel/INSTALL      what was installed, from which commit
 set -eu
+# Copy, never hardlink, from the developer's uv cache: a hardlinked file shares
+# its inode with the cache, and the later `chown -R root` would change the
+# ownership of the developer's own cache files too.
+export UV_LINK_MODE=copy
 
 PREFIX=${PREFIX:-/opt/brandsentinel}
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -77,6 +81,13 @@ uv_lock_sha256: $(sha256sum "$PREFIX/src/uv.lock" | cut -d' ' -f1)
 dockerd_rootless_sha256: $DOCKERD_ROOTLESS_SHA256
 EOF
 "$PREFIX/venv/bin/brandsentinel" version >/dev/null || die "installed CLI does not run"
+# Nothing may share an inode with a file outside the install (see UV_LINK_MODE).
+[ -z "$(find "$PREFIX" -type f -links +1 | head -1)" ] || die "hardlinked files under $PREFIX"
+# The interpreter must live inside the install, not in the developer's home.
+case "$(readlink -f "$PREFIX/venv/bin/python")" in
+    "$PREFIX"/*) ;;
+    *) die "venv interpreter resolves outside $PREFIX" ;;
+esac
 
 echo
 cat "$PREFIX/INSTALL"
