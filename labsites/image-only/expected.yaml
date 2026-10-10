@@ -1,0 +1,18 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: image-only
+hostname: orin-relief.test
+url: http://orin-relief.test/
+http_status: 200
+expected:
+  category: donation_fraud
+  priority:
+  - P1
+  - P2
+  labels: []
+  evidence:
+  - ocr_brand_text
+  - ocr_payment_text
+  - qr_upi_payee
+detected_by: media
+notes: Brand text and the donation appeal exist only inside images (FA4).

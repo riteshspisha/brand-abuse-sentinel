@@ -16,6 +16,12 @@ TLS has two modes:
   result records `tls_verification_failed` with the error. Evidence-mode results
   are tagged untrusted and can never become reference content.
 
+Lab mode (KTD13): the fetcher accepts only lab hostnames and sends every request
+through the lab proxy's loopback-published port, because rootless Docker does not
+route the host into container networks. The proxy hop is a configured transport,
+not a fetch target, so netguard's loopback block is unchanged; the lab proxy
+applies netguard again. Without a configured lab proxy, lab mode fetches nothing.
+
 The fetcher only observes. It returns a `FetchResult`; callers decide what to
 persist (through the quota-enforcing blob store and the sanitizing fact writer).
 """
@@ -30,13 +36,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Literal
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import certifi
 import httpcore
 
 from brandsentinel.config import FetchSettings
 from brandsentinel.net.netguard import NetGuard, PolicyViolation, ResolutionFailed, Validated
+from brandsentinel.net.proxy import REFUSAL_HEADER
 
 TlsMode = Literal["verified", "evidence"]
 Purpose = Literal["untrusted", "reference"]
@@ -82,6 +89,7 @@ class Hop:
     host: str
     port: int
     address: str | None = None  # the validated address actually connected to
+    via: str | None = None  # the transport proxy, in lab mode
     status: int | None = None
     location: str | None = None
     headers: list[list[str]] = field(default_factory=list)
@@ -229,6 +237,15 @@ class _Decoder:
         return out, hit
 
 
+class _LabProxyRefused(Exception):
+    """The lab proxy answered for itself (refusal or upstream failure)."""
+
+    def __init__(self, status: int, reason: str) -> None:
+        super().__init__(reason)
+        self.status = status
+        self.reason = reason
+
+
 class _TlsVerifyFailed(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -241,12 +258,21 @@ class Fetcher:
         guard: NetGuard,
         *,
         verify_context: ssl.SSLContext | None = None,
+        lab_proxy: str | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         """`verify_context` replaces the certifi trust store (tests pass one that
-        trusts the local harness CA)."""
+        trusts the local harness CA). `lab_proxy` (`http://<ip>:<port>`) is the
+        lab-mode transport."""
         self.settings = settings
         self.guard = guard
+        self._lab_proxy: tuple[str, int] | None = None
+        if lab_proxy:
+            parts = urlsplit(lab_proxy)
+            ipaddress.ip_address(parts.hostname or "")
+            if parts.scheme != "http" or not parts.port:
+                raise ValueError("lab_proxy must be http://<ip>:<port>")
+            self._lab_proxy = (parts.hostname, parts.port)
         self._verify_ctx = verify_context or verified_context()
         self._unverified_ctx = unverified_context()
         self._clock = clock
@@ -276,9 +302,8 @@ class Fetcher:
             purpose=purpose,
             started_at=datetime.fromtimestamp(self._clock(), UTC).isoformat(),
         )
-        if self.guard.lab_mode:
-            # Lab sites are reachable only through the lab proxy (U18, M4); until
-            # that transport exists the fetcher refuses rather than go direct.
+        if self.guard.lab_mode and self._lab_proxy is None:
+            # Lab sites are reachable only through the lab proxy; never go direct.
             result.outcome = "lab_transport_unavailable"
             return result
         accepted = frozenset(a.lower() for a in (accept or self.settings.accept_types))
@@ -323,6 +348,8 @@ class Fetcher:
                 target = await self.guard.validate(current)
                 if host_allowed is not None and not host_allowed(target.host):
                     raise PolicyViolation("host_not_allowed", {"host": target.host})
+                if self.guard.lab_mode and not target.lab:
+                    raise PolicyViolation("not_lab_host", {"host": target.host})
                 if reference and target.scheme != "https":
                     raise PolicyViolation("scheme_downgrade", {"scheme": target.scheme})
             except PolicyViolation as e:
@@ -363,8 +390,13 @@ class Fetcher:
         start = time.monotonic()
         last_error: dict | None = None
         try:
-            for address in target.addresses[: self.settings.max_addresses_tried]:
+            # In lab mode the lab proxy connects; it is given the hostname, and
+            # netguard maps lab hostnames to exactly one lab address.
+            tried = 1 if self._lab_proxy else self.settings.max_addresses_tried
+            for address in target.addresses[:tried]:
                 hop.address = address
+                if self._lab_proxy:
+                    hop.via = "http://{}:{}".format(*self._lab_proxy)
                 verify, verification_error = True, None
                 while True:
                     try:
@@ -412,6 +444,20 @@ class Fetcher:
                         break
             timed_out = last_error is not None and last_error["kind"] == "connect_timeout"
             self._fail(result, hop, "timeout" if timed_out else "connect_error", last_error)
+        except _LabProxyRefused as e:
+            outcome: Outcome = (
+                "blocked" if e.status == 403 else "timeout" if e.status == 504 else "connect_error"
+            )
+            self._fail(
+                result,
+                hop,
+                outcome,
+                {"kind": "lab_proxy_refused", "status": e.status, "reason": e.reason},
+            )
+        except httpcore.ProxyError as e:  # CONNECT refused by the lab proxy
+            self._fail(
+                result, hop, "connect_error", {"kind": "lab_proxy_refused", "message": _msg(e)}
+            )
         except (httpcore.ReadTimeout, httpcore.WriteTimeout, httpcore.PoolTimeout) as e:
             self._fail(result, hop, "timeout", {"kind": "read_timeout", "message": _msg(e)})
             self._mark_partial(result, "timeout")
@@ -472,20 +518,37 @@ class Fetcher:
             "write": s.read_timeout_seconds,
             "pool": s.connect_timeout_seconds,
         }
-        pool = httpcore.AsyncConnectionPool(
-            ssl_context=ctx,
-            max_connections=1,
-            http1=True,
-            http2=False,
-            retries=0,
-            network_backend=_PinnedBackend(target.host, address),
-        )
+        if self._lab_proxy:
+            proxy_host, proxy_port = self._lab_proxy
+            address = proxy_host  # the peer we must reach is the proxy
+            pool = httpcore.AsyncHTTPProxy(
+                proxy_url=f"http://{proxy_host}:{proxy_port}/",
+                ssl_context=ctx,
+                max_connections=1,
+                http1=True,
+                http2=False,
+                retries=0,
+                network_backend=_PinnedBackend(proxy_host, proxy_host),
+            )
+        else:
+            pool = httpcore.AsyncConnectionPool(
+                ssl_context=ctx,
+                max_connections=1,
+                http1=True,
+                http2=False,
+                retries=0,
+                network_backend=_PinnedBackend(target.host, address),
+            )
         async with pool:
             try:
                 async with pool.stream(
                     method, url, headers=headers, extensions={"timeout": timeouts}
                 ) as resp:
                     self._record_response(hop, resp, https, verify, verification_error, address)
+                    marker = _header(resp, REFUSAL_HEADER.lower().encode())
+                    if self._lab_proxy and marker is not None:
+                        hop.status = None  # not the site's answer
+                        raise _LabProxyRefused(resp.status, marker[:100])
                     if method == "HEAD" or (hop.status in REDIRECT_CODES and hop.location):
                         return
                     ctype, charset = media_type(_header(resp, b"content-type"))

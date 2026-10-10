@@ -1,0 +1,38 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: redirects
+hostname: go-luminafoundation.test
+url: http://go-luminafoundation.test/
+http_status: 200
+expected:
+  category: impersonation
+  priority:
+  - P2
+  - P3
+  labels: []
+  evidence:
+  - redirect_chain
+  - blocked_redirect
+detected_by: static
+notes: Redirect behaviours; see paths.
+paths:
+- path: /meta-refresh.html
+  status: 200
+  meta_refresh: http://donate-luminafoundation.test/
+- path: /js-redirect.html
+  status: 200
+  script_redirect: http://login-luminafoundation.test/
+- path: /to-metadata
+  status: 302
+  location: http://169.254.169.254/latest/meta-data/
+  fetch_outcome: blocked_redirect
+- path: /to-loopback
+  status: 302
+  location: http://127.0.0.1/
+  fetch_outcome: blocked_redirect
+- path: /chain
+  status: 302
+  location: /chain-2
+- path: /chain-2
+  status: 302
+  location: http://donate-luminafoundation.test/

@@ -192,6 +192,8 @@ class LabSettings(_Section):
     enabled: bool = False
     subnet: str = LAB_SUBNET
     hosts: dict[str, str] = {}
+    # Synthetic lab brand, merged into the registry only in lab mode.
+    registry_overlay: Path = Path("registry/lab-overlay.yaml")
 
     @model_validator(mode="after")
     def _pinned(self):
@@ -258,6 +260,85 @@ class EnrichSettings(_Section):
         return v
 
 
+class RuntimeSettings(_Section):
+    """The account and container runtime the application runs under (U23, R50)."""
+
+    # Rootless Docker endpoint of the service account. Empty: the account's
+    # default rootless socket, unix://$XDG_RUNTIME_DIR/docker.sock.
+    docker_host: str = ""
+    docker_binary: str = "docker"
+    # Development only: lets the application run as the account that owns its
+    # code and that can reach a rootful Docker socket. `status` warns while set.
+    allow_developer_account: bool = False
+
+    @field_validator("docker_host")
+    @classmethod
+    def _unix_only(cls, v: str) -> str:
+        # A TCP endpoint would expose the daemon to anything that can reach it.
+        if v and not v.startswith("unix:///"):
+            raise ValueError("must be empty or a unix:/// socket path")
+        return v
+
+
+class SandboxLimits(_Section):
+    """Resource limits for one sandbox container, enforced by the runtime."""
+
+    memory_mb: int = Field(512, ge=32)
+    cpus: float = Field(1.0, gt=0, le=16)
+    pids: int = Field(128, ge=8, le=4096)
+    wall_seconds: float = Field(60.0, gt=0, le=3600)
+    tmpfs_mb: int = Field(64, ge=1, le=1024)
+    shm_mb: int = Field(64, ge=1, le=2048)
+    stdout_max_bytes: int = Field(16 * MiB, gt=0, le=256 * MiB)
+    stderr_max_bytes: int = Field(64 * 1024, gt=0, le=16 * MiB)
+
+
+class SandboxSettings(_Section):
+    """Sandbox containers (U23) and their networks (U18)."""
+
+    enabled: bool = True
+    # Separates containers of several BrandSentinel instances on one runtime.
+    instance: str = Field("main", pattern=r"^[a-z0-9]{1,16}$")
+    image: str = "brandsentinel-sandbox:local"
+    # Pinned in docker/compose.yaml: internal (no route out) and egress subnets.
+    network: str = "bs_sandbox"
+    proxy_url: str = "http://172.31.251.2:3128"
+    proxy_container: str = "bs-egress-proxy"
+    # Host-side transport to the lab proxy's loopback-published port (KTD13).
+    lab_proxy_url: str = "http://127.0.0.1:3129"
+    limits: SandboxLimits = SandboxLimits()
+    # Grace after `docker kill` for the container and CLI to exit.
+    kill_grace_seconds: float = Field(10.0, gt=0)
+
+    @field_validator("proxy_url", "lab_proxy_url")
+    @classmethod
+    def _http_ip_url(cls, v: str) -> str:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(v)
+        if parts.scheme != "http" or parts.path not in ("", "/") or not parts.port:
+            raise ValueError("must be http://<ip>:<port>")
+        ipaddress.ip_address(parts.hostname or "")  # no DNS for the proxy hop
+        return v
+
+
+class ProxySettings(_Section):
+    """The egress proxy (U18): the only way out of the sandbox network."""
+
+    max_connections: int = Field(64, ge=1, le=4096)
+    # One sandbox (client address) cannot take every slot from the others.
+    max_connections_per_client: int = Field(32, ge=1, le=4096)
+    max_header_bytes: int = Field(16 * 1024, ge=1024, le=256 * 1024)
+    header_timeout_seconds: float = Field(10.0, gt=0)
+    connect_timeout_seconds: float = Field(10.0, gt=0)
+    idle_timeout_seconds: float = Field(30.0, gt=0)
+    total_timeout_seconds: float = Field(120.0, gt=0)  # one tunnel or request, end to end
+    max_connection_bytes: int = Field(64 * MiB, gt=0)  # both directions, per connection
+    max_addresses_tried: int = Field(2, ge=1, le=8)
+    # Lab proxy only: refuse everything but lab hostnames (requires lab mode).
+    lab_only: bool = False
+
+
 class TextSettings(_Section):
     max_fact_chars: int = Field(4096, gt=0)  # per string
     max_fact_bytes: int = Field(256 * 1024, gt=0)  # per serialized fact value
@@ -276,6 +357,9 @@ class Config(_Section):
     net: NetSettings = NetSettings()
     fetch: FetchSettings = FetchSettings()
     enrich: EnrichSettings = EnrichSettings()
+    runtime: RuntimeSettings = RuntimeSettings()
+    sandbox: SandboxSettings = SandboxSettings()
+    proxy: ProxySettings = ProxySettings()
 
     @model_validator(mode="after")
     def _lab_is_offline(self):
@@ -285,6 +369,12 @@ class Config(_Section):
                 "lab mode requires discovery.certstream.enabled and"
                 " discovery.dnstwist.enabled to be false"
             )
+        if self.proxy.lab_only and not self.net.lab.enabled:
+            raise ValueError("proxy.lab_only requires net.lab.enabled")
+        if self.net.lab.enabled and self.sandbox.enabled and self.sandbox.network == "bs_sandbox":
+            # bs_sandbox's proxy reaches the Internet and not the lab; lab-mode
+            # sandboxes need a lab sandbox network (M7).
+            raise ValueError("lab mode cannot use the production sandbox network bs_sandbox")
         return self
 
     @property

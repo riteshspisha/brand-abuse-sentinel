@@ -7,10 +7,11 @@ a lost lease cancels the handler. Delivery is at-least-once (see store.jobs), so
 handlers must be idempotent. Stages that set `per_domain` never run two jobs for
 the same registrable domain at once.
 
-Startup runs registered hooks (for example abandoned-sweep recovery, later the
-sandbox orphan sweep), then returns expired leases to pending, then starts
-background tasks and workers. Everything runs on one asyncio thread, which is
-also the only user of the SQLite connection.
+Before startup, the sandbox preflight removes containers orphaned by a crash.
+Startup runs registered hooks (for example abandoned-sweep recovery), then
+returns expired leases to pending, then starts background tasks and workers.
+Everything runs on one asyncio thread, which is also the only user of the
+SQLite connection.
 """
 
 import asyncio
@@ -57,6 +58,11 @@ class Orchestrator:
     stages: dict[str, Stage] = field(default_factory=dict)
     startup_hooks: list[Callable[[], object]] = field(default_factory=list)
     tasks: dict[str, Callable[[], Awaitable[None]]] = field(default_factory=dict)
+    # The sandbox runner (a SandboxRunner) once preflight and the orphan sweep
+    # passed (U23); None while sandboxes are unavailable. Sandbox stages (M6, M7)
+    # register only when it is set.
+    sandbox: object | None = None
+    sandbox_disabled: list[str] = field(default_factory=list)
     _domain_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     _domain_users: dict[str, int] = field(default_factory=dict)
 
@@ -235,6 +241,36 @@ def maintenance(store: Store, now: float) -> None:
     store.conn.execute("DELETE FROM job_groups WHERE last_claimed_at < ?", (now - 30 * 86400,))
 
 
+async def _prepare_sandbox(orch: Orchestrator, config) -> None:
+    """Run the runtime preflight and the orphan sweep, before any stage exists and
+    before any job lease is recovered (KTD2, AE18).
+
+    The sweep also runs when only non-safety checks failed (for example the image
+    is missing), so containers left by a crash never outlive a restart; it never
+    runs against an endpoint that is unreachable or not rootless. Sandbox stages
+    are available only when every check and the sweep passed."""
+    from brandsentinel.sandbox.preflight import prepare_runtime
+    from brandsentinel.sandbox.runner import SandboxError, SandboxRunner
+
+    runner, report = await prepare_runtime(config)
+    passed = {c.name for c in report.checks if c.ok}
+    sweeper = runner or (
+        SandboxRunner(config.sandbox, report.docker) if {"endpoint", "rootless"} <= passed else None
+    )
+    if sweeper is not None:
+        try:
+            removed = await asyncio.to_thread(sweeper.sweep_orphans)
+            log.info("sandbox orphan sweep", extra={"fields": {"removed": removed}})
+        except SandboxError as e:
+            runner = None
+            report.add("orphan_sweep", False, str(e)[:300])
+    if runner is None:
+        orch.sandbox_disabled = report.reasons()
+        log.warning("sandbox stages disabled", extra={"fields": {"reasons": orch.sandbox_disabled}})
+        return
+    orch.sandbox = runner
+
+
 async def run_service(
     store: Store,
     registry: Registry,
@@ -244,6 +280,7 @@ async def run_service(
     stop: asyncio.Event,
     enrich_enabled: bool | None = None,
     fetch_enabled: bool | None = None,
+    sandbox_enabled: bool | None = None,
     analysis=None,
     clock: Callable[[], float] | None = None,
 ) -> Orchestrator:
@@ -258,6 +295,9 @@ async def run_service(
     config = store.config
     matcher = Matcher(registry)
     orch = Orchestrator(store)
+
+    if config.sandbox.enabled if sandbox_enabled is None else sandbox_enabled:
+        await _prepare_sandbox(orch, config)
 
     stats = replay_since_marker(store, matcher, now=clock())
     log.info("discovery log replayed", extra={"fields": stats.__dict__})

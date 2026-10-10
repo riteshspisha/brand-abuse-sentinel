@@ -103,12 +103,14 @@ net:
     timeout_seconds: 3
     lifetime_seconds: 6
   # Lab mode adds only the pinned lab subnet 172.31.250.0/24 for the listed
-  # hostnames. It requires both discovery sources to be disabled. The host-side
-  # fetcher refuses lab URLs until the lab proxy transport exists (M4).
+  # hostnames. It requires both discovery sources to be disabled. In lab mode the
+  # host-side fetcher accepts only lab hostnames and reaches them through the lab
+  # proxy (sandbox.lab_proxy_url). See config/lab.yaml and labsites/README.md.
   lab:
     enabled: false
     subnet: 172.31.250.0/24
     hosts: {}
+    registry_overlay: registry/lab-overlay.yaml   # merged into the registry only in lab mode
 
 # Hardened static fetcher: GET/HEAD only, no cookies, no proxy, pinned DNS,
 # per-hop redirect validation, and caps on time and size.
@@ -133,3 +135,48 @@ enrich:
   rdap_max_bytes: 524288          # 512 KiB per RDAP response
   rdap_cache_hours: 24            # shared by every host under a registrable domain
   tls_timeout_seconds: 10
+
+# The account and container runtime (U23, R50). `brandsentinel run` refuses to
+# start as root; as the owner of the application code or with access to a
+# rootful Docker socket it refuses unless allow_developer_account is set
+# (development only; `status` warns). See docs/runbooks/sandbox.md.
+runtime:
+  docker_host: ""                 # empty: unix://$XDG_RUNTIME_DIR/docker.sock (rootless)
+  docker_binary: docker
+  allow_developer_account: false
+
+# Sandbox containers (U23) and networks (U18). Sandbox stages run only when the
+# runtime preflight passes: rootless endpoint, cgroup v2 with memory, pids and cpu
+# controllers, seccomp, and the sandbox image present.
+sandbox:
+  enabled: true
+  instance: main                  # label separating instances on one runtime
+  image: brandsentinel-sandbox:local
+  network: bs_sandbox             # internal network; the egress proxy is its only way out
+  proxy_url: http://172.31.251.2:3128
+  proxy_container: bs-egress-proxy
+  lab_proxy_url: http://127.0.0.1:3129   # host-side lab transport (lab mode only)
+  kill_grace_seconds: 10
+  limits:                         # per container, enforced by the runtime
+    memory_mb: 512                # no swap
+    cpus: 1.0
+    pids: 128
+    wall_seconds: 60              # enforced from outside: docker kill by name
+    tmpfs_mb: 64                  # /tmp, noexec
+    shm_mb: 64
+    stdout_max_bytes: 16777216    # 16 MiB: one JSON document
+    stderr_max_bytes: 65536
+
+# The egress proxy (U18), read inside the proxy container.
+proxy:
+  max_connections: 64
+  max_connections_per_client: 32  # one sandbox cannot take every slot
+  max_header_bytes: 16384
+  header_timeout_seconds: 10
+  connect_timeout_seconds: 10
+  idle_timeout_seconds: 30
+  total_timeout_seconds: 120      # one tunnel or request, end to end
+  max_connection_bytes: 67108864  # 64 MiB, both directions
+  max_addresses_tried: 2
+  lab_only: false                 # the lab proxy sets true (requires net.lab.enabled)
+

@@ -1,0 +1,14 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: unrelated-lounge
+hostname: illumina-lounge.test
+url: http://illumina-lounge.test/
+http_status: 200
+expected:
+  category: unrelated
+  priority:
+  - no_action
+  labels: []
+  evidence: []
+detected_by: static
+notes: The low-tier keyword only inside the excluded word 'illumina' (the 'shisha' analogue).

@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+# The one sandbox image (KTD12). Roles by command: the egress proxy (M4), the
+# media worker (M6) and the browser worker (M7). Build it with
+# scripts/build-sandbox-image.sh, which supplies dist/ (the project wheel and a
+# hash-pinned requirements file exported from uv.lock).
+FROM mcr.microsoft.com/playwright/python:v1.63.0-noble@sha256:72bd171a9ffc2b4b59532aaa6210e21014d07093120dc25528870c0b840da1f0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY dist/ /tmp/dist/
+# The image's own Playwright stays visible to the venv (--system-site-packages);
+# every other dependency is installed from hash-pinned requirements.
+RUN python3 -m venv --system-site-packages /opt/brandsentinel \
+    && /opt/brandsentinel/bin/pip install --no-cache-dir --require-hashes \
+        -r /tmp/dist/requirements.txt \
+    && /opt/brandsentinel/bin/pip install --no-cache-dir --no-deps /tmp/dist/brandsentinel-*.whl \
+    && rm -rf /tmp/dist
+
+ENV PATH=/opt/brandsentinel/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+# Code is owned by root and read-only to the runtime user.
+USER pwuser
+WORKDIR /tmp

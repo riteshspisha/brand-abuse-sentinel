@@ -1,0 +1,18 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: disguised-credential
+hostname: lumina-watch-news.test
+url: http://lumina-watch-news.test/
+http_status: 200
+expected:
+  category: credential_phishing
+  priority:
+  - P1
+  labels:
+  - editorial_or_critical
+  evidence:
+  - credential_form
+  - article_markup
+  - parody_disclaimer
+detected_by: static
+notes: Editorial markup must not lower the abuse priority (FA9).

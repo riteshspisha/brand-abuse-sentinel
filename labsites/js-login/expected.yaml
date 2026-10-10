@@ -1,0 +1,17 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: js-login
+hostname: login-luminafoundation.test
+url: http://login-luminafoundation.test/
+http_status: 200
+expected:
+  category: credential_phishing
+  priority:
+  - P1
+  labels: []
+  evidence:
+  - credential_form_rendered
+  - brand_claim
+  - static_empty_shell
+detected_by: browser
+notes: The form exists only after script runs; static fetch sees an empty shell.

@@ -1,0 +1,18 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: false-association
+hostname: orin-wellness-partners.test
+url: http://orin-wellness-partners.test/
+http_status: 200
+expected:
+  category: false_association
+  priority:
+  - P2
+  - P3
+  labels:
+  - commerce
+  evidence:
+  - association_claim
+  - brand_claim
+detected_by: static
+notes: Claims to be an official partner; no confirmed relationship exists.

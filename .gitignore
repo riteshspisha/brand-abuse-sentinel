@@ -11,3 +11,5 @@ data/
 *.sqlite*
 .DS_Store
 .compound-engineering/*.local.yaml
+data-lab/
+docker/dist/

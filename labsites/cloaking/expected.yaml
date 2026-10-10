@@ -1,0 +1,22 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: cloaking
+hostname: luminafoundation-gift.test
+url: http://luminafoundation-gift.test/
+http_status: 200
+expected:
+  category: donation_fraud
+  priority:
+  - P1
+  - P2
+  labels:
+  - cloaking_suspected
+  evidence:
+  - static_rendered_difference
+  - donation_appeal
+detected_by: browser
+notes: Harmless page for non-browser user agents, donation fraud for Chromium.
+user_agents:
+  BrandSentinel/0.1 (brand-protection research): Under construction
+  Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/140.0.0.0 Safari/537.36: Festival
+    Gift Donation

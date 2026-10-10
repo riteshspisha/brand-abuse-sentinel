@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sunrise Yoga Studio - Classes and Passes</title>
+<script src="https://js.stripe.com/v3/"></script></head>
+<body><h1>Sunrise Yoga Studio</h1>
+<p>Morning hatha and vinyasa classes. Buy a ten-class pass online.</p>
+<form id="checkout" action="/checkout" method="post">
+<label>Email <input type="email" name="email"></label>
+<div id="card-element"><!-- Stripe Elements mounts here --></div>
+<button type="submit">Pay $90</button>
+</form>
+<script>/* var stripe = Stripe('pk_test_lab_placeholder'); never loaded in the offline lab */</script>
+</body></html>

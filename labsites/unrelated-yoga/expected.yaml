@@ -1,0 +1,17 @@
+# Expected outcome for this lab site. Consumed by U15 (reports), U19 (browser)
+# and U21 (evaluation); evidence names are refined when those units land.
+site: unrelated-yoga
+hostname: sunrise-yoga-studio.test
+url: http://sunrise-yoga-studio.test/
+http_status: 200
+expected:
+  category: unrelated
+  priority:
+  - P4
+  - no_action
+  labels:
+  - commerce
+  evidence:
+  - payment_gateway_script
+detected_by: static
+notes: A payment gateway alone must not raise priority (FA6).

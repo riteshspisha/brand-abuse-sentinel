@@ -1,8 +1,9 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from brandsentinel.config import ENV_CONFIG, ENV_DATA_DIR, ConfigError, load_config
+from brandsentinel.config import ENV_CONFIG, ENV_DATA_DIR, Config, ConfigError, load_config
 
 EXAMPLE = Path(__file__).parents[2] / "config" / "brandsentinel.example.yaml"
 
@@ -88,3 +89,30 @@ def test_lease_seconds_must_be_positive_and_name_known_stages(tmp_path, yaml_tex
     path.write_text(yaml_text)
     with pytest.raises(ConfigError, match=needle):
         load_config(path)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"runtime": {"docker_host": "tcp://127.0.0.1:2375"}},
+        {"runtime": {"docker_host": "unix:///var/run/docker.sock", "unknown": 1}},
+        {"sandbox": {"instance": "Main"}},
+        {"sandbox": {"instance": "a-b"}},
+        {"sandbox": {"proxy_url": "http://egress-proxy:3128"}},
+        {"sandbox": {"lab_proxy_url": "https://127.0.0.1:3129"}},
+        {"sandbox": {"lab_proxy_url": "http://127.0.0.1"}},
+        {"sandbox": {"limits": {"memory_mb": 0}}},
+        {"sandbox": {"limits": {"pids": 100000}}},
+        {"proxy": {"lab_only": True}},
+    ],
+)
+def test_runtime_sandbox_and_proxy_settings_are_validated(raw):
+    with pytest.raises(ValidationError):
+        Config.model_validate(raw)
+
+
+def test_sandbox_defaults_are_isolated_and_bounded():
+    c = Config()
+    assert c.runtime.docker_host == "" and not c.runtime.allow_developer_account
+    assert c.sandbox.network == "bs_sandbox" and c.sandbox.limits.wall_seconds == 60
+    assert not c.proxy.lab_only

@@ -41,7 +41,6 @@ app = typer.Typer(
 
 # Command -> milestone that implements it.
 _PLANNED = {
-    "sandbox": ("M4", "Sandbox runtime checks and self-tests."),
     "cases": ("M5", "List, inspect and label cases."),
     "report": ("M5", "Render analyst reports."),
     "export": ("M5", "Export cases (CSV)."),
@@ -51,6 +50,8 @@ _PLANNED = {
 
 registry_app = typer.Typer(help="Validate and inspect the Brand Registry.", no_args_is_help=True)
 app.add_typer(registry_app, name="registry")
+sandbox_app = typer.Typer(help="Sandbox runtime checks and maintenance.", no_args_is_help=True)
+app.add_typer(sandbox_app, name="sandbox")
 
 
 @app.callback()
@@ -116,6 +117,7 @@ def status(ctx: typer.Context) -> None:
 
         _print_discovery(health.collect(store, config, time.time()), time.time())
         _print_analysis(store, config)
+        _print_sandbox(config)
 
         sources = store.raw_sources()
         firehose = "on" if config.rawlog.firehose.enabled else "off"
@@ -134,9 +136,7 @@ def _print_analysis(store, config: Config) -> None:
     conn = store.conn
     enrich = "on" if config.enrich.enabled else "off"
     fetch = "on" if config.fetch.enabled else "off"
-    lab = (
-        " LAB MODE (fetching disabled until the lab proxy exists)" if config.net.lab.enabled else ""
-    )
+    lab = " LAB MODE (lab hosts only, through the lab proxy)" if config.net.lab.enabled else ""
     typer.echo(f"analysis: enrich {enrich}, fetch {fetch}{lab}")
     for stage, outcome, n in conn.execute(
         "SELECT stage, outcome, COUNT(*) FROM stage_runs GROUP BY stage, outcome ORDER BY 1, 2"
@@ -147,6 +147,35 @@ def _print_analysis(store, config: Config) -> None:
         typer.echo(f"deferred work: {d['total']} ({d['due']} due)")
         for domain, n in d["top_domains"]:
             typer.echo(f"  over allowance: {escape_terminal(domain)} {n}")
+
+
+def _print_checks(title: str, report) -> None:
+    """Print a preflight Report."""
+    state = "ok" if report.ok else "FAILED"
+    typer.echo(f"  {title}: {state}")
+    for c in report.failures:
+        typer.echo(f"    FAIL {c.name}: {escape_terminal(c.detail)}")
+    for c in report.warnings:
+        typer.echo(f"    WARNING {c.name}: {escape_terminal(c.detail)}")
+
+
+def _print_sandbox(config: Config) -> None:
+    from brandsentinel.sandbox import preflight
+    from brandsentinel.sandbox.runner import DockerCli
+
+    if not config.sandbox.enabled:
+        typer.echo("sandbox: disabled by configuration")
+        return
+    account = preflight.check_account(config)
+    runtime = asyncio.run(
+        preflight.check_runtime(
+            DockerCli(config.runtime.docker_host, config.runtime.docker_binary), config.sandbox
+        )
+    )
+    enabled = account.ok and runtime.ok
+    typer.echo(f"sandbox: {'available' if enabled else 'DISABLED'}")
+    _print_checks("account", account)
+    _print_checks("runtime", runtime)
 
 
 def _ago(ts: float | None, now: float) -> str:
@@ -217,9 +246,18 @@ def run(
     log_level: Annotated[str, typer.Option(help="Log level.")] = "INFO",
 ) -> None:
     """Run discovery (CertStream, dnstwist) and the pipeline until interrupted."""
+    from brandsentinel.sandbox.preflight import check_account
+
     config = _load(ctx)
+    account = check_account(config)
+    for c in account.failures:
+        typer.echo(f"refusing to start: {c.name}: {escape_terminal(c.detail)}", err=True)
+    if not account.ok:
+        raise typer.Exit(2)
+    for c in account.warnings:
+        typer.echo(f"WARNING {c.name}: {escape_terminal(c.detail)}", err=True)
     configure_logging(log_level.upper())
-    registry, _ = _load_registry(config.registry_path)
+    registry, _ = _load_registry(config.registry_path, _overlay(config))
     store = open_store(config)
 
     async def main() -> None:
@@ -254,7 +292,7 @@ def submit(
 ) -> None:
     """Submit URLs or domains for analysis (never suppressed)."""
     config = _load(ctx)
-    registry, _ = _load_registry(config.registry_path)
+    registry, _ = _load_registry(config.registry_path, _overlay(config))
     matcher = Matcher(registry)
     store = open_store(config)
     failed = False
@@ -289,7 +327,7 @@ def sweep(
     """Run dnstwist sweeps now, ignoring the schedule."""
     config = _load(ctx)
     configure_logging("WARNING")
-    registry, _ = _load_registry(config.registry_path)
+    registry, _ = _load_registry(config.registry_path, _overlay(config))
     store = open_store(config)
     runner = DnstwistRunner(store, Matcher(registry), registry, config)
     known = runner.targets()
@@ -326,7 +364,7 @@ def replay(
 ) -> None:
     """Re-ingest the discovery raw log (idempotent: nothing is duplicated)."""
     config = _load(ctx)
-    registry, _ = _load_registry(config.registry_path)
+    registry, _ = _load_registry(config.registry_path, _overlay(config))
     store = open_store(config)
     try:
         since = time.time() - since_hours * 3600 if since_hours is not None else None
@@ -358,7 +396,7 @@ def analyze(
     from brandsentinel.pipeline.stages import HTTP_FALLBACK, AnalysisStages, build_network
 
     config = _load(ctx)
-    registry, _ = _load_registry(config.registry_path)
+    registry, _ = _load_registry(config.registry_path, _overlay(config))
     try:
         host, _ = canonical_host(domain)
     except InvalidName as e:
@@ -391,9 +429,98 @@ def analyze(
         store.close()
 
 
-def _load_registry(path: Path) -> tuple[Registry, ValidationReport]:
+@app.command()
+def proxy(
+    ctx: typer.Context,
+    listen: Annotated[
+        list[str], typer.Option("--listen", help="ip:port to listen on (repeatable).")
+    ],
+    log_level: Annotated[str, typer.Option(help="Log level.")] = "INFO",
+) -> None:
+    """Run the egress proxy (inside its container; see docker/compose.yaml)."""
+    from brandsentinel.net.netguard import DnsResolver, NetGuard, make_dns_resolver
+    from brandsentinel.net.proxy import EgressProxy, parse_listen
+
+    config = _load(ctx)
     try:
-        return load_registry(path)
+        addresses = [parse_listen(v) for v in listen]
+    except ValueError as e:
+        typer.echo(escape_terminal(str(e)), err=True)
+        raise typer.Exit(2) from e
+    configure_logging(log_level.upper())
+    guard = NetGuard(config.net, DnsResolver(make_dns_resolver(config.net.dns)))
+    egress = EgressProxy(config.proxy, guard)
+
+    async def main() -> None:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, stop.set)
+        servers = await egress.start(addresses)
+        try:
+            await stop.wait()
+        finally:
+            for server in servers:
+                server.close()
+
+    asyncio.run(main())
+
+
+@sandbox_app.command("check")
+def sandbox_check(
+    ctx: typer.Context,
+    network: Annotated[
+        bool, typer.Option("--network/--no-network", help="Also check the sandbox network.")
+    ] = True,
+) -> None:
+    """Run the sandbox preflight: account, rootless runtime and (with a direct-egress
+    probe container) the sandbox network. Exits 1 if any check fails."""
+    from brandsentinel.sandbox import preflight
+    from brandsentinel.sandbox.runner import DockerCli, SandboxRunner
+
+    config = _load(ctx)
+    docker = DockerCli(config.runtime.docker_host, config.runtime.docker_binary)
+    account = preflight.check_account(config)
+    runtime = asyncio.run(preflight.check_runtime(docker, config.sandbox))
+    _print_checks("account", account)
+    _print_checks("runtime", runtime)
+    reports = [account, runtime]
+    if network and runtime.ok:
+        runner = SandboxRunner(config.sandbox, docker)
+        net = asyncio.run(preflight.check_network(docker, config.sandbox, runner))
+        _print_checks(f"network {config.sandbox.network}", net)
+        for c in net.checks:
+            if c.ok and c.name == "direct_egress_blocked":
+                typer.echo(f"    probe: {escape_terminal(c.detail)}")
+        reports.append(net)
+    if not all(r.ok for r in reports):
+        raise typer.Exit(1)
+
+
+@sandbox_app.command("sweep")
+def sandbox_sweep(ctx: typer.Context) -> None:
+    """Remove every sandbox container labelled with this instance (normally done
+    automatically at startup, before job leases are recovered)."""
+    from brandsentinel.sandbox.runner import DockerCli, SandboxError, SandboxRunner
+
+    config = _load(ctx)
+    docker = DockerCli(config.runtime.docker_host, config.runtime.docker_binary)
+    try:
+        removed = SandboxRunner(config.sandbox, docker).sweep_orphans()
+    except SandboxError as e:
+        typer.echo(escape_terminal(str(e)), err=True)
+        raise typer.Exit(1) from e
+    typer.echo(f"removed {removed} container(s) of instance {config.sandbox.instance}")
+
+
+def _overlay(config: Config) -> Path | None:
+    """The lab registry overlay, only in lab mode."""
+    return config.net.lab.registry_overlay if config.net.lab.enabled else None
+
+
+def _load_registry(path: Path, overlay: Path | None = None) -> tuple[Registry, ValidationReport]:
+    try:
+        return load_registry(path, overlay)
     except RegistryError as e:
         for err in e.errors:
             typer.echo(f"error: {escape_terminal(err)}", err=True)
@@ -404,13 +531,16 @@ def _load_registry(path: Path) -> tuple[Registry, ValidationReport]:
 def registry_validate(
     ctx: typer.Context,
     path: Annotated[Path | None, typer.Option(help="Registry file (default: config).")] = None,
+    overlay: Annotated[
+        Path | None, typer.Option(help="Also merge this overlay (e.g. registry/lab-overlay.yaml).")
+    ] = None,
     legacy_dir: Annotated[
         Path, typer.Option(help="Check coverage of the legacy scripts' inputs.")
     ] = Path("legacy"),
 ) -> None:
     """Validate the registry and report counts by status and tier."""
     registry_file = path or _load(ctx).registry_path
-    registry, report = _load_registry(registry_file)
+    registry, report = _load_registry(registry_file, overlay)
     for warning in report.warnings:
         typer.echo(f"warning: {escape_terminal(warning)}")
 
@@ -444,7 +574,11 @@ def match(
     registry: Annotated[Path | None, typer.Option(help="Registry file (default: config).")] = None,
 ) -> None:
     """Match names against the registry and print one JSON result per line."""
-    loaded, report = _load_registry(registry or _load(ctx).registry_path)
+    if registry is not None:
+        loaded, report = _load_registry(registry)
+    else:
+        config = _load(ctx)
+        loaded, report = _load_registry(config.registry_path, _overlay(config))
     for warning in report.warnings:
         typer.echo(f"warning: {escape_terminal(warning)}", err=True)
     matcher = Matcher(loaded)

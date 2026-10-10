@@ -1,0 +1,54 @@
+# Lab mode (KTD13). Used by the host application (`brandsentinel -c config/lab.yaml`)
+# and, mounted read-only, by the lab proxy (docker/lab.compose.yaml).
+#
+# - Live discovery is off: lab mode refuses to start with CertStream or dnstwist.
+# - Lab data lives apart from production data.
+# - netguard allows the pinned lab subnet 172.31.250.0/24, and only for these
+#   hostnames; loopback, metadata and every other private range stay blocked.
+# - The host fetcher reaches lab hosts only through the lab proxy published on
+#   127.0.0.1:3129 and refuses any other URL; the lab proxy refuses non-lab hosts.
+data_dir: data-lab
+
+discovery:
+  certstream:
+    enabled: false
+  dnstwist:
+    enabled: false
+
+net:
+  lab:
+    enabled: true
+    subnet: 172.31.250.0/24
+    registry_overlay: registry/lab-overlay.yaml
+    hosts:
+      luminafoundation.test: 172.31.250.10
+      dailyledger-news.test: 172.31.250.10
+      lumina-parody.test: 172.31.250.10
+      lumina-valley-tourism.test: 172.31.250.10
+      illumina-lounge.test: 172.31.250.10
+      sunrise-yoga-studio.test: 172.31.250.10
+      luminafoundatoin.test: 172.31.250.10
+      lumina-foundation-org.test: 172.31.250.10
+      orin-relief.test: 172.31.250.10
+      login-luminafoundation.test: 172.31.250.10
+      pay-luminafoundation.test: 172.31.250.10
+      donate-luminafoundation.test: 172.31.250.10
+      orin-wellness-partners.test: 172.31.250.10
+      lumina-watch-news.test: 172.31.250.10
+      go-luminafoundation.test: 172.31.250.10
+      luminafoundation-gift.test: 172.31.250.10
+
+# TLS enrichment has no lab transport; lab sites are plain HTTP.
+enrich:
+  enabled: false
+
+# Sandboxes stay off in lab mode until a lab sandbox network exists (M7): the
+# production bs_sandbox proxy reaches the Internet and not the lab.
+sandbox:
+  enabled: false
+  instance: lab
+  lab_proxy_url: http://127.0.0.1:3129
+
+# Read by the lab proxy only.
+proxy:
+  lab_only: true

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from brandsentinel.config import Config
+from brandsentinel.config import Config, SandboxSettings
 from brandsentinel.store import Store, open_store
 
 
@@ -24,7 +24,8 @@ def clock() -> FakeClock:
 
 @pytest.fixture
 def config(tmp_path: Path) -> Config:
-    return Config(data_dir=tmp_path / "data")
+    # No sandbox runtime: tests that need one build it explicitly (docker marker).
+    return Config(data_dir=tmp_path / "data", sandbox=SandboxSettings(enabled=False))
 
 
 @pytest.fixture
@@ -121,3 +122,56 @@ def harness(tmp_path_factory):
     h = start_harness(tmp_path_factory.mktemp("harness"))
     yield h
     h.close()
+
+
+class FakeDocker:
+    """Handle on a fake `docker` binary (tests/fake_docker.py) and its state."""
+
+    def __init__(self, root: Path) -> None:
+        import json
+        import sys
+
+        self.state = root / "fake-docker"
+        self.state.mkdir()
+        (self.state / "networks").mkdir()
+        (self.state / "containers").mkdir()
+        self.binary = root / "docker"
+        fake = Path(__file__).parent / "fake_docker.py"
+        self.binary.write_text(f'#!/bin/sh\nexec {sys.executable} {fake} {self.state} "$@"\n')
+        self.binary.chmod(0o755)
+        self._json = json
+
+    def calls(self) -> list[list[str]]:
+        path = self.state / "calls.jsonl"
+        if not path.exists():
+            return []
+        return [self._json.loads(line) for line in path.read_text().splitlines()]
+
+    def containers(self) -> dict:
+        path = self.state / "state.json"
+        return self._json.loads(path.read_text()) if path.exists() else {}
+
+    def set_info(self, info: dict) -> None:
+        (self.state / "info.json").write_text(self._json.dumps(info))
+
+    def set_network(self, name: str, doc: dict) -> None:
+        (self.state / "networks" / f"{name}.json").write_text(self._json.dumps(doc))
+
+    def set_container(self, name: str, doc: dict) -> None:
+        (self.state / "containers" / f"{name}.json").write_text(self._json.dumps(doc))
+
+    def add_container(self, name: str, labels: dict, status: str = "running") -> None:
+        state = self.containers()
+        state[name] = {
+            "Id": f"id-{name}",
+            "Image": "fake/sleep",
+            "Labels": labels,
+            "State": {"Status": status, "ExitCode": 0, "OOMKilled": False},
+            "pid": None,
+        }
+        (self.state / "state.json").write_text(self._json.dumps(state))
+
+
+@pytest.fixture
+def fake_docker(tmp_path: Path) -> FakeDocker:
+    return FakeDocker(tmp_path)

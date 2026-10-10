@@ -1,0 +1,93 @@
+# Lab registry overlay (U11, KTD14): the fictional "Lumina Foundation" brand that
+# mirrors the Isha structure (foundation, teacher, program, campaign, donations).
+# Merged into the registry only in lab mode (net.lab.registry_overlay). Every
+# entry is synthetic; tests never use real Isha assets.
+# Check with: brandsentinel registry validate --overlay registry/lab-overlay.yaml
+version: 1
+
+brands:
+  - id: lumina-foundation
+    name: Lumina Foundation
+    aliases: [Lumina]
+    status: confirmed
+    provenance:
+      - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09, note: fictional lab brand}
+    keywords:
+      - term: luminafoundation
+        tier: high
+        fuzzy: true
+        status: confirmed
+        provenance:
+          - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+      - term: lumina
+        tier: low
+        status: confirmed
+        provenance:
+          - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+  - id: master-orin
+    name: Master Orin
+    status: confirmed
+    provenance:
+      - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+    keywords:
+      - term: masterorin
+        tier: high
+        fuzzy: true
+        status: confirmed
+        provenance:
+          - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+  - id: inner-radiance
+    name: Inner Radiance
+    status: confirmed
+    provenance:
+      - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+    keywords:
+      - term: innerradiance
+        tier: high
+        fuzzy: true
+        status: confirmed
+        provenance:
+          - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+  - id: save-rivers
+    name: Save Rivers
+    status: confirmed
+    provenance:
+      - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+    keywords:
+      - term: saverivers
+        tier: high
+        status: confirmed
+        provenance:
+          - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+
+# The low-tier keyword inside this word is not a brand hit (the "odisha" analogue).
+exclusions:
+  - term: illumina
+    scope: lumina
+    status: confirmed
+    provenance:
+      - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+
+domains:
+  - name: luminafoundation.test
+    brand: lumina-foundation
+    kind: official
+    suppresses: true
+    status: confirmed
+    provenance:
+      - {source: maintainer, recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+
+payees:
+  - id: lumina-foundation-upi
+    name: Lumina Foundation
+    brand: lumina-foundation
+    identifiers:
+      - {type: upi_vpa, value: lumina.foundation@lumenbank}
+    status: confirmed
+    provenance:
+      - {source: "http://luminafoundation.test/donate.html", recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
+
+# Reference pages need HTTPS (the collector requires verified TLS); the lab's
+# synthetic reference assets live under labsites/official/static and are wired
+# into the corpus by U17 (M6).
+reference_pages: []

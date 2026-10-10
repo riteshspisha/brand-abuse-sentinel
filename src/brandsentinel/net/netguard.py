@@ -356,6 +356,10 @@ class NetGuard:
     def lab_mode(self) -> bool:
         return self.settings.lab.enabled
 
+    def is_lab_host(self, host: str) -> bool:
+        """True for a hostname in the lab map (always False outside lab mode)."""
+        return host in self._lab_hosts
+
     def check_address(self, address: str, *, lab_host: bool = False) -> str | None:
         """The blocked class of `address` for this guard, or None if allowed."""
         try:
