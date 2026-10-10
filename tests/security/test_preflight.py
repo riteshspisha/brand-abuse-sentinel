@@ -134,18 +134,37 @@ HARDENED_PROXY = {
 INTERNAL_NET = {
     "Name": "bs_sandbox",
     "Internal": True,
+    "Options": {"com.docker.network.bridge.inhibit_ipv4": "true"},
+    "IPAM": {"Config": [{"Subnet": "172.31.251.0/24", "Gateway": "172.31.251.1"}]},
     "Containers": {"a": {"Name": "bs-egress-proxy"}, "b": {"Name": "bs-main-browser-9-1"}},
 }
 
 
-def network(fake, net=INTERNAL_NET, proxy=HARDENED_PROXY):
+class FakeNamespace:
+    """A rootless namespace view: the addresses it holds and its exposed listeners."""
+
+    def __init__(self, local=("10.0.2.100", "127.0.0.1", "172.31.252.1"), exposed=()):
+        self.local, self.exposed = set(local), list(exposed)
+
+    def local_ipv4(self):
+        return self.local
+
+    def exposed_listeners(self):
+        return self.exposed
+
+
+def network(fake, net=INTERNAL_NET, proxy=HARDENED_PROXY, namespace=None):
     fake.set_network("bs_sandbox", net)
     if proxy is not None:
         fake.set_container("bs-egress-proxy", proxy)
     docker = DockerCli("unix:///fake.sock", str(fake.binary))
     settings = SandboxSettings()
     runner = SandboxRunner(settings, docker)
-    return asyncio.run(preflight.check_network(docker, settings, runner, probe=False))
+    return asyncio.run(
+        preflight.check_network(
+            docker, settings, runner, probe=False, namespace=namespace or FakeNamespace()
+        )
+    )
 
 
 def test_internal_network_with_only_the_hardened_proxy_passes(fake_docker):
@@ -168,8 +187,11 @@ def test_missing_network_or_proxy_fails(fake_docker):
     docker = DockerCli("unix:///fake.sock", str(fake_docker.binary))
     settings = SandboxSettings()
     r = asyncio.run(
-        preflight.check_network(docker, settings, SandboxRunner(settings, docker), probe=False)
-    )
+        preflight.check_network(
+            docker, settings, SandboxRunner(settings, docker), probe=False,
+            namespace=FakeNamespace(),
+        )
+    )  # fmt: skip
     assert [c.name for c in r.failures] == ["network_exists"]
     net = copy.deepcopy(INTERNAL_NET)
     del net["Containers"]["a"]
@@ -203,16 +225,28 @@ def test_proxy_hardening_problems_are_named(change, problem):
 # --- production wiring: preflight and orphan sweep before startup (AE18) -----------
 
 
-def prepare(fake, store, info, **sandbox):
+def prepare(fake, store, info, account=None, lab=False, **sandbox):
     from brandsentinel.pipeline.orchestrator import Orchestrator, _prepare_sandbox
 
+    # The account checks see the real test account; inject the dedicated
+    # account's (clean) result unless a test supplies one.
+    if account is None:
+        account = preflight.Report()
+        account.add("not_root", True)
     fake.set_info(info)
     config = Config(
         runtime=RuntimeSettings(docker_binary=str(fake.binary)),
         sandbox=SandboxSettings(**sandbox),
     )
+    if lab:
+        config = config.model_copy(
+            update={"net": config.net.model_copy(update={"lab": config.net.lab.model_copy(
+                update={"enabled": True})})}
+        )  # fmt: skip
     orch = Orchestrator(store)
-    asyncio.run(_prepare_sandbox(orch, config))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(preflight, "check_account", lambda config: account)
+        asyncio.run(_prepare_sandbox(orch, config))
     return orch
 
 
@@ -260,5 +294,73 @@ def test_missing_docker_binary_disables_sandboxes_without_crashing(tmp_path):
 
 def test_job_containers_of_other_instances_are_expected_network_members(fake_docker):
     net = copy.deepcopy(INTERNAL_NET)
-    net["Containers"]["c"] = {"Name": "bs-lab-browser-12-2"}
+    net["Containers"]["b"] = {"Name": "bs-lab-browser-12-2"}
     assert network(fake_docker, net).ok
+    # ...but never two untrusted containers at once (SP1).
+    net["Containers"]["c"] = {"Name": "bs-main-browser-9-1"}
+    assert [c.name for c in network(fake_docker, net).failures] == ["single_untrusted_container"]
+
+
+# --- SP1: gateway, listeners, single untrusted container, dedicated account --------
+
+
+def test_network_without_inhibit_ipv4_fails_gateway_check(fake_docker):
+    net = copy.deepcopy(INTERNAL_NET)
+    net["Options"] = {}
+    r = network(fake_docker, net)
+    assert [c.name for c in r.failures] == ["gateway_inhibited"]
+    assert "lacks com.docker.network.bridge.inhibit_ipv4" in r.failures[0].detail
+
+
+def test_namespace_holding_a_sandbox_address_fails_gateway_check(fake_docker):
+    r = network(fake_docker, namespace=FakeNamespace(local={"172.31.251.1", "10.0.2.100"}))
+    assert [c.name for c in r.failures] == ["gateway_inhibited"]
+    assert "172.31.251.1" in r.failures[0].detail
+
+
+def test_exposed_namespace_listener_fails(fake_docker):
+    from brandsentinel.sandbox.netns import Listener
+
+    r = network(fake_docker, namespace=FakeNamespace(exposed=[Listener("tcp6", "::", 8080)]))
+    assert [c.name for c in r.failures] == ["rootless_listeners"]
+    assert "tcp6 [::]:8080" in r.failures[0].detail
+
+
+def test_uninspectable_namespace_fails_closed(fake_docker):
+    from brandsentinel.sandbox.netns import NamespaceUnavailable
+
+    class Broken(FakeNamespace):
+        def local_ipv4(self):
+            raise NamespaceUnavailable("no child_pid")
+
+    r = network(fake_docker, namespace=Broken())
+    assert {c.name for c in r.failures} == {"gateway_inhibited", "rootless_listeners"}
+
+
+def test_two_job_containers_on_the_sandbox_network_fail(fake_docker):
+    net = copy.deepcopy(INTERNAL_NET)
+    net["Containers"]["c"] = {"Name": "bs-main-browser-10-1"}
+    r = network(fake_docker, net)
+    assert [c.name for c in r.failures] == ["single_untrusted_container"]
+
+
+def _account(ok=True, warning=False):
+    report = preflight.Report()
+    report.add("not_code_owner", ok, "" if ok else "UID 1000 owns the code", warning=warning)
+    return report
+
+
+def test_developer_override_keeps_sandbox_stages_disabled(fake_docker, store):
+    orch = prepare(fake_docker, store, ROOTLESS_INFO, account=_account(warning=True))
+    assert orch.sandbox is None
+    assert any(r.startswith("dedicated_account") for r in orch.sandbox_disabled)
+
+
+def test_failing_account_checks_keep_sandbox_stages_disabled(fake_docker, store):
+    orch = prepare(fake_docker, store, ROOTLESS_INFO, account=_account(ok=False))
+    assert orch.sandbox is None
+
+
+def test_lab_mode_may_use_the_developer_override(fake_docker, store):
+    orch = prepare(fake_docker, store, ROOTLESS_INFO, account=_account(warning=True), lab=True)
+    assert orch.sandbox is not None

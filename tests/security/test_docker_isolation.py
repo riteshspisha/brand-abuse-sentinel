@@ -53,8 +53,10 @@ def docker():
 
 @pytest.fixture(scope="module")
 def gateway(docker) -> str:
+    # With inhibit_ipv4 (SP1) the bridge holds no gateway address; probe the
+    # address a gateway would have had.
     net = docker_json(docker, "network", "inspect", "bs_sandbox")[0]
-    return net["IPAM"]["Config"][0]["Gateway"]
+    return net["IPAM"]["Config"][0].get("Gateway") or "172.31.251.1"
 
 
 def escape_checks(gateway: str) -> list[dict]:

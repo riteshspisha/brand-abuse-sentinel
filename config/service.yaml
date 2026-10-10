@@ -1,0 +1,22 @@
+# Production configuration for the dedicated `brandsentinel` service account
+# (SP1, R50). Installed read-only as /opt/brandsentinel/etc/service.yaml by
+# scripts/service-account/install.sh; see docs/runbooks/service-account.md.
+#
+# It deliberately has no `runtime.allow_developer_account`: the account is not
+# root, does not own /opt/brandsentinel, is not in the `docker` group and cannot
+# open the rootful Docker socket, so `brandsentinel sandbox check --strict` passes
+# without it. Paths are absolute: the service never depends on its working
+# directory. Discovery sources keep their defaults (CertStream and dnstwist on).
+data_dir: /var/lib/brandsentinel/data
+registry_path: /opt/brandsentinel/src/registry/brands.yaml
+
+discovery:
+  dnstwist:
+    dictionary: /opt/brandsentinel/src/registry/dictionaries/brand-words.dict
+
+analysis:
+  payment_providers: /opt/brandsentinel/src/config/payment_providers.yaml
+  policy: /opt/brandsentinel/src/config/policy.yaml
+
+runtime:
+  docker_host: ""        # the account's own rootless endpoint ($XDG_RUNTIME_DIR/docker.sock)

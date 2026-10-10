@@ -254,16 +254,20 @@ Sandbox image `brandsentinel-sandbox:local`, 3.97 GB.
 - No per-destination rate limiting; egress is attributable to the host's IP.
 - The `io` cgroup controller is not delegated on the development host, so there is
   no disk-I/O throttling; the tmpfs size cap and read-only root bound disk use.
-- The bridge address of `bs_sandbox` (172.31.251.1, in the rootless network
-  namespace) answers TCP with a refusal: it is routable from sandboxes, and
-  nothing listens there today (checked with `ss` inside the namespace). Any
-  future service bound to all addresses in that namespace would be reachable
-  from sandboxes; the isolation suite probes the common ports on every run.
+- ~~The bridge address of `bs_sandbox` (172.31.251.1) is routable from
+  sandboxes into the rootless namespace.~~ Addressed by SP1 (acceptance under
+  the service account pending until recorded below): `bs_sandbox` uses
+  `inhibit_ipv4` with the gateway only reserved, so the namespace holds no
+  address on that bridge and a wildcard listener there is unreachable (proved
+  against a positive control); see `docs/runbooks/service-account.md`.
 - On the development host the developer account owns the code and is in the
-  `docker` group (rootful access). Only the dedicated-account setup meets R50.
-- Sandboxes on `bs_sandbox` can reach each other (inter-container traffic is on:
-  disabling it would also cut them off from the proxy on the same bridge). The
-  browser stage runs one job at a time by default (`stages.render: 1`).
+  `docker` group (rootful access). Only the dedicated-account setup meets R50;
+  sandbox stages refuse to run hostile content under the developer override
+  (lab mode excepted).
+- Sandboxes on `bs_sandbox` could reach each other (inter-container traffic must
+  stay on for the proxy). SP1 bounds this to one untrusted container per
+  network with the runner's network lease (`docs/runbooks/service-account.md`),
+  instead of relying on `stages.render: 1`.
 - CONNECT to port 80 is an opaque tunnel (KTD10): the destination is validated,
   the bytes inside are not (as for 443).
 - A tunnel whose client half-closed stays open until the idle timeout (30 s);

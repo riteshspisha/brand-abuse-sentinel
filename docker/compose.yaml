@@ -50,13 +50,21 @@ services:
 networks:
   # Sandbox containers join only this network. internal: no route out, so
   # isolation does not depend on any setting inside the sandbox (KTD9).
+  # inhibit_ipv4 (SP1): the bridge gets no address in the rootless network
+  # namespace, so sandboxes have no gateway into it (nothing listening there is
+  # reachable from a sandbox). Peers on the bridge (the proxy) stay reachable.
+  # The declared gateway only reserves .1, so no container ever holds it.
+  # Checked by `brandsentinel sandbox check` (gateway_inhibited).
   bs_sandbox:
     name: bs_sandbox
     internal: true
     enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: "true"
     ipam:
       config:
         - subnet: 172.31.251.0/24
+          gateway: 172.31.251.1
   bs_egress:
     name: bs_egress
     enable_ipv6: false
