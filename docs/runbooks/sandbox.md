@@ -243,8 +243,10 @@ Sandbox image `brandsentinel-sandbox:local`, 3.97 GB.
   response. The lab-only proxy refuses other names before any DNS query.
 - One client address may hold at most `proxy.max_connections_per_client` slots.
 - Lab mode refuses to use `bs_sandbox` for sandboxes (its proxy reaches the
-  Internet, not the lab); `config/lab.yaml` keeps sandboxes off until M7 adds a lab
-  sandbox network.
+  Internet, not the lab). Since M6, `config/lab.yaml` enables sandboxes for
+  network-less media jobs only, with `network: bs_lab_sandbox`, which does not
+  exist until M7 adds a lab sandbox network (a networked job fails to start).
+  The media gate is described in `docs/runbooks/media.md`.
 
 ## Residual risks
 

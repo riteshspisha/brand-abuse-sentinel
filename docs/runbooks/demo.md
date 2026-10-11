@@ -164,3 +164,36 @@ it cannot give relief until a maintainer confirms it.
 
 Review fixes and accepted limits: `docs/residual-review-findings/feat-m5-static-detection.md`.
 Analyst workflow: `docs/runbooks/triage.md`.
+
+## M6 - Media sandbox and visual matching (2026-10-11)
+
+```sh
+IMAGE_GIB=3 scripts/build-sandbox-image.sh        # base layers cached; image from this tree
+brandsentinel sandbox selftest media              # real container; see docs/runbooks/media.md
+brandsentinel -c <lab dev config> registry collect   # corpus: the pinned lab logo
+brandsentinel -c <lab dev config> submit http://lumina-foundation-org.test/ ...   # every lab site
+brandsentinel -c <lab dev config> run --duration 30
+uv run pytest -m lab tests/lab/test_media_demo.py
+```
+
+Pipeline per case, after the M5 static fetch: media decision → (when triggered)
+images fetched through the lab proxy → media container (no network) → visual
+matches against the corpus, OCR and QR text → bundle/3 → policy/3.
+
+Lab results (all 16 sites, real service, 13 media jobs in real containers, ~3 s):
+
+| Site | Priority | Category | Score | Media | Visual evidence |
+|---|---|---|---|---|---|
+| copied-assets | P1 | impersonation | 160 | logo ok | logo matches `lumina-logo` (registry asset `registry/assets/lab/lumina-logo.png`), perceptual pHash 2 / dHash 1; `copied_asset_match` corroborated by the domain name, the page presenting the brand and its "Official" claim |
+| donation-fraud | P1 | donation_fraud | 120 | QR ok | QR decodes to the same UPI payee as the page's deep link |
+| image-only | P2 | donation_fraud | 55 | QR ok, page image ok | OCR reads "Lumina Foundation", "Master Orin", "donate" and the UPI ID; the QR payee "Lumina Relief" is `claims_brand_unconfirmed` (FA4); was P4 `insufficient_evidence` in M5 |
+| unrelated-tourism | P4 | unrelated | 5 | logo ok | the valley sun logo (hard negative) matches nothing |
+| official | no_action | benign_related | 0 | not triggered | confirmed official domain: images never collected |
+| unrelated-lounge, unrelated-yoga | no_action | unrelated | 0 | not triggered | not brand-related |
+| every other site | as in M5 | as in M5 | as in M5 | guessed favicon absent | no matches |
+
+donation-fraud scores 120 under policy/2 and policy/3 alike (the M5 table's 150
+predates policy/2). js-login and js-payment remain `needs_render` (M7).
+
+Review fixes and accepted limits: `docs/residual-review-findings/feat-m6-media-visual.md`.
+Controls, verification record and residual risks: `docs/runbooks/media.md`.

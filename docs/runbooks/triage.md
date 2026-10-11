@@ -1,4 +1,4 @@
-# Analyst triage (M5)
+# Analyst triage (M5, M6)
 
 BrandSentinel ranks cases for analyst attention from evidence it collected
 itself. A priority is not a finding of fraud, and the tool never initiates a
@@ -39,8 +39,20 @@ entries, and add `--reextract` after an extractor change.
   score. Article markup, bylines, parody labels and disclaimers are written by the
   page and can be written by an attacker, so they never lower a score.
 - **Flags**: `manual_review` (with reasons), `needs_render` (script-built page;
-  browser rendering is M7), `needs_media` (images or QR codes; media analysis is
-  M6), `model_suggests_review` (M8).
+  browser rendering is M7), `needs_media` (media analysis is pending, failed,
+  partial or disabled, so images, QR codes and visual matches are unknown),
+  `model_suggests_review` (M8).
+- **Images and visual matches** (M6): which images were examined and why, what
+  the media sandbox reported for each (`ok`, `rejected` with the reason,
+  `failed` when a limit stopped it, `not_fetched`, `absent`), matches with the
+  reference they matched (brand, kind, registry asset or reference page, method
+  and hash distances), text read by OCR (untrusted) and QR payloads. A match
+  counts as abuse evidence (`copied_asset_match`) only when the page or domain
+  also ties it to the brand; otherwise it is `visual_match_uncorroborated` and a
+  review note. Labels `visual_match` and `media_rejected` mark these cases.
+  Payees from QR codes and image text appear in the payment table with source
+  `qr_code` or `image_text`; `possible_ocr_misread_of_registry_payee` means OCR
+  read something within two characters of a confirmed payee: check the image.
 - **Payment** rows separate the observed fact (provider, payee identifier, payee
   name, destination), the attribution (`registry_known_payee`,
   `claims_brand_unconfirmed`, `unrelated`) and the evidence references.
@@ -59,3 +71,6 @@ Reports are static HTML with escaped content, a `default-src 'none'` CSP, no
 scripts and no links to candidate URLs (URLs are text). Terminal output shows
 control and bidi characters as visible escapes. CSV cells that a spreadsheet
 would evaluate (`=`, `+`, `-`, `@`, leading tab or CR) are prefixed with `'`.
+Images are never shown in reports: they are hostile input, decoded only in the
+media sandbox. The CSV gained `media_status` and `visual_matches` (M6) as its
+last two columns; earlier columns keep their positions.

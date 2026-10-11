@@ -78,7 +78,10 @@ def rule(
 
 
 def _names(b: EvidenceBundle, ids) -> str:
-    known = {x["brand"]: x.get("name") or x["brand"] for x in b.association.brands}
+    known = {
+        x["brand"]: x.get("name") or x["brand"]
+        for x in [*b.visual.ocr_brands, *b.association.brands]
+    }
     out = []
     for i in ids:
         name = known.get(i, i)

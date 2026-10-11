@@ -194,10 +194,16 @@ def test_image_only_appeal_with_qr_payee_is_donation_fraud():
         page=PageBlock(available=True, image_only=True, text_chars=0),
         incomplete=["image_only"],
         payment=PaymentBlock(observations=[_qr_payee()], refs=["feature:11"]),
-        visual=visual(matches=[], ocr_presented=["lumina-foundation"], donation_cues=["donate"]),
+        visual=visual(
+            matches=[],
+            ocr_presented=["lumina-foundation"],
+            ocr_brands=[{**LUMINA, "images": [OTHER_SHA]}],
+            donation_cues=["donate"],
+        ),
     )
     r = evaluate(b, policy())
-    assert "payment_brand_unconfirmed_payee" in rules(r)
+    reason = next(x for x in r.reasons if x.rule == "payment_brand_unconfirmed_payee")
+    assert "under Lumina Foundation" in reason.explanation  # the name, read from the image
     assert r.category == "donation_fraud" and r.priority in ("P1", "P2")
 
 
