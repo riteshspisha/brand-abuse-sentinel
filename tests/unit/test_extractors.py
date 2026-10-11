@@ -1,4 +1,4 @@
-"""Static page extractors: registry, isolation, page_basics (M3 scope only)."""
+"""Static page extractors: registry, isolation, page_basics."""
 
 from tests.security.harness import PAGE
 
@@ -42,7 +42,7 @@ def test_malformed_html_and_unknown_charset_do_not_crash():
 
 
 def test_failing_extractor_is_recorded_not_fatal(monkeypatch):
-    def boom(text, base):
+    def boom(page):
         raise RuntimeError("bad parser day")
 
     monkeypatch.setitem(

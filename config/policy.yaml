@@ -1,0 +1,67 @@
+# Deterministic policy (U14, KTD17). Rules are defined in
+# src/brandsentinel/policy/rules.py; this file holds their points and thresholds.
+# Every rule must be listed here (and nothing else), so a typo fails loudly.
+# Change `version` whenever you change a number: each stored score records it.
+version: policy/2
+# policy/2 (M5 review): registry affiliation no longer clears credential
+# destinations or payees (credential_unapproved_destination,
+# payee_unapproved_on_vouched_host, not offset by relief), and the donation rule
+# no longer re-counts payees the payment rule scores. Rows scored under policy/1
+# keep that label; rescoring adds a new row and never rewrites the old one.
+
+# score = abuse + supporting - relief (floored at 0); priority by threshold.
+# Relief never offsets the destination rules (credential_unapproved_destination,
+# payee_unapproved_on_vouched_host): affiliation does not authorize them.
+thresholds:
+  P1: 80
+  P2: 50
+  P3: 25
+  P4: 1          # below this: no_action
+
+# Without at least one abuse-evidence rule a case is at most this priority, so
+# brand mentions, similarity, parking or lure language alone never reach P1/P2.
+max_priority_without_abuse: P3
+
+# A case whose content static analysis could not observe (not fetched, failed,
+# empty, script-built or image-only) and that shows no abuse evidence stays at
+# least at this priority: absence of evidence is not evidence of benign use.
+min_priority_when_unobserved: P4
+
+# Advisory model judgments (M8) above this probability on a P3/P4/no_action case
+# add the flag model_suggests_review. They never change priority.
+model_review_threshold: 0.8
+
+params:
+  recent_registration_days: 90
+
+points:
+  # Abuse evidence: the only route to P1 or P2.
+  credential_form_brand: 70
+  credential_cross_origin: 10
+  payment_brand_unconfirmed_payee: 55
+  donation_appeal_unconfirmed_payee: 30
+  # Registry-vouched host (official, redirected to official, or confirmed
+  # relationship) sending credentials or payments where the registry does not
+  # confirm: a compromise indicator, not offset by relief.
+  credential_unapproved_destination: 55
+  payee_unapproved_on_vouched_host: 50
+  false_association_claim: 45
+  lookalike_domain_brand_content: 50
+  unauthorized_commerce: 25
+  # Supporting signals.
+  domain_similarity_strong: 15
+  domain_similarity_weak: 5
+  recent_registration: 10
+  dns_mixed_private: 10
+  parked_typosquat: 35
+  social_engineering_language: 10
+  client_redirect_offsite: 10
+  blocked_redirect: 15
+  unobserved_content_on_lookalike: 15
+  # Registry-derived relief (subtracted). Page-provided signals are never relief.
+  official_domain: 1000
+  # Zero: the redirect is the candidate's own behaviour, not a registry fact. It
+  # stays as an explained reason, and content rules skip the official page.
+  redirects_to_official: 0
+  confirmed_payee: 25
+  confirmed_relationship: 40

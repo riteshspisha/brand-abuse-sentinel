@@ -260,6 +260,15 @@ class EnrichSettings(_Section):
         return v
 
 
+class AnalysisSettings(_Section):
+    """Static detection and triage (M5)."""
+
+    # Payment provider catalog read by the payment extractor.
+    payment_providers: Path = Path("config/payment_providers.yaml")
+    # Policy points and thresholds (U14).
+    policy: Path = Path("config/policy.yaml")
+
+
 class RuntimeSettings(_Section):
     """The account and container runtime the application runs under (U23, R50)."""
 
@@ -357,6 +366,7 @@ class Config(_Section):
     net: NetSettings = NetSettings()
     fetch: FetchSettings = FetchSettings()
     enrich: EnrichSettings = EnrichSettings()
+    analysis: AnalysisSettings = AnalysisSettings()
     runtime: RuntimeSettings = RuntimeSettings()
     sandbox: SandboxSettings = SandboxSettings()
     proxy: ProxySettings = ProxySettings()
@@ -392,6 +402,10 @@ class Config(_Section):
     @property
     def artifacts_dir(self) -> Path:
         return self.data_dir / "artifacts"
+
+    @property
+    def reports_dir(self) -> Path:
+        return self.data_dir / "reports"
 
 
 def _format_errors(err: ValidationError) -> str:

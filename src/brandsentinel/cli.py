@@ -7,6 +7,7 @@ command surface is stable and `--help` documents where each one lands.
 import asyncio
 import json
 import signal
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,9 +42,6 @@ app = typer.Typer(
 
 # Command -> milestone that implements it.
 _PLANNED = {
-    "cases": ("M5", "List, inspect and label cases."),
-    "report": ("M5", "Render analyst reports."),
-    "export": ("M5", "Export cases (CSV)."),
     "eval": ("M8", "Run the model evaluation."),
 }
 
@@ -52,6 +50,10 @@ registry_app = typer.Typer(help="Validate and inspect the Brand Registry.", no_a
 app.add_typer(registry_app, name="registry")
 sandbox_app = typer.Typer(help="Sandbox runtime checks and maintenance.", no_args_is_help=True)
 app.add_typer(sandbox_app, name="sandbox")
+cases_app = typer.Typer(help="List, inspect, label and re-score cases.", no_args_is_help=True)
+app.add_typer(cases_app, name="cases")
+export_app = typer.Typer(help="Export cases.", no_args_is_help=True)
+app.add_typer(export_app, name="export")
 
 
 @app.callback()
@@ -258,6 +260,7 @@ def run(
         typer.echo(f"WARNING {c.name}: {escape_terminal(c.detail)}", err=True)
     configure_logging(log_level.upper())
     registry, _ = _load_registry(config.registry_path, _overlay(config))
+    _check_analysis_config(config)
     store = open_store(config)
 
     async def main() -> None:
@@ -397,6 +400,7 @@ def analyze(
 
     config = _load(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
+    _check_analysis_config(config)
     try:
         host, _ = canonical_host(domain)
     except InvalidName as e:
@@ -511,6 +515,321 @@ def sandbox_sweep(ctx: typer.Context) -> None:
         typer.echo(escape_terminal(str(e)), err=True)
         raise typer.Exit(1) from e
     typer.echo(f"removed {removed} container(s) of instance {config.sandbox.instance}")
+
+
+# --- triage (M5) ----------------------------------------------------------------------
+
+PriorityOpt = Annotated[
+    list[str] | None, typer.Option("--priority", "-p", help="P1..P4 or no_action (repeatable).")
+]
+CategoryOpt = Annotated[list[str] | None, typer.Option("--category", help="Category (repeatable).")]
+LabelOpt = Annotated[str | None, typer.Option(help="Context label, e.g. editorial_or_critical.")]
+SourceOpt = Annotated[
+    str | None, typer.Option(help="Discovery source: certstream, dnstwist, manual.")
+]
+StrengthOpt = Annotated[str | None, typer.Option(help="Match strength: strong or weak.")]
+StatusOpt = Annotated[str | None, typer.Option(help="Case status, e.g. open.")]
+SinceOpt = Annotated[str | None, typer.Option(help="Cases created on or after YYYY-MM-DD (UTC).")]
+LimitOpt = Annotated[int | None, typer.Option(help="At most this many cases.")]
+
+
+def _case_filter(priority, category, label, source, strength, status, since, limit):
+    from brandsentinel.policy.scorer import CATEGORIES, NO_ACTION, PRIORITIES
+    from brandsentinel.triage import CaseFilter
+
+    bad = [x for x in priority or [] if x not in (*PRIORITIES, NO_ACTION)]
+    bad += [x for x in category or [] if x not in CATEGORIES]
+    if strength and strength not in ("strong", "weak"):
+        bad.append(strength)
+    if bad:
+        typer.echo(f"unknown filter value(s): {escape_terminal(', '.join(bad))}", err=True)
+        raise typer.Exit(2)
+    since_ts = None
+    if since:
+        try:
+            since_ts = datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=UTC).timestamp()
+        except ValueError as e:
+            typer.echo("--since must be YYYY-MM-DD", err=True)
+            raise typer.Exit(2) from e
+    return CaseFilter(
+        priority=tuple(priority or ()),
+        category=tuple(category or ()),
+        label=label,
+        source=source,
+        strength=strength,
+        status=status,
+        since=since_ts,
+        limit=limit,
+    )
+
+
+@cases_app.command("list")
+def cases_list(
+    ctx: typer.Context,
+    priority: PriorityOpt = None,
+    category: CategoryOpt = None,
+    label: LabelOpt = None,
+    source: SourceOpt = None,
+    strength: StrengthOpt = None,
+    status: StatusOpt = None,
+    since: SinceOpt = None,
+    limit: LimitOpt = None,
+) -> None:
+    """List cases, highest priority first."""
+    from brandsentinel.triage import list_cases
+
+    f = _case_filter(priority, category, label, source, strength, status, since, limit)
+    config = _load(ctx)
+    store = open_store(config)
+    try:
+        rows = list_cases(store.conn, f)
+    finally:
+        store.close()
+    if not rows:
+        typer.echo("no cases")
+        return
+    typer.echo(f"{'case':>6}  {'priority':<9} {'category':<22} {'score':>5}  host")
+    for c in rows:
+        tags = ", ".join([*c.labels, *(f"flag:{x}" for x in c.flags)])
+        line = (
+            f"{c.case_id:>6}  {c.priority or 'unscored':<9} {c.category or '-':<22}"
+            f" {'' if c.score is None else c.score:>5}  {c.host}"
+            f"  [{','.join(c.sources)}]" + (f"  {tags}" if tags else "")
+        )
+        typer.echo(escape_terminal(line))
+
+
+@cases_app.command("show")
+def cases_show(
+    ctx: typer.Context,
+    case_id: Annotated[int, typer.Argument(help="Case number.")],
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the scored bundle and policy result as JSON.")
+    ] = False,
+) -> None:
+    """Show a case: priority, reasons with evidence, and the observed evidence."""
+    from brandsentinel.triage import load_case
+    from brandsentinel.triage.report import render_case_text
+
+    config = _load(ctx)
+    store = open_store(config)
+    try:
+        report = load_case(store.conn, case_id)
+    finally:
+        store.close()
+    if report is None:
+        typer.echo(f"no case #{case_id}", err=True)
+        raise typer.Exit(1)
+    if as_json:
+        doc = {
+            "case_id": case_id,
+            "bundle": report.bundle.model_dump(mode="json") if report.bundle else None,
+            "policy_result": report.result.model_dump(mode="json") if report.result else None,
+            "analyst_labels": report.analyst_labels,
+        }
+        text = json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=True)
+    else:
+        text = "\n".join(render_case_text(report))
+    # split("\n"): separators such as U+2028 inside values must reach escape_terminal.
+    for line in text.split("\n"):
+        typer.echo(escape_terminal(line))
+
+
+@cases_app.command("label")
+def cases_label(
+    ctx: typer.Context,
+    case_id: Annotated[int, typer.Argument(help="Case number.")],
+    question: Annotated[
+        str | None, typer.Option(help="Decision question (see --help of the evaluation).")
+    ] = None,
+    value: Annotated[str | None, typer.Option(help="yes, no or unsure.")] = None,
+    verdict: Annotated[
+        str | None, typer.Option(help="Overall: abusive, suspicious, benign, unrelated, unsure.")
+    ] = None,
+    by: Annotated[str | None, typer.Option(help="Who is labelling.")] = None,
+) -> None:
+    """Record an analyst label (per question, or the overall verdict) for evaluation.
+    Labels never change the policy decision."""
+    from brandsentinel.triage import OVERALL, QUESTIONS, LabelError, record_label
+
+    pairs = []
+    if verdict:
+        pairs.append((OVERALL, verdict))
+    if question or value:
+        if not (question and value):
+            typer.echo("--question and --value go together", err=True)
+            raise typer.Exit(2)
+        pairs.append((question, value))
+    if not pairs:
+        typer.echo(f"give --verdict and/or --question/--value; questions: {', '.join(QUESTIONS)}")
+        raise typer.Exit(2)
+    config = _load(ctx)
+    store = open_store(config)
+    try:
+        for q, v in pairs:
+            record_label(store.conn, case_id, q, v, labelled_by=by)
+            typer.echo(escape_terminal(f"case #{case_id}: {q} = {v}"))
+    except LabelError as e:
+        typer.echo(escape_terminal(str(e)), err=True)
+        raise typer.Exit(2) from e
+    finally:
+        store.close()
+
+
+@cases_app.command("rescore")
+def cases_rescore(
+    ctx: typer.Context,
+    case_ids: Annotated[list[int] | None, typer.Argument(help="Case numbers.")] = None,
+    all_cases: Annotated[bool, typer.Option("--all", help="Every open case.")] = False,
+    reextract: Annotated[
+        bool,
+        typer.Option(
+            "--reextract",
+            help="First re-run the extractors over each case's stored page (offline).",
+        ),
+    ] = False,
+) -> None:
+    """Rebuild each case's evidence bundle from stored facts and score it with the
+    current registry and policy (for example after a policy or registry change).
+    Nothing is fetched."""
+    from brandsentinel.analysis import AnalysisContext
+    from brandsentinel.pipeline.stages import reextract as reextract_case
+    from brandsentinel.policy.scorer import CaseScorer
+
+    config = _load(ctx)
+    registry, _ = _load_registry(config.registry_path, _overlay(config))
+    policy, catalog = _check_analysis_config(config)
+    if not case_ids and not all_cases:
+        typer.echo("give case numbers or --all", err=True)
+        raise typer.Exit(2)
+    store = open_store(config)
+    try:
+        scorer = CaseScorer(store.conn, registry, policy)
+        ctx = AnalysisContext(scorer.lexicon, catalog)
+        ids = case_ids or [
+            r[0] for r in store.conn.execute("SELECT id FROM cases WHERE status = 'open'")
+        ]
+        failed = False
+        for case_id in ids:
+            try:  # one bad case must not stop the batch
+                if reextract and not reextract_case(store, case_id, ctx, now=time.time()):
+                    typer.echo(f"case #{case_id}: no stored page to re-extract")
+                out = scorer.score(case_id)
+            except Exception as e:
+                failed = True
+                msg = f"case #{case_id}: rescoring failed: {type(e).__name__}: {e}"
+                typer.echo(escape_terminal(msg[:500]), err=True)
+                continue
+            if out is None:
+                failed = True
+                typer.echo(f"no case #{case_id}", err=True)
+                continue
+            state = "changed" if out.changed else "unchanged"
+            typer.echo(
+                f"case #{case_id}: {out.result.priority} {out.result.category}"
+                f" score {out.result.score} ({state})"
+            )
+    finally:
+        store.close()
+    if failed:
+        raise typer.Exit(1)
+
+
+@app.command()
+def report(
+    ctx: typer.Context,
+    case_ids: Annotated[list[int] | None, typer.Argument(help="Case numbers.")] = None,
+    index: Annotated[bool, typer.Option("--index", help="Also write index.html.")] = False,
+    out: Annotated[
+        Path | None, typer.Option(help="Output directory (default: <data_dir>/reports).")
+    ] = None,
+) -> None:
+    """Write self-contained HTML analyst reports (escaped, strict CSP, no live links)."""
+    from brandsentinel.triage import CaseFilter, list_cases, load_case
+    from brandsentinel.triage.report import render_case_html, render_index_html, write_private
+
+    if not case_ids and not index:
+        typer.echo("give case numbers and/or --index", err=True)
+        raise typer.Exit(2)
+    config = _load(ctx)
+    out_dir = out or config.reports_dir
+    store = open_store(config)
+    try:
+        cases = list_cases(store.conn, CaseFilter())
+        wanted = case_ids or ([c.case_id for c in cases] if index else [])
+        missing = False
+        for case_id in wanted:
+            r = load_case(store.conn, case_id)
+            if r is None:
+                missing = True
+                typer.echo(f"no case #{case_id}", err=True)
+                continue
+            path = write_private(out_dir / f"case-{case_id}.html", render_case_html(r))
+            typer.echo(escape_terminal(str(path)))
+        if index:
+            path = write_private(out_dir / "index.html", render_index_html(cases, time.time()))
+            typer.echo(escape_terminal(str(path)))
+    finally:
+        store.close()
+    if missing:
+        raise typer.Exit(1)
+
+
+@export_app.command("csv")
+def export_csv(
+    ctx: typer.Context,
+    out: Annotated[
+        Path, typer.Option("--out", "-o", help="CSV file to write, or - for stdout.")
+    ] = Path("-"),
+    priority: PriorityOpt = None,
+    category: CategoryOpt = None,
+    label: LabelOpt = None,
+    source: SourceOpt = None,
+    strength: StrengthOpt = None,
+    status: StatusOpt = None,
+    since: SinceOpt = None,
+    limit: LimitOpt = None,
+) -> None:
+    """Export cases as CSV (stable columns; formula triggers neutralized)."""
+    from brandsentinel.triage import list_cases, load_case
+    from brandsentinel.triage.export import to_csv
+    from brandsentinel.triage.report import write_private
+
+    f = _case_filter(priority, category, label, source, strength, status, since, limit)
+    config = _load(ctx)
+    store = open_store(config)
+    try:
+        cases = list_cases(store.conn, f)
+        # One case at a time: every bundle is not held in memory at once.
+        text = to_csv(r for c in cases if (r := load_case(store.conn, c.case_id)) is not None)
+    finally:
+        store.close()
+    if str(out) != "-":
+        write_private(out, text)
+        typer.echo(f"wrote {len(cases)} case(s) to {escape_terminal(str(out))}")
+    elif sys.stdout.isatty():
+        # A terminal shows control characters as visible escapes.
+        for line in text.split("\r\n"):
+            if line:
+                typer.echo(escape_terminal(line))
+    else:
+        # Piped or redirected: the exact CSV, identical to --out (cells are already
+        # sanitized at storage and formula-neutralized).
+        sys.stdout.write(text)
+
+
+def _check_analysis_config(config: Config):
+    """Load the policy and payment catalog, or exit 2 with a readable error."""
+    from brandsentinel.analysis.payment import CatalogError, ProviderCatalog
+    from brandsentinel.policy.scorer import Policy, PolicyError
+
+    try:
+        return Policy.load(config.analysis.policy), ProviderCatalog.load(
+            config.analysis.payment_providers
+        )
+    except (PolicyError, CatalogError) as e:
+        typer.echo(escape_terminal(str(e)), err=True)
+        raise typer.Exit(2) from e
 
 
 def _overlay(config: Config) -> Path | None:
