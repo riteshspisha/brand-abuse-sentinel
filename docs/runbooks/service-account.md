@@ -7,9 +7,10 @@ network gives sandboxes no gateway into the rootless network namespace and holds
 at most one untrusted container at a time.
 
 SP1 is satisfied only when `scripts/service-account/validate.sh` passes under
-the account itself (results recorded in the SP1 section of
-`docs/runbooks/sandbox.md`). Until then, hostile browser and media execution
-stay gated (control M6 below).
+the account itself. It passed on the development host on 2026-10-11 (Run 2 in
+"Acceptance history" below, after Run 1 failed). The hostile-content gate
+(control M6) stays in code: sandbox stages refuse real content unless the
+account checks pass cleanly, whatever host they run on.
 
 ## Controls
 
@@ -229,3 +230,55 @@ positive and negative listener controls).
 Environment requirement confirmed: the proxy path is DNS through slirp4netns
 plus public IPv4; slirp4netns runs without `--ipv6`, so an IPv6-only (NAT64)
 network cannot serve it.
+
+### Run 2, 2026-10-11: PASSED
+
+Deployment: `/opt/brandsentinel` installed from commit
+`31318f0a9c08577a01954c7191c9d3d3117e0c9c` (`INSTALL`: Python 3.12.14,
+`uv_lock_sha256` `36a5c205…4fd4`, `dockerd_rootless_sha256` `20020363…3488`).
+Full evidence stays on the host, not in Git:
+`/var/lib/brandsentinel/sp1-validation-20261011T071607Z` (account-private),
+copied for review to `/tmp/sp1-evidence` (`junit.xml`, `pytest.txt`,
+`sandbox-check.txt`, `namespace.json`, `compose.log`, `live.txt`).
+
+Acceptance results (the run, 2026-10-11 12:46 +05:30, as `brandsentinel`):
+
+| Item | Result | Source |
+|---|---|---|
+| Account checks (not root, not in `docker`, no rootful socket, install root-owned and not writable, no override, not code owner) | all PASS | `validate.sh` output |
+| `sandbox check --strict` | account ok, runtime ok, network `bs_sandbox` ok, no warnings; direct-egress probe: every attempt failed | `sandbox-check.txt` |
+| Examined namespace | `net:[4026532797]` via the detached netns file of child pid 985273; host is `net:[4026531833]` | `sandbox-check.txt`, `namespace.json` |
+| Sandbox bridge in that namespace | `br-275eb3622bb1` = `bs_sandbox` (id `275eb3622bb1…`); also `tap0`; no host interfaces | `namespace.json` |
+| Exposed listeners in the namespace | none | `namespace.json` |
+| Environment | DNS through `10.0.2.3` ok, IPv4 ok, IPv6 unavailable (slirp4netns without `--ipv6`, expected) | `namespace.json` |
+| Security and real-container suites (`-m "security or docker"`) | 400 passed, 0 failed, 0 errors, 0 skipped | `junit.xml`, `pytest.txt` |
+
+The suites include, all passed under the account: the gateway tests
+(`test_sandbox_network_declares_inhibit_ipv4_and_holds_no_gateway`, the
+namespace listener unreachable from `bs_sandbox` and reachable on the positive
+control network, every TCP port of every namespace address closed), proxy
+reachable while direct egress is not, no network for media jobs, the
+single-untrusted-container tests on the real network (hand-started container and
+another instance's orphan both refused) and all network-lease tests, the
+namespace identity test, the positive/negative listener controls, and
+`test_reading_through_nsenter_agrees_with_reading_directly`. The last one matters
+because in this run the child process happened to sit inside the bridge
+namespace ("read directly"), unlike Run 1; the nsenter path that Run 1's layout
+needs was exercised by that test on the account.
+
+Live configuration snapshot (2026-10-11 12:53 +05:30, after the run; `live.txt`).
+This shows the deployed configuration only; it does not by itself prove the
+isolation properties, which come from the tests above:
+
+- image `brandsentinel-sandbox:local` = running egress proxy image =
+  `sha256:5d908b8e2abc55a5fe3ad372f0cf813930af83139b9c2cc63109214a252eba64`,
+  the image built from `31318f0` with every package file matching the commit;
+- `bs_sandbox`: internal, IPv6 off, `inhibit_ipv4=true`, gateway `172.31.251.1`
+  reserved;
+- namespace still `net:[4026532797]` with `br-275eb3622bb1`, no exposed listeners.
+
+Independent check of the installation (developer account, read-only): the
+source under `/opt/brandsentinel/src` is byte-identical to `git archive 31318f0`;
+no file under `/opt/brandsentinel` is owned by anyone but root, and none is
+group- or world-writable. The previous install (`/opt/brandsentinel.prev-4280e42`)
+was kept for rollback and can be removed.

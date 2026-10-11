@@ -165,7 +165,11 @@ Development config needs `runtime.allow_developer_account: true`; `status` then
 warns that the account owns the code and can reach the rootful socket (when the
 developer is in the `docker` group). This is not the production boundary.
 
-### Production: dedicated account (R50) — not yet performed
+### Production: dedicated account (R50) — performed 2026-10-11 (SP1)
+
+The procedure that was used, with verification and rollback, is
+`docs/runbooks/service-account.md`; its acceptance record is there too. The
+sketch below is the original M4 outline, kept for context.
 
 ```sh
 sudo useradd --create-home --user-group --shell /usr/bin/nologin brandsentinel
@@ -255,8 +259,8 @@ Sandbox image `brandsentinel-sandbox:local`, 3.97 GB.
 - The `io` cgroup controller is not delegated on the development host, so there is
   no disk-I/O throttling; the tmpfs size cap and read-only root bound disk use.
 - ~~The bridge address of `bs_sandbox` (172.31.251.1) is routable from
-  sandboxes into the rootless namespace.~~ Addressed by SP1 (acceptance under
-  the service account pending until recorded below): `bs_sandbox` uses
+  sandboxes into the rootless namespace.~~ Addressed by SP1, accepted under the
+  service account on 2026-10-11 (`docs/runbooks/service-account.md`): `bs_sandbox` uses
   `inhibit_ipv4` with the gateway only reserved, so the namespace holds no
   address on that bridge and a wildcard listener there is unreachable (proved
   against a positive control); see `docs/runbooks/service-account.md`.
