@@ -22,9 +22,20 @@ Before a job runs, any container left for the same job by an earlier attempt is
 removed, and the run is refused if one survives. At startup, before job leases
 are recovered, `sweep_orphans` removes every container carrying this instance's
 label (and only those).
+
+The shared sandbox network carries at most one untrusted container at a time
+(SP1), because containers on one bridge can reach each other and the proxy must
+stay on that bridge. A job on it takes a network lease: an exclusive `flock` on
+a per-network file in the account's runtime directory (held across every
+process and instance of the account, released by the kernel if the process
+dies). Under the lease the run is refused (`SandboxNetworkBusy`) if anything but
+the egress proxy is attached, whether another job, an orphan from a crash or a
+container started by hand. Once started, membership is checked again and the
+job is killed (`network_shared`) if another untrusted container has appeared.
 """
 
 import asyncio
+import fcntl
 import json
 import logging
 import os
@@ -33,6 +44,7 @@ import subprocess
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from brandsentinel.config import SandboxLimits, SandboxSettings
@@ -62,7 +74,10 @@ Status = Literal[
     "exit_error",
     "invalid_output",
     "start_error",
+    "network_shared",
 ]
+# How long after start the runner waits to see its own container on the network.
+_ATTACH_WATCH_SECONDS = 5.0
 
 
 class SandboxError(Exception):
@@ -71,6 +86,40 @@ class SandboxError(Exception):
 
 class SandboxBusy(SandboxError):
     """A container from an earlier attempt of this job could not be removed."""
+
+
+class SandboxNetworkBusy(SandboxError):
+    """The shared sandbox network is leased by another process, or already carries
+    an untrusted container."""
+
+
+def lease_dir() -> Path:
+    """Per-account directory for network lease files: $XDG_RUNTIME_DIR (a private
+    tmpfs) when it is ours, else ~/.cache/brandsentinel."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and os.path.isdir(runtime) and os.stat(runtime).st_uid == os.getuid():
+        return Path(runtime) / "brandsentinel"
+    return Path.home() / ".cache" / "brandsentinel"
+
+
+class NetworkLease:
+    """An exclusive, non-blocking flock on one network's lease file."""
+
+    def __init__(self, network: str, directory: Path | None = None) -> None:
+        directory = directory or lease_dir()
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / f"sandbox-network-{network}.lock"
+        self._fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(self._fd)
+            raise SandboxNetworkBusy(f"network {network} is leased by another job") from None
+
+    def release(self) -> None:
+        if self._fd >= 0:
+            os.close(self._fd)  # closing the descriptor drops the lock
+            self._fd = -1
 
 
 def default_docker_host() -> str:
@@ -339,9 +388,27 @@ class SandboxRunner:
         if not _JOB.match(job) or attempt < 0:
             raise SandboxError("invalid job id or attempt")
         self.validate(spec)
+        exclusive = spec.network if spec.network == self.settings.network else None
+        lease = NetworkLease(exclusive) if exclusive else None
+        try:
+            return await self._run(spec, job, attempt, stdin, exclusive)
+        finally:
+            if lease is not None:
+                lease.release()
+
+    async def _run(
+        self, spec: SandboxSpec, job: str, attempt: int, stdin: bytes, exclusive: str | None
+    ) -> SandboxResult:
         lim = spec.limits or self.settings.limits
         name = self.container_name(spec.role, job, attempt)
         await self.clear_job(job)
+        if exclusive:
+            others = await self.untrusted_members(exclusive)
+            if others:
+                raise SandboxNetworkBusy(
+                    f"network {exclusive} already carries untrusted container(s):"
+                    f" {', '.join(others)}"
+                )
         result = SandboxResult(name=name)
         start = time.monotonic()
         try:
@@ -350,7 +417,7 @@ class SandboxRunner:
                 result.status = "start_error"
                 result.error = created.stderr.strip()[:500]
                 return result
-            await self._attach(name, stdin, lim, result)
+            await self._attach(name, stdin, lim, result, exclusive)
             if result.status == "ok":
                 await self._inspect(name, result)
                 # Docker records OOMKilled from an asynchronous cgroup event that
@@ -368,7 +435,50 @@ class SandboxRunner:
             log.info("sandbox job finished", extra={"fields": {"sandbox": result.summary()}})
         return result
 
-    async def _attach(self, name: str, stdin: bytes, lim: SandboxLimits, result) -> None:
+    async def untrusted_members(self, network: str, own: str | None = None) -> list[str]:
+        """Containers attached to `network` other than the egress proxy (and `own`).
+        A network that cannot be inspected counts as busy."""
+        r = await self.docker.call("network", "inspect", "--format", "{{json .}}", network)
+        if not r.ok:
+            raise SandboxNetworkBusy(f"cannot inspect network {network}: {r.stderr.strip()[:200]}")
+        try:
+            members = (json.loads(r.stdout).get("Containers") or {}).values()
+            names = sorted(str(c.get("Name", "")) for c in members)
+        except (ValueError, AttributeError) as e:
+            raise SandboxNetworkBusy(f"unreadable inspect output for {network}") from e
+        return [n for n in names if n not in (self.settings.proxy_container, own)]
+
+    async def _watch_network(self, network: str, name: str, result: SandboxResult) -> None:
+        """After start: once our container is attached, nothing else untrusted may be."""
+        deadline = time.monotonic() + _ATTACH_WATCH_SECONDS
+        while True:
+            try:
+                r = await self.docker.call("network", "inspect", "--format", "{{json .}}", network)
+                names = {
+                    str(c.get("Name", ""))
+                    for c in (json.loads(r.stdout).get("Containers") or {}).values()
+                } if r.ok else set()  # fmt: skip
+            except (ValueError, AttributeError):
+                names = set()
+            if name in names:
+                others = sorted(names - {name, self.settings.proxy_container})
+                if others:
+                    result.status = "network_shared"
+                    result.error = f"another untrusted container joined {network}: {others}"
+                    await self.kill(name)
+                return
+            if time.monotonic() > deadline:
+                return
+            await asyncio.sleep(0.05)
+
+    async def _attach(
+        self,
+        name: str,
+        stdin: bytes,
+        lim: SandboxLimits,
+        result,
+        exclusive: str | None = None,
+    ) -> None:
         try:
             proc = await asyncio.create_subprocess_exec(
                 *self.docker.argv("start", "--attach", "--interactive", name),
@@ -380,9 +490,14 @@ class SandboxRunner:
         except OSError as e:
             result.status, result.error = "start_error", f"cannot run docker: {e}"[:500]
             return
+        watcher = (
+            asyncio.create_task(self._watch_network(exclusive, name, result)) if exclusive else None
+        )
         try:
             async with asyncio.timeout(lim.wall_seconds):
                 await self._exchange(proc, stdin, lim, result)
+                if watcher is not None:  # let a started check finish deciding
+                    await asyncio.wait({watcher}, timeout=0.2)
         except TimeoutError:
             result.status = "timeout"
             result.error = f"wall time {lim.wall_seconds:g}s exceeded"
@@ -390,6 +505,8 @@ class SandboxRunner:
             # Keep reading (and discarding) the CLI's output from here on: dockerd
             # blocks on an attached stream nobody reads, and `docker kill` would
             # then not return until it timed out.
+            if watcher is not None and not watcher.done():
+                watcher.cancel()
             drains = [asyncio.create_task(_discard(s)) for s in (proc.stdout, proc.stderr)]
             if result.status != "ok" or proc.returncode is None:
                 result.killed = result.status != "ok"

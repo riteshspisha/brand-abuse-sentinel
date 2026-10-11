@@ -476,6 +476,14 @@ def sandbox_check(
     network: Annotated[
         bool, typer.Option("--network/--no-network", help="Also check the sandbox network.")
     ] = True,
+    strict: Annotated[
+        bool,
+        typer.Option(
+            "--strict",
+            help="Also fail on warnings (a check that passed only through the developer"
+            " override). The dedicated service account must pass this (SP1).",
+        ),
+    ] = False,
 ) -> None:
     """Run the sandbox preflight: account, rootless runtime and (with a direct-egress
     probe container) the sandbox network. Exits 1 if any check fails."""
@@ -496,8 +504,13 @@ def sandbox_check(
         for c in net.checks:
             if c.ok and c.name == "direct_egress_blocked":
                 typer.echo(f"    probe: {escape_terminal(c.detail)}")
+            if c.ok and c.name == "gateway_inhibited":
+                typer.echo(f"    examined: {escape_terminal(c.detail)}")
         reports.append(net)
     if not all(r.ok for r in reports):
+        raise typer.Exit(1)
+    if strict and any(r.warnings for r in reports):
+        typer.echo("strict: warnings are failures", err=True)
         raise typer.Exit(1)
 
 

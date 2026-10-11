@@ -10,6 +10,8 @@ short timeout. Result values:
 - http:        "status:<code>" (a direct or proxied HTTP request) or error
 - connect:     "status:<code>" for a CONNECT through a proxy, or error
 - read/write/exec/proc: filesystem and process facts for isolation checks
+- scan:        list of TCP ports in [start, end] that accepted a connection
+- ipv6:        this container's IPv6 addresses as (interface, address) pairs
 """
 
 import json
@@ -166,8 +168,40 @@ def facts():
     }
 
 
+def scan(host, start, end):
+    """Connect to every port; refused or unreachable ports return at once."""
+    open_ports = []
+    for port in range(start, end + 1):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        try:
+            if s.connect_ex((host, port)) == 0:
+                open_ports.append(port)
+        except OSError:
+            pass
+        finally:
+            s.close()
+    return open_ports
+
+
+def ipv6_addresses():
+    out = []
+    try:
+        with open("/proc/net/if_inet6") as f:
+            for line in f:
+                fields = line.split()
+                out.append([fields[5], fields[0]])
+    except OSError:
+        pass
+    return out
+
+
 def run(check):
     kind = check["kind"]
+    if kind == "scan":
+        return scan(check["host"], check["start"], check["end"])
+    if kind == "ipv6":
+        return ipv6_addresses()
     if kind == "tcp":
         fam = socket.AF_INET6 if ":" in check["host"] else socket.AF_INET
         return tcp(check["host"], check["port"], fam)

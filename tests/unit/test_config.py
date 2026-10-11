@@ -116,3 +116,31 @@ def test_sandbox_defaults_are_isolated_and_bounded():
     assert c.runtime.docker_host == "" and not c.runtime.allow_developer_account
     assert c.sandbox.network == "bs_sandbox" and c.sandbox.limits.wall_seconds == 60
     assert not c.proxy.lab_only
+
+
+def test_no_repository_config_enables_the_developer_override():
+    # SP1: the override is for a developer's private config only. Every config
+    # in the repository, and the service account's in particular, leaves it off.
+    import yaml
+    from tests.detection_support import REPO
+
+    for path in sorted((REPO / "config").glob("*.yaml")):
+        data = yaml.safe_load(path.read_text()) or {}
+        assert (data.get("runtime") or {}).get("allow_developer_account", False) is False, path
+
+
+def test_service_config_is_valid_and_absolute():
+    from tests.detection_support import REPO
+
+    from brandsentinel.config import load_config
+
+    config = load_config(REPO / "config" / "service.yaml")
+    assert config.runtime.allow_developer_account is False
+    for p in (
+        config.data_dir,
+        config.registry_path,
+        config.analysis.policy,
+        config.analysis.payment_providers,
+        config.discovery.dnstwist.dictionary,
+    ):
+        assert p.is_absolute(), p

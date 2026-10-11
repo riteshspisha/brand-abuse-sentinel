@@ -13,9 +13,13 @@ stages, and `status` says why.
 
 Network checks (`check_network`) gate the browser stage: the sandbox network is
 internal, the egress proxy is the only long-running container on it and is
-hardened, and a throwaway container on it cannot reach the Internet directly.
+hardened, at most one untrusted job container is attached, a throwaway
+container on it cannot reach the Internet directly, and (SP1) the bridge holds
+no gateway address in the rootless namespace (`inhibit_ipv4`). As defense in
+depth, nothing in that namespace may listen on a non-loopback address.
 """
 
+import ipaddress
 import json
 import os
 import re
@@ -27,9 +31,11 @@ from pathlib import Path
 
 import brandsentinel
 from brandsentinel.config import Config, SandboxSettings
+from brandsentinel.sandbox.netns import NamespaceUnavailable, RootlessNamespace
 from brandsentinel.sandbox.runner import DockerCli, SandboxError, SandboxRunner, SandboxSpec
 
 ROOTFUL_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock")
+INHIBIT_IPV4 = "com.docker.network.bridge.inhibit_ipv4"
 _JOB_NAME = re.compile(r"^bs-[a-z0-9]{1,16}-[a-z]{1,16}-[a-z0-9][a-z0-9-]*-[0-9]+$")
 
 # Runs inside a container on the sandbox network; every attempt must fail.
@@ -210,6 +216,7 @@ async def check_network(
     *,
     network: str | None = None,
     probe: bool = True,
+    namespace: RootlessNamespace | None = None,
 ) -> Report:
     report = Report()
     network = network or settings.network
@@ -227,6 +234,13 @@ async def check_network(
         not others,
         f"unexpected container(s) on {network}: {', '.join(others)}",
     )
+    jobs = [n for n in attached if _JOB_NAME.match(n)]
+    report.add(
+        "single_untrusted_container",
+        len(jobs) <= 1,
+        f"{len(jobs)} job containers share {network}: {', '.join(jobs)}",
+    )
+    _check_gateway(report, net, docker, namespace)
     report.add(
         "proxy_attached",
         settings.proxy_container in attached,
@@ -243,6 +257,66 @@ async def check_network(
     if probe and report.ok:
         report.checks.append(await _egress_probe(runner, network))
     return report
+
+
+def bridge_name(net: dict) -> str:
+    """The Linux bridge Docker created for a network."""
+    opts = net.get("Options") or {}
+    return opts.get("com.docker.network.bridge.name") or "br-" + str(net.get("Id", ""))[:12]
+
+
+def _check_gateway(
+    report: Report, net: dict, docker: DockerCli, namespace: RootlessNamespace | None
+) -> None:
+    """SP1: the sandbox bridge must hold no address in the rootless namespace, so
+    sandboxes have no gateway into it (mandatory). The inspected namespace must
+    contain that bridge, so the check can never pass on another namespace's
+    addresses. Defense in depth: nothing in it listens on a non-loopback address."""
+    name = net.get("Name", "")
+    inhibited = (net.get("Options") or {}).get(INHIBIT_IPV4) == "true"
+    try:
+        ns = namespace or RootlessNamespace.for_endpoint(docker.host)
+        interfaces = ns.interfaces()
+        local = ns.local_ipv4()
+        exposed = ns.exposed_listeners()
+    except NamespaceUnavailable as e:
+        report.add("gateway_inhibited", False, f"cannot inspect the rootless namespace: {e}")
+        report.add("rootless_listeners", False, f"cannot inspect the rootless namespace: {e}")
+        return
+    where = ns.describe()
+    bridge = bridge_name(net)
+    if bridge not in interfaces:
+        detail = f"the inspected namespace {where} does not contain {name}'s bridge {bridge}"
+        report.add("gateway_inhibited", False, detail)
+        report.add("rootless_listeners", False, detail)
+        return
+    subnets = []
+    for cfg in (net.get("IPAM") or {}).get("Config") or []:
+        try:
+            subnets.append(ipaddress.ip_network(cfg.get("Subnet", ""), strict=False))
+        except ValueError:
+            continue
+    in_subnet = sorted(
+        a for a in local for n in subnets if n.version == 4 and ipaddress.ip_address(a) in n
+    )
+    problems = []
+    if not inhibited:
+        problems.append(f"{name} lacks {INHIBIT_IPV4}=true")
+    if not subnets:
+        problems.append(f"{name} has no IPv4 subnet to check")
+    if in_subnet:
+        problems.append(f"the rootless namespace holds {', '.join(in_subnet)} on {name}")
+    report.add(
+        "gateway_inhibited",
+        not problems,
+        "; ".join(problems) + f" (namespace {where})" if problems else f"namespace {where}",
+    )
+    report.add(
+        "rootless_listeners",
+        not exposed,
+        f"non-loopback listener(s) in the rootless namespace {where}: "
+        + ", ".join(str(li) for li in exposed[:10]),
+    )
 
 
 def proxy_hardening_problems(inspect: dict) -> list[str]:

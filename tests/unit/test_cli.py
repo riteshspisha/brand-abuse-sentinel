@@ -333,3 +333,24 @@ def test_status_reports_analysis_and_deferred_work(tmp_path, monkeypatch):
     assert "analysis: enrich on, fetch on" in result.output
     assert "deferred work: 16 (16 due)" in result.output
     assert "over allowance: flood\\x1b[31m.com 16" in result.output
+
+
+def test_sandbox_check_strict_turns_warnings_into_failures(monkeypatch, tmp_path):
+    from brandsentinel.sandbox import preflight
+
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
+    warned = preflight.Report()
+    warned.add("not_code_owner", True, "owns the code (allowed by override)", warning=True)
+    clean = preflight.Report()
+    clean.add("rootless", True)
+
+    async def runtime(docker, settings):
+        return clean
+
+    monkeypatch.setattr(preflight, "check_account", lambda config: warned)
+    monkeypatch.setattr(preflight, "check_runtime", runtime)
+    assert runner.invoke(app, ["sandbox", "check", "--no-network"]).exit_code == 0
+    strict = runner.invoke(app, ["sandbox", "check", "--no-network", "--strict"])
+    assert strict.exit_code == 1 and "warnings are failures" in strict.output
+    monkeypatch.setattr(preflight, "check_account", lambda config: clean)
+    assert runner.invoke(app, ["sandbox", "check", "--no-network", "--strict"]).exit_code == 0

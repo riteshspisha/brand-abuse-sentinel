@@ -9,6 +9,7 @@ skipped, never as passed).
 import asyncio
 import json
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -89,3 +90,57 @@ def wait_running(docker: DockerCli, name: str, timeout: float = 60) -> None:
             return
         time.sleep(0.5)
     raise AssertionError(f"{name} is not running")
+
+
+LISTENER = """
+import socket, sys, time
+s = socket.socket(socket.AF_INET6)
+s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("::", int(sys.argv[1])))
+s.listen(64)
+s.settimeout(1)
+deadline = time.time() + float(sys.argv[2])
+while time.time() < deadline:
+    try:
+        c, _ = s.accept()
+        c.close()
+    except OSError:
+        pass
+"""
+
+
+class namespace_listener:
+    """A deliberately careless service: a TCP listener on every address (`::`,
+    dual-stack) inside the account's rootless network namespace, as a future
+    service bound to all addresses would be. Tests use it to prove what sandboxes
+    can and cannot reach."""
+
+    def __init__(self, docker: DockerCli, port: int = 18765, seconds: float = 120) -> None:
+        from brandsentinel.sandbox.netns import RootlessNamespace
+
+        self.ns = RootlessNamespace.for_endpoint(docker.host)
+        self.port, self.seconds = port, seconds
+
+    def __enter__(self) -> int:
+        self.proc = subprocess.Popen(  # noqa: S603 - fixed argv
+            [
+                *self.ns.nsenter_prefix(),
+                sys.executable,
+                "-c",
+                LISTENER,
+                str(self.port),
+                str(self.seconds),
+            ]
+        )
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if any(li.port == self.port for li in self.ns.listeners()):
+                return self.port
+            time.sleep(0.1)
+        self.proc.kill()
+        raise RuntimeError("namespace listener did not start")
+
+    def __exit__(self, *exc) -> None:
+        self.proc.kill()
+        self.proc.wait()
