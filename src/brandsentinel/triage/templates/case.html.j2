@@ -134,7 +134,44 @@
 </table></div>
 {% endif %}
 {% if b.payment.donation_cues %}<p>Donation vocabulary: {% for d in b.payment.donation_cues %}<span class="chip">{{ d }}</span>{% endfor %}</p>{% endif %}
-{% if b.payment.qr_images %}<p>Candidate QR images (decoded in media analysis, M6): {% for q in b.payment.qr_images %}<span class="mono chip">{{ q }}</span>{% endfor %}</p>{% endif %}
+{% if b.payment.qr_images %}<p>Candidate QR images (decoded in media analysis): {% for q in b.payment.qr_images %}<span class="mono chip">{{ q }}</span>{% endfor %}</p>{% endif %}
+{% endif %}
+
+{% set v = b.visual %}
+{% if v.status != 'not_run' %}
+<h3>Images and visual matches (media analysis: {{ v.status }})</h3>
+<p class="note">Images are decoded, hashed, QR-decoded and read by OCR only in the network-less media sandbox; nothing is displayed here. A visual match says two images look alike; it counts as abuse evidence only when the page or domain also ties it to the brand.</p>
+<dl>
+  {% if v.reasons %}<dt>Why examined</dt><dd>{{ v.reasons | join(', ') }}</dd>{% endif %}
+  {% if v.skipped %}<dt>Not examined</dt><dd>{{ v.skipped }}</dd>{% endif %}
+  {% if v.corpus_version %}<dt>Reference corpus</dt><dd class="mono">{{ v.corpus_version }} ({{ v.corpus_entries }} entries){% if v.matcher %} &middot; {{ v.matcher.get('version') }} pHash &le; {{ v.matcher.get('phash_max_distance') }}, dHash &le; {{ v.matcher.get('dhash_max_distance') }}{% endif %}</dd>{% endif %}
+</dl>
+{% if v.matches %}
+<div class="wrap"><table>
+<tr><th>Candidate image</th><th>Matched reference</th><th>Method</th><th>Evidence</th></tr>
+{% for m in v.matches %}
+<tr><td class="mono">{{ m.role }}: {{ m.image_ref }}<br>sha256 {{ m.image_sha256[:16] }}</td>
+<td>{{ m.reference.get('kind') }} of <strong>{{ m.reference.get('brand') }}</strong><br><span class="mono">{{ m.reference.get('origin') }}: {{ m.reference.get('source') }}</span>{% if m.reference.get('reference_page') %}<br><span class="mono note">page {{ m.reference.get('reference_page') }}</span>{% endif %}</td>
+<td>{{ m.method }}{% if m.method == 'perceptual' %}<br>pHash {{ m.phash_distance }}, dHash {{ m.dhash_distance }}{% endif %}</td>
+<td>{% for e in m.refs %}<code>{{ e }}</code><br>{% endfor %}</td></tr>
+{% endfor %}
+</table></div>
+{% endif %}
+{% if v.images %}
+<div class="wrap"><table>
+<tr><th>Image</th><th>Result</th><th>Details</th></tr>
+{% for i in v.images %}
+<tr><td class="mono">{{ i.role }}: {{ i.ref }}{% if i.why %}<br><span class="note">{{ i.why | join(', ') }}</span>{% endif %}</td>
+<td><strong>{{ i.status }}</strong>{% if i.reason %}<br>{{ i.reason }}{% endif %}</td>
+<td>{% if i.format %}{{ i.format }} {{ i.width }}x{{ i.height }}{% if i.frames and i.frames > 1 %} ({{ i.frames }} frames){% endif %}<br><span class="mono">pHash {{ i.phash }} dHash {{ i.dhash }}</span>{% if i.low_information %}<br>flat image: exact matches only{% endif %}<br>{% endif %}
+{% if i.sha256 %}<span class="mono note">sha256 {{ i.sha256[:16] }}{% if i.stored %} (stored){% endif %}</span><br>{% endif %}
+{% if i.ocr_status %}OCR {{ i.ocr_status }} ({{ i.ocr_chars }} chars){% endif %}{% if i.qr_codes %} &middot; {{ i.qr_codes }} QR code(s){% endif %}</td></tr>
+{% endfor %}
+</table></div>
+{% endif %}
+{% if v.ocr_text %}<h4>Text read from images (OCR; untrusted)</h4>{% for t in v.ocr_text %}<div class="card excerpt"><span class="note">{{ t.get('role') }} {{ (t.get('image') or '')[:16] }}</span><br>{{ t.get('text') }}</div>{% endfor %}{% endif %}
+{% if v.ocr_presented %}<p>Brands presented in image text: {{ v.ocr_presented | join(', ') }}</p>{% endif %}
+{% if v.qr_payloads %}<h4>QR payloads</h4><ul>{% for q in v.qr_payloads %}<li class="mono">{{ q.get('kind') }}: {{ q.get('text') }}</li>{% endfor %}</ul>{% endif %}
 {% endif %}
 
 {% if b.commerce.commerce %}

@@ -2,7 +2,12 @@
 # src/brandsentinel/policy/rules.py; this file holds their points and thresholds.
 # Every rule must be listed here (and nothing else), so a typo fails loudly.
 # Change `version` whenever you change a number: each stored score records it.
-version: policy/2
+version: policy/3
+# policy/3 (M6): copied_asset_match (abuse) and visual_match_uncorroborated
+# (supporting); brand text and donation language read from images, and payees
+# from QR codes and image text, count like their page-text counterparts. A
+# visual match is abuse evidence only with corroboration from outside the
+# matched image; bundles without media data score exactly as under policy/2.
 # policy/2 (M5 review): registry affiliation no longer clears credential
 # destinations or payees (credential_unapproved_destination,
 # payee_unapproved_on_vouched_host, not offset by relief), and the donation rule
@@ -48,6 +53,10 @@ points:
   false_association_claim: 45
   lookalike_domain_brand_content: 50
   unauthorized_commerce: 25
+  # An image matches a brand reference asset, corroborated by the domain name,
+  # page text, claims, a brand-tied credential or payment request, or brand text
+  # in another image. Alone (no lookalike domain) it stays below P2.
+  copied_asset_match: 40
   # Supporting signals.
   domain_similarity_strong: 15
   domain_similarity_weak: 5
@@ -58,6 +67,8 @@ points:
   client_redirect_offsite: 10
   blocked_redirect: 15
   unobserved_content_on_lookalike: 15
+  # A visual match with nothing else tying the page to the brand.
+  visual_match_uncorroborated: 10
   # Registry-derived relief (subtracted). Page-provided signals are never relief.
   official_domain: 1000
   # Zero: the redirect is the candidate's own behaviour, not a registry fact. It

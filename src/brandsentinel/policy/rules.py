@@ -148,9 +148,10 @@ def credential_tie(b: EvidenceBundle) -> tuple[list[str], str] | None:
         brands = sorted({h.get("brand") for h in b.discovery.hits if h.get("brand")})
         return brands, f"the domain name matches {_names(b, brands)} ({m})"
     lure = any(lu.get("category") == "account_verification" for lu in b.page.lures)
-    if b.association.presented and lure:
-        return b.association.presented, (
-            f"the page presents {_names(b, b.association.presented)} and asks the reader to"
+    presented = presented_brands(b)
+    if presented and lure:
+        return presented, (
+            f"the page presents {_names(b, presented)} and asks the reader to"
             " verify or confirm an account"
         )
     return None
@@ -177,8 +178,19 @@ def _registrable(url: str) -> str | None:
     return registrable_of(host_of(url))
 
 
+def presented_brands(b: EvidenceBundle) -> list[str]:
+    """Brands the page presents: by a strong term in its title, headings or image
+    alt text, or read by OCR from one of its images (M6)."""
+    return sorted(set(b.association.presented) | set(b.visual.ocr_presented))
+
+
+def donation_cues(b: EvidenceBundle) -> list[str]:
+    """Donation language in the page text or read from its images."""
+    return list(dict.fromkeys(b.payment.donation_cues + b.visual.donation_cues))
+
+
 def _brand_present(b: EvidenceBundle) -> bool:
-    return b.association.strong_mention or bool(b.association.presented)
+    return b.association.strong_mention or bool(presented_brands(b))
 
 
 def _vouched_by(b: EvidenceBundle) -> str:
@@ -275,7 +287,7 @@ def _payment_unconfirmed(b: EvidenceBundle, p: dict) -> Fired | None:
     ]
     if not payees and not gateway_checkout:
         return None
-    category = "donation_fraud" if b.payment.donation_cues else "payment_fraud"
+    category = "donation_fraud" if donation_cues(b) else "payment_fraud"
     if payees:
         brands = sorted({x for o in payees for x in o.attributed_brands})
         text = (
@@ -303,7 +315,7 @@ def _payment_unconfirmed(b: EvidenceBundle, p: dict) -> Fired | None:
     "donation_fraud",
 )
 def _donation_unconfirmed(b: EvidenceBundle, p: dict) -> Fired | None:
-    if registry_cleared(b) or not b.payment.donation_cues:
+    if registry_cleared(b) or not donation_cues(b):
         return None
     if not (_brand_present(b) or b.discovery.domain_match == "strong"):
         return None
@@ -312,11 +324,11 @@ def _donation_unconfirmed(b: EvidenceBundle, p: dict) -> Fired | None:
     payees = unconfirmed_payees(b, ("unrelated",))
     if not payees:
         return None
-    brands = b.association.presented or [
+    brands = presented_brands(b) or [
         x["brand"] for x in b.association.brands if x.get("strength") == "strong"
     ]
     return Fired(
-        f"The page appeals for donations ({', '.join(b.payment.donation_cues[:5])}) in the name"
+        f"The page appeals for donations ({', '.join(donation_cues(b)[:5])}) in the name"
         f" of {_names(b, brands)} and directs them to {_payee_text(payees)}, which is not a"
         " confirmed registry payee.",
         _uniq(b.payment.refs, b.association.refs),
@@ -387,7 +399,7 @@ def unapproved_destinations(b: EvidenceBundle, tie_brands: list[str]) -> list[di
 def _payee_unapproved_vouched(b: EvidenceBundle, p: dict) -> Fired | None:
     if not registry_cleared(b):
         return None  # the payment and donation rules cover these hosts
-    donation = bool(b.payment.donation_cues) and _brand_present(b)
+    donation = bool(donation_cues(b)) and _brand_present(b)
     # A partner taking payment under its own name is ordinary; a payee that claims
     # the brand by name, or a donation appeal in the brand's name, needs a
     # confirmed registry payee.
@@ -400,7 +412,7 @@ def _payee_unapproved_vouched(b: EvidenceBundle, p: dict) -> Fired | None:
     if not payees:
         return None
     what = (
-        f"a donation appeal ({', '.join(b.payment.donation_cues[:5])})"
+        f"a donation appeal ({', '.join(donation_cues(b)[:5])})"
         if donation
         else "a payee named for the brand"
     )
@@ -442,12 +454,12 @@ def _false_association(b: EvidenceBundle, p: dict) -> Fired | None:
 def _lookalike(b: EvidenceBundle, p: dict) -> Fired | None:
     if registry_cleared(b):
         return None
-    if b.discovery.domain_match != "strong" or not b.association.presented:
+    if b.discovery.domain_match != "strong" or not presented_brands(b):
         return None
     hits = [f"{h.get('type')}:{h.get('keyword')}" for h in b.discovery.hits[:5]]
     return Fired(
         f"The domain matches the brand strongly ({', '.join(hits)}) and the page presents"
-        f" {_names(b, b.association.presented)} in its title, headings or image text.",
+        f" {_names(b, presented_brands(b))} in its title, headings or image text.",
         _uniq(b.discovery.refs, b.association.refs),
     )
 
@@ -461,9 +473,9 @@ def _lookalike(b: EvidenceBundle, p: dict) -> Fired | None:
 def _commerce(b: EvidenceBundle, p: dict) -> Fired | None:
     if registry_cleared(b) or not b.commerce.commerce:
         return None
-    if not (b.association.presented or b.association.claims):
+    if not (presented_brands(b) or b.association.claims):
         return None
-    brands = b.association.presented or sorted(
+    brands = presented_brands(b) or sorted(
         {x for c in b.association.claims for x in c.get("brands", [])}
     )
     offer = ", ".join((b.commerce.prices + b.commerce.calls_to_action)[:4])
@@ -474,7 +486,103 @@ def _commerce(b: EvidenceBundle, p: dict) -> Fired | None:
     )
 
 
+def _match_text(b: EvidenceBundle, matches) -> str:
+    parts = []
+    for m in matches[:3]:
+        ref = m.reference
+        how = (
+            "byte-identical"
+            if m.method == "sha256"
+            else f"perceptual hash distances pHash {m.phash_distance}, dHash {m.dhash_distance}"
+        )
+        parts.append(
+            f"{m.role} image {m.image_ref} matches the {ref.get('kind')} of"
+            f" {_names(b, [ref.get('brand')])} ({ref.get('origin')}: {ref.get('source')}; {how})"
+        )
+    more = f" and {len(matches) - 3} more" if len(matches) > 3 else ""
+    return "; ".join(parts) + more
+
+
+def visual_corroboration(b: EvidenceBundle, brands: set[str]) -> list[tuple[str, list[str]]]:
+    """Independent signs that this page or domain presents one of `brands` (the
+    brands whose reference assets an image matched): (what, evidence refs).
+
+    A visual match alone is no proof of impersonation, and neither is OCR of the
+    matched image itself, so only evidence from outside the matched images
+    counts: the domain name, the page presenting the brand in its title,
+    headings or alt text, association claims, brand-tied
+    credential or payment requests, or brand text read from another image."""
+    out: list[tuple[str, list[str]]] = []
+    hit = sorted(brands & {h.get("brand") for h in b.discovery.hits})
+    if hit and b.discovery.domain_match in ("strong", "weak"):
+        out.append((f"the domain name matches {_names(b, hit)}", b.discovery.refs))
+    # Presented (title, headings, alt text), not merely mentioned in passing.
+    named = sorted(brands & set(b.association.presented))
+    if named:
+        out.append((f"the page presents {_names(b, named)} in its text", b.association.refs))
+    claimed = sorted(brands & {x for c in b.association.claims for x in c.get("brands", [])})
+    if claimed:
+        out.append(
+            (f"the page claims an association with {_names(b, claimed)}", b.association.refs)
+        )
+    matched = {m.image_sha256 for m in b.visual.matches}
+    other = sorted(
+        x["brand"]
+        for x in b.visual.ocr_brands
+        if x["brand"] in brands and x.get("strength") == "strong" and set(x["images"]) - matched
+    )
+    if other:
+        out.append((f"another image on the page shows {_names(b, other)}", b.visual.refs))
+    tie = credential_tie(b)
+    if tie and brands & set(tie[0]):
+        out.append(("a credential form is tied to the brand", b.credential.refs))
+    payees = [o for o in unconfirmed_payees(b) if brands & set(o.attributed_brands)]
+    if payees:
+        out.append(("an unconfirmed payee is presented under the brand", b.payment.refs))
+    return out
+
+
+@rule(
+    "copied_asset_match",
+    "abuse",
+    "An image matches a brand reference asset and the page or domain also presents that brand",
+    "impersonation",
+)
+def _copied_asset(b: EvidenceBundle, p: dict) -> Fired | None:
+    if registry_cleared(b) or not b.visual.matches:
+        return None
+    brands = {m.reference.get("brand") for m in b.visual.matches}
+    support = visual_corroboration(b, brands)
+    if not support:
+        return None  # visual_match_uncorroborated
+    return Fired(
+        f"{_match_text(b, b.visual.matches)}. Corroborated by: "
+        + "; ".join(what for what, _ in support)
+        + ". The host is not vouched for by the registry.",
+        _uniq(*(m.refs for m in b.visual.matches), *(refs for _, refs in support)),
+        details={"brands": sorted(brands), "corroboration": [w for w, _ in support]},
+    )
+
+
 # --- supporting signals ----------------------------------------------------------------
+
+
+@rule(
+    "visual_match_uncorroborated",
+    "supporting",
+    "An image matches a brand reference asset, with nothing else tying the page to the brand",
+)
+def _visual_uncorroborated(b: EvidenceBundle, p: dict) -> Fired | None:
+    if registry_cleared(b) or not b.visual.matches:
+        return None
+    brands = {m.reference.get("brand") for m in b.visual.matches}
+    if visual_corroboration(b, brands):
+        return None
+    return Fired(
+        f"{_match_text(b, b.visual.matches)}. Nothing else on the page or in the domain name"
+        " ties it to the brand, so the match alone is not treated as impersonation.",
+        _uniq(*(m.refs for m in b.visual.matches)),
+    )
 
 
 @rule("domain_similarity_strong", "supporting", "Domain name strongly matches a brand")

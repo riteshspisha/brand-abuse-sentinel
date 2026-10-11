@@ -25,6 +25,8 @@ APPLICATION_MODULES = (
     "brandsentinel.cli",
     "brandsentinel.pipeline.orchestrator",
     "brandsentinel.pipeline.stages",
+    "brandsentinel.pipeline.media",
+    "brandsentinel.analysis.media_text",
     "brandsentinel.sandbox.media_client",
     "brandsentinel.sandbox.media_selftest",
     "brandsentinel.visual.collector",

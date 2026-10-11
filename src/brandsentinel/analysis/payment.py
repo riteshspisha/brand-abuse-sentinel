@@ -142,6 +142,30 @@ def _attribute(page: Page, kind: str, identifier: str | None, payee_name: str | 
     lex = page.context.lexicon
     if lex is None:
         return {"attribution": "unknown", "reason": "no registry available"}
+    return attribute(
+        lex,
+        kind,
+        identifier,
+        payee_name,
+        named=brands_in(page, payee_name or ""),
+        presented=mentions(page)["presented"],
+    )
+
+
+def attribute(
+    lex,
+    kind: str,
+    identifier: str | None,
+    payee_name: str | None,
+    *,
+    named: list[dict],
+    presented: list[str],
+    where: str = "title, heading or image text",
+) -> dict:
+    """Attribution of one payee identifier: a confirmed registry payee, a payee
+    presented under a protected brand (by its name, or by the page) that is not
+    confirmed, or unrelated. `named` are the brands in the payee name; `presented`
+    the brands the page presents. Also used for identifiers read from images."""
     if identifier:
         known = lex.known_payee(kind, identifier)
         if known is not None:
@@ -154,7 +178,6 @@ def _attribute(page: Page, kind: str, identifier: str | None, payee_name: str | 
                     "brand": known.brand,
                 },
             }
-    named = brands_in(page, payee_name or "")
     if named:
         names = ", ".join(lex.brand_names.get(b["brand"], b["brand"]) for b in named)
         return {
@@ -162,13 +185,11 @@ def _attribute(page: Page, kind: str, identifier: str | None, payee_name: str | 
             "reason": f"payee name {payee_name!r} names {names}; not a confirmed registry payee",
             "brands": [b["brand"] for b in named],
         }
-    presented = mentions(page)["presented"]
     if presented:
         names = ", ".join(lex.brand_names.get(b, b) for b in presented)
         return {
             "attribution": "claims_brand_unconfirmed",
-            "reason": f"page presents {names} (title, heading or image text); not a confirmed"
-            " registry payee",
+            "reason": f"page presents {names} ({where}); not a confirmed registry payee",
             "brands": presented,
         }
     return {"attribution": "unrelated", "reason": "no protected brand claimed by payee or page"}

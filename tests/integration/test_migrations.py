@@ -7,6 +7,7 @@ import pytest
 from tests.detection_support import context, lab_registry, lab_site, policy
 
 from brandsentinel.analysis import run_extractors
+from brandsentinel.evidence.bundle import SCHEMA_VERSION
 from brandsentinel.policy.scorer import CaseScorer, evaluate, latest_score
 from brandsentinel.store import db as store_db
 from brandsentinel.store import open_store
@@ -198,10 +199,11 @@ def test_scores_from_an_earlier_policy_keep_their_provenance(tmp_path):
     assert outcome.changed
     assert (outcome.result.policy_version, outcome.result.bundle_schema) == (
         policy().version,
-        "bundle/2",
+        SCHEMA_VERSION,
     )
     rows = conn.execute("SELECT * FROM scores ORDER BY id").fetchall()
     assert len(rows) == 2 and tuple(rows[0]) == tuple(old_row)
-    assert [r["policy_version"] for r in rows] == ["policy/1", "policy/2"]
-    assert [h["policy_version"] for h in load_case(conn, 7).history] == ["policy/1", "policy/2"]
+    assert [r["policy_version"] for r in rows] == ["policy/1", policy().version]
+    history = [h["policy_version"] for h in load_case(conn, 7).history]
+    assert history == ["policy/1", policy().version]
     conn.close()
