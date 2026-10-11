@@ -88,3 +88,41 @@ verified each finding by reading the code, and reproduced the P1s.
     (1 in 8 at base);
   - `tests/integration/test_migrations.py::test_concurrent_first_start_migrates_exactly_once`
     ("database is locked", 1 in 30 at base).
+
+## Post-merge correction: Host header checked before DNS
+
+Found on 2026-10-11 while investigating an intermittent failure of
+`test_docker_isolation.py::test_proxy_refuses_blocked_destinations_and_allows_public_ones`
+during M5 testing.
+
+- **Defect (P2).** For both an absolute-form GET and a CONNECT, the proxy
+  resolved the target before it checked the `Host` header. A request it must
+  refuse for its own framing (a mismatched, malformed, duplicate or missing
+  `Host`) therefore still sent a DNS query for the target. Its 400 also waited
+  for that query: up to the resolver lifetime, 6.2 s. Nothing was ever
+  forwarded, so no refusal was lost. But the lookup leaked the target name, and
+  the outcome depended on upstream DNS.
+- **How it surfaced.** On a network with IPv6 only, through NAT64, the egress
+  proxy's DNS lookups timed out (`dns_timeout`, 502, in its decision log). The
+  probe's 3 s client timeout expired before the host-mismatch request's 400 could
+  arrive, so the test reported `TimeoutError`. All refusal assertions (403)
+  still held. On an ordinary IPv4 network the same image passed. The in-process
+  host-header test used an IP-literal target, which needs no lookup, so it never
+  exercised the ordering.
+- **Fix.** The `Host` header is now checked against the parsed target, before
+  any lookup, for both forwarding and CONNECT. The decision log records the
+  target host for these refusals.
+- **Regression tests** (`tests/security/test_proxy.py`):
+  - `test_bad_host_header_is_refused_before_any_dns_lookup` covers mismatched,
+    wrong-port, malformed, duplicate and missing `Host`, over GET and CONNECT.
+    It uses a resolver that never answers, and requires a 400 with no lookup
+    within 3 s. All nine cases fail on the previous code.
+  - `test_good_host_header_goes_on_to_dns` is the control: a matching `Host` does
+    reach the resolver.
+- **Deferred: deterministic positive control.** The docker test's positive checks
+  (`connect public 443/80` returning 200, and `get public`) need public DNS and
+  egress. Split them from the refusal assertions into a test that first checks
+  the proxy's upstream reachability and fails with an explicit "no upstream DNS
+  or egress" message. A fully deterministic control needs a test-only resolver
+  and upstream on `bs_egress` that the proxy treats as public, as the in-process
+  tests do with 127.77.0.0/16.

@@ -337,6 +337,69 @@ def test_host_header_must_match_the_request_target(upstream, raw, reason):
     assert upstream.requests == []
 
 
+class HangingResolver(StaticResolver):
+    """Records each lookup and never answers, like DNS that is unreachable."""
+
+    async def resolve(self, host):
+        self.calls.append(host)
+        await asyncio.sleep(60)
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        ("GET http://example.com/ HTTP/1.1\r\nHost: internal.example\r\n\r\n", "host_mismatch"),
+        ("GET http://example.com/ HTTP/1.1\r\nHost: example.com:8080\r\n\r\n", "host_mismatch"),
+        ("GET http://example.com/ HTTP/1.1\r\nHost: exa mple.com\r\n\r\n", "host_mismatch"),
+        ("GET http://example.com/ HTTP/1.1\r\nHost: [::1\r\n\r\n", "host_mismatch"),
+        (
+            "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nHost: example.com\r\n\r\n",
+            "duplicate_host_header",
+        ),
+        ("GET http://example.com/ HTTP/1.1\r\n\r\n", "missing_host_header"),
+        ("CONNECT example.com:443 HTTP/1.1\r\nHost: internal.example:443\r\n\r\n", "host_mismatch"),
+        ("CONNECT example.com:443 HTTP/1.1\r\nHost: user@example.com\r\n\r\n", "host_mismatch"),
+        (
+            "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\nHost: example.com\r\n\r\n",
+            "duplicate_host_header",
+        ),
+    ],
+)
+def test_bad_host_header_is_refused_before_any_dns_lookup(raw, reason, decisions):
+    # A Host header the proxy cannot honour is refused from the request alone: no
+    # DNS query is sent, so the 400 is immediate and the same whether or not
+    # upstream DNS works. Previously the target was resolved first, so with DNS
+    # unreachable the refusal waited on the lookup (the docker isolation test
+    # then saw a client timeout instead of 400).
+    resolver = HangingResolver({})
+    started = time.monotonic()
+    response = with_proxy(
+        NetGuard(NetSettings(), resolver), lambda port: exchange(port, raw.encode(), timeout=5)
+    )
+    assert status_of(response) == 400 and reason.encode() in response
+    assert resolver.calls == []
+    assert time.monotonic() - started < 3
+    rec = decisions.last()
+    assert (rec["decision"], rec["reason"], rec["host"]) == ("deny", reason, "example.com")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n",
+        "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n",
+    ],
+)
+def test_good_host_header_goes_on_to_dns(raw):
+    # Control for the test above: with a matching Host the same resolver is asked,
+    # so "no lookup" there is the proxy's decision, not a resolver that is never used.
+    resolver = StaticResolver({})  # every name: nxdomain
+    response = with_proxy(
+        NetGuard(NetSettings(), resolver), lambda port: exchange(port, raw.encode(), timeout=5)
+    )
+    assert status_of(response) == 502 and resolver.calls == ["example.com"]
+
+
 @pytest.mark.parametrize(
     ("raw", "status", "reason"),
     [
