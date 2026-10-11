@@ -12,7 +12,7 @@
 #    any skipped test counted as a failure.
 #
 # Needs 127.0.0.1:3129 free (the lab proxy's published port): stop any other
-# account's lab first. The account's lab is stopped again at the end; its
+# account's lab first. Needs public IPv4 egress (checked first). The account's lab is stopped again at the end; its
 # sandbox stack keeps running. Results: stdout and ~/sp1-validation-<time>/.
 set -u
 
@@ -51,6 +51,15 @@ check "code owner is not this account" \
 
 echo "== 2. sandbox stack on $SOCK"
 check "daemon is rootless" sh -c "docker --host $SOCK info --format '{{json .SecurityOptions}}' | grep -q name=rootless"
+# Environment, not security: the proxy tests need public IPv4 egress from the
+# rootless namespace. On an IPv6-only (NAT64) network they time out (see the M5
+# residual findings, 2026-10-10); this line says so instead of a confusing failure.
+CHILD=$(cat "$XDG_RUNTIME_DIR/dockerd-rootless/child_pid" 2>/dev/null || echo 0)
+check "environment: DNS and IPv4 egress from the rootless namespace" \
+    nsenter -U --preserve-credentials -n -t "$CHILD" "$PREFIX/venv/bin/python" -c "
+import socket
+socket.getaddrinfo('example.com', 443, socket.AF_INET)
+socket.create_connection(('1.1.1.1', 443), 5).close()"
 cd "$PREFIX/src" || exit 2
 docker --host "$SOCK" compose -f docker/compose.yaml --profile sandbox up -d >"$OUT/compose.log" 2>&1 \
     && pass "compose --profile sandbox up" || fail "compose --profile sandbox up (see $OUT/compose.log)"

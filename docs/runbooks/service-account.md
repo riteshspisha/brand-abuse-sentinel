@@ -63,6 +63,10 @@ stay gated (control M6 below).
 - The developer account: the repository at a clean commit, `uv`, its own
   rootless Docker with `brandsentinel-sandbox:local` built from that commit.
 - 127.0.0.1:3129 free while `validate.sh` runs (the developer's lab stopped).
+- A network with public IPv4 egress while `validate.sh` runs: the proxy tests
+  reach public sites through slirp4netns, which is IPv4-only here. On an
+  IPv6-only (NAT64) network they time out; `validate.sh` reports this as an
+  `environment:` failure first (see the M5 residual findings, 2026-10-10).
 
 ## Sequence
 
