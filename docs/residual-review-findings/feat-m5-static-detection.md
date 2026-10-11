@@ -164,3 +164,17 @@ end to end (real extractors and policy) before it was fixed.
 - **Tests added:** a `policy/1` row keeps its provenance through a rescore,
   and a populated v3 store migrates to v4 without changing existing
   rows, and the migrated case can then be scored.
+
+## Intermittent docker failure during M5 testing (historical)
+
+On 2026-10-10, `test_docker_isolation.py::test_proxy_refuses_blocked_destinations_and_allows_public_ones`
+failed with `TimeoutError` on the host-mismatch check. The cause was the
+environment. The machine was on a network with IPv6 only, through NAT64, and
+the egress proxy's DNS timed out (`dns_timeout`). Every refusal assertion (403)
+still held, the commit before the M5 corrections failed in the same way, and the
+same image passed on an IPv4 network. It was not an M5 or security regression.
+
+The investigation found an M4 proxy defect: the `Host` header was checked only
+after the target was resolved, so a bad `Host` caused a DNS lookup and its 400
+waited for it. That was fixed and tested separately in PR #6 (`e6f65e5`), and the
+details are in `feat-m4-sandbox-egress-lab.md`. M5 contains no proxy changes.
