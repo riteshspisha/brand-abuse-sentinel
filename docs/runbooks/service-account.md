@@ -190,3 +190,42 @@ the `rm` after it removes what remains. Partial rollback:
 
 The developer's previous image, if replaced in step 1, stays as a dangling image
 in the developer's daemon until removed with `docker image prune` there.
+
+## Acceptance history
+
+### Run 1, 2026-10-11: FAILED (namespace resolution defect)
+
+Result directory on the host: `/var/lib/brandsentinel/sp1-validation-20261011T060538Z`.
+Account checks and the rootless daemon passed; the environment precheck and
+`rootless_listeners` failed (reporting `0.0.0.0:22`, `192.168.122.1:53`); pytest
+393 passed, 3 failed.
+
+Root cause: dockerd-rootless.sh starts RootlessKit with `--detach-netns`, which
+keeps the bridges in the namespace bind-mounted at `$STATE_DIR/netns`. The SP1
+code located the namespace through `child_pid` instead. On the developer's
+runtime the child process happened to sit in the bridge namespace; on the
+service account it sat in the host namespace (its `/proc/<pid>/net/dev` lists
+`wlan0`, `virbr0`, `tailscale0`, the rootful daemon's bridges, and no `tap0`).
+So under the service account:
+
+- `rootless_listeners` examined the host's listeners (the reported failure);
+- `gateway_inhibited` examined the host's addresses and passed vacuously, without
+  examining the bridge namespace;
+- the environment precheck and the test listener entered the child's namespace,
+  which is the host's and owned by the initial user namespace, so `nsenter`
+  was refused before any DNS or TCP attempt (not a network problem).
+
+Correction: the namespace is resolved through the detached netns file (the path
+slirp4netns is given), a namespace equal to the host's is refused, tables are
+read through `nsenter --net=<file>` when the child is elsewhere (with the entered
+namespace's identity checked), and `gateway_inhibited`/`rootless_listeners` fail
+unless the examined namespace contains the sandbox network's own bridge. The
+egress precheck now measures DNS (through the resolver RootlessKit gives
+containers) and IPv4 separately inside that namespace. Regression tests:
+`tests/unit/test_netns.py`, `tests/security/test_preflight.py`,
+`tests/security/test_sp1_isolation.py` (identity, nsenter/direct agreement,
+positive and negative listener controls).
+
+Environment requirement confirmed: the proxy path is DNS through slirp4netns
+plus public IPv4; slirp4netns runs without `--ipv6`, so an IPv6-only (NAT64)
+network cannot serve it.

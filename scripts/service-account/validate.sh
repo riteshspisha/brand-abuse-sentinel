@@ -51,15 +51,19 @@ check "code owner is not this account" \
 
 echo "== 2. sandbox stack on $SOCK"
 check "daemon is rootless" sh -c "docker --host $SOCK info --format '{{json .SecurityOptions}}' | grep -q name=rootless"
-# Environment, not security: the proxy tests need public IPv4 egress from the
-# rootless namespace. On an IPv6-only (NAT64) network they time out (see the M5
-# residual findings, 2026-10-10); this line says so instead of a confusing failure.
-CHILD=$(cat "$XDG_RUNTIME_DIR/dockerd-rootless/child_pid" 2>/dev/null || echo 0)
-check "environment: DNS and IPv4 egress from the rootless namespace" \
-    nsenter -U --preserve-credentials -n -t "$CHILD" "$PREFIX/venv/bin/python" -c "
-import socket
-socket.getaddrinfo('example.com', 443, socket.AF_INET)
-socket.create_connection(('1.1.1.1', 443), 5).close()"
+# Environment, not security: the egress proxy needs DNS (through the resolver
+# RootlessKit gives containers) and public IPv4 from the rootless bridge
+# namespace; slirp4netns is IPv4-only here, so an IPv6-only (NAT64) network
+# fails both (M5 residual findings, 2026-10-10). Measured inside the namespace
+# the preflight resolves (RootlessKit's detached netns file), never the host's.
+"$PREFIX/venv/bin/python" -m brandsentinel.sandbox.netns --egress >"$OUT/namespace.json" 2>&1
+cat "$OUT/namespace.json"
+check "rootless bridge namespace resolved (not the host's)" \
+    "$PREFIX/venv/bin/python" -c "import json,sys; sys.exit('error' in json.load(open('$OUT/namespace.json')))"
+check "environment: DNS through the containers' resolver" \
+    "$PREFIX/venv/bin/python" -c "import json,sys; sys.exit(json.load(open('$OUT/namespace.json')).get('egress',{}).get('dns')!='ok')"
+check "environment: IPv4 egress from the bridge namespace" \
+    "$PREFIX/venv/bin/python" -c "import json,sys; sys.exit(json.load(open('$OUT/namespace.json')).get('egress',{}).get('tcp4')!='ok')"
 cd "$PREFIX/src" || exit 2
 docker --host "$SOCK" compose -f docker/compose.yaml --profile sandbox up -d >"$OUT/compose.log" 2>&1 \
     && pass "compose --profile sandbox up" || fail "compose --profile sandbox up (see $OUT/compose.log)"

@@ -8,7 +8,6 @@ skipped, never as passed).
 
 import asyncio
 import json
-import shutil
 import subprocess
 import sys
 import time
@@ -126,12 +125,7 @@ class namespace_listener:
     def __enter__(self) -> int:
         self.proc = subprocess.Popen(  # noqa: S603 - fixed argv
             [
-                shutil.which("nsenter") or "/usr/bin/nsenter",
-                "-U",
-                "--preserve-credentials",
-                "-n",
-                "-t",
-                str(self.ns.pid),
+                *self.ns.nsenter_prefix(),
                 sys.executable,
                 "-c",
                 LISTENER,

@@ -9,6 +9,7 @@ same controls on that account's runtime.
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 from tests.docker_support import (
@@ -151,9 +152,13 @@ def test_a_second_untrusted_container_blocks_jobs_on_the_sandbox_network(docker,
         report = asyncio.run(
             preflight.check_network(docker, SandboxSettings(instance=INSTANCE), runner, probe=False)
         )
-        # The preflight cannot tell one orphaned job from a running one, so it
-        # flags only containers that are not jobs; the runner's lease refuses both.
-        assert report.ok is name.startswith("bs-other-")
+        # The preflight cannot tell one orphaned job from a running one: an orphaned
+        # job leaves the structural membership checks healthy, a container that is
+        # not a job does not. The isolation guarantee is the runner's refusal above.
+        status = {c.name: c.ok for c in report.checks}
+        orphan = name.startswith("bs-other-")
+        assert status["network_members"] is orphan, report.reasons()
+        assert status["single_untrusted_container"] is True, report.reasons()
     finally:
         docker.call_sync("rm", "--force", name)
     ok = asyncio.run(runner.run(spec, job=job_id(), attempt=0))
@@ -165,3 +170,60 @@ def test_media_style_jobs_have_no_network_at_all(docker):
                                                   {"id": "ipv6", "kind": "ipv6"}])  # fmt: skip
     assert results["facts"]["interfaces"] == ["lo"]
     assert json.dumps(results["ipv6"]).count("eth") == 0
+
+
+# --- the examined namespace is the bridge namespace (SP1 acceptance, 2026-10-11) -----
+
+
+def test_examined_namespace_contains_the_sandbox_bridge_and_is_not_the_host(docker):
+    import os
+
+    ns = RootlessNamespace.for_endpoint(docker.host)
+    net = docker_json(docker, "network", "inspect", "bs_sandbox")[0]
+    assert ns.inode != os.stat("/proc/self/ns/net").st_ino
+    interfaces = ns.interfaces()
+    assert preflight.bridge_name(net) in interfaces, (ns.describe(), interfaces)
+    from brandsentinel.sandbox.netns import parse_interfaces
+
+    host_only = parse_interfaces(Path("/proc/self/net/dev").read_text()) - {"lo", "docker0"}
+    host_only = {i for i in host_only if not i.startswith(("br-", "veth"))}
+    assert not host_only & interfaces, host_only & interfaces
+
+
+def test_reading_through_nsenter_agrees_with_reading_directly(docker):
+    # The service account reads through nsenter (its child sits outside the bridge
+    # namespace); prove that path sees the same namespace here.
+    from dataclasses import replace
+
+    ns = RootlessNamespace.for_endpoint(docker.host)
+    via_nsenter = replace(ns, direct=False)
+    assert via_nsenter.interfaces() == ns.interfaces()
+    assert via_nsenter.local_ipv4() == ns.local_ipv4()
+
+
+def test_exposed_listener_in_bridge_namespace_is_detected_host_listener_is_not(docker):
+    import socket
+
+    ns = RootlessNamespace.for_endpoint(docker.host)
+    settings = SandboxSettings(instance=INSTANCE)
+    host_sock = socket.socket()  # negative control: a host-only listener on all addresses
+    host_sock.bind((".".join(["0"] * 4), 0))
+    host_sock.listen(1)
+    host_port = host_sock.getsockname()[1]
+    try:
+        clean = asyncio.run(
+            preflight.check_network(docker, settings, make_runner(docker), probe=False)
+        )
+        assert {c.name: c.ok for c in clean.checks}["rootless_listeners"], clean.reasons()
+        assert host_port not in {li.port for li in ns.exposed_listeners()}
+        with namespace_listener(docker, port=18766) as port:  # positive control
+            exposed = {li.port for li in ns.exposed_listeners()}
+            dirty = asyncio.run(
+                preflight.check_network(docker, settings, make_runner(docker), probe=False)
+            )
+        assert port in exposed and host_port not in exposed
+        failed = {c.name: c.detail for c in dirty.failures}
+        assert f":{port}" in failed["rootless_listeners"]
+        assert str(host_port) not in failed["rootless_listeners"]
+    finally:
+        host_sock.close()

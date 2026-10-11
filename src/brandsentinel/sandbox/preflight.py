@@ -259,21 +259,36 @@ async def check_network(
     return report
 
 
+def bridge_name(net: dict) -> str:
+    """The Linux bridge Docker created for a network."""
+    opts = net.get("Options") or {}
+    return opts.get("com.docker.network.bridge.name") or "br-" + str(net.get("Id", ""))[:12]
+
+
 def _check_gateway(
     report: Report, net: dict, docker: DockerCli, namespace: RootlessNamespace | None
 ) -> None:
     """SP1: the sandbox bridge must hold no address in the rootless namespace, so
-    sandboxes have no gateway into it (mandatory). Defense in depth: nothing in
-    the namespace listens on a non-loopback address."""
+    sandboxes have no gateway into it (mandatory). The inspected namespace must
+    contain that bridge, so the check can never pass on another namespace's
+    addresses. Defense in depth: nothing in it listens on a non-loopback address."""
     name = net.get("Name", "")
     inhibited = (net.get("Options") or {}).get(INHIBIT_IPV4) == "true"
     try:
         ns = namespace or RootlessNamespace.for_endpoint(docker.host)
+        interfaces = ns.interfaces()
         local = ns.local_ipv4()
         exposed = ns.exposed_listeners()
     except NamespaceUnavailable as e:
         report.add("gateway_inhibited", False, f"cannot inspect the rootless namespace: {e}")
         report.add("rootless_listeners", False, f"cannot inspect the rootless namespace: {e}")
+        return
+    where = ns.describe()
+    bridge = bridge_name(net)
+    if bridge not in interfaces:
+        detail = f"the inspected namespace {where} does not contain {name}'s bridge {bridge}"
+        report.add("gateway_inhibited", False, detail)
+        report.add("rootless_listeners", False, detail)
         return
     subnets = []
     for cfg in (net.get("IPAM") or {}).get("Config") or []:
@@ -291,11 +306,15 @@ def _check_gateway(
         problems.append(f"{name} has no IPv4 subnet to check")
     if in_subnet:
         problems.append(f"the rootless namespace holds {', '.join(in_subnet)} on {name}")
-    report.add("gateway_inhibited", not problems, "; ".join(problems))
+    report.add(
+        "gateway_inhibited",
+        not problems,
+        "; ".join(problems) + f" (namespace {where})" if problems else f"namespace {where}",
+    )
     report.add(
         "rootless_listeners",
         not exposed,
-        "non-loopback listener(s) in the rootless namespace: "
+        f"non-loopback listener(s) in the rootless namespace {where}: "
         + ", ".join(str(li) for li in exposed[:10]),
     )
 

@@ -504,6 +504,8 @@ def sandbox_check(
         for c in net.checks:
             if c.ok and c.name == "direct_egress_blocked":
                 typer.echo(f"    probe: {escape_terminal(c.detail)}")
+            if c.ok and c.name == "gateway_inhibited":
+                typer.echo(f"    examined: {escape_terminal(c.detail)}")
         reports.append(net)
     if not all(r.ok for r in reports):
         raise typer.Exit(1)

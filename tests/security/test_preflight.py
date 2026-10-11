@@ -133,6 +133,7 @@ HARDENED_PROXY = {
 }
 INTERNAL_NET = {
     "Name": "bs_sandbox",
+    "Id": "6af1c7b4f3690000000000000000000000000000000000000000000000000000",
     "Internal": True,
     "Options": {"com.docker.network.bridge.inhibit_ipv4": "true"},
     "IPAM": {"Config": [{"Subnet": "172.31.251.0/24", "Gateway": "172.31.251.1"}]},
@@ -143,8 +144,19 @@ INTERNAL_NET = {
 class FakeNamespace:
     """A rootless namespace view: the addresses it holds and its exposed listeners."""
 
-    def __init__(self, local=("10.0.2.100", "127.0.0.1", "172.31.252.1"), exposed=()):
-        self.local, self.exposed = set(local), list(exposed)
+    def __init__(
+        self,
+        local=("10.0.2.100", "127.0.0.1", "172.31.252.1"),
+        exposed=(),
+        interfaces=("lo", "tap0", "br-6af1c7b4f369"),
+    ):
+        self.local, self.exposed, self.ifaces = set(local), list(exposed), set(interfaces)
+
+    def describe(self):
+        return "net:[1] (fake)"
+
+    def interfaces(self):
+        return self.ifaces
 
     def local_ipv4(self):
         return self.local
@@ -364,3 +376,12 @@ def test_failing_account_checks_keep_sandbox_stages_disabled(fake_docker, store)
 def test_lab_mode_may_use_the_developer_override(fake_docker, store):
     orch = prepare(fake_docker, store, ROOTLESS_INFO, account=_account(warning=True), lab=True)
     assert orch.sandbox is not None
+
+
+def test_a_namespace_without_the_sandbox_bridge_fails_closed(fake_docker):
+    # The SP1 acceptance failure: the host namespace was examined. It has no
+    # sandbox bridge, so neither check may pass or fail on its contents.
+    r = network(fake_docker, namespace=FakeNamespace(interfaces=("lo", "wlan0", "virbr0")))
+    failed = {c.name: c.detail for c in r.failures}
+    assert set(failed) == {"gateway_inhibited", "rootless_listeners"}
+    assert "does not contain bs_sandbox's bridge br-6af1c7b4f369" in failed["gateway_inhibited"]
