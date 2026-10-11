@@ -254,20 +254,11 @@ async def _prepare_sandbox(orch: Orchestrator, config) -> None:
     the account checks fail, or pass only because of
     `runtime.allow_developer_account`, sandbox stages stay disabled outside lab
     mode, whose content is synthetic."""
-    from brandsentinel.sandbox.preflight import check_account, prepare_runtime
+    from brandsentinel.sandbox.preflight import gate_hostile_content, prepare_runtime
     from brandsentinel.sandbox.runner import SandboxError, SandboxRunner
 
     runner, report = await prepare_runtime(config)
-    account = check_account(config)
-    if runner is not None and not config.net.lab.enabled and (not account.ok or account.warnings):
-        runner = None
-        names = [c.name for c in account.failures + account.warnings]
-        report.add(
-            "dedicated_account",
-            False,
-            "sandbox stages run untrusted content only under the dedicated service"
-            " account; account checks did not pass cleanly (" + ", ".join(names) + ")",
-        )
+    runner = gate_hostile_content(config, runner, report)
     passed = {c.name for c in report.checks if c.ok}
     sweeper = runner or (
         SandboxRunner(config.sandbox, report.docker) if {"endpoint", "rootless"} <= passed else None

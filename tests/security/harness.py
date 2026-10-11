@@ -205,6 +205,8 @@ class Recorder:
     requests: list[tuple[str, str, dict]] = field(default_factory=list)
     hits: dict[str, int] = field(default_factory=dict)
     pages: dict[str, bytes] = field(default_factory=dict)
+    # /blob?k=<key>: (body, content type), e.g. images for media tests.
+    blobs: dict[str, tuple[bytes, str]] = field(default_factory=dict)
     rdap: dict[str, dict] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -300,6 +302,12 @@ def _handler(recorder: Recorder, bomb: bytes):
             elif path == "/mutable":  # content set by the test (rechecks)
                 body = recorder.pages.get(q.get("k", ""), b"<title>none</title>")
                 self._send(200, body)
+            elif path == "/blob":
+                found = recorder.blobs.get(q.get("k", ""))
+                if found is None:
+                    self._send(404, b"<title>nf</title>")
+                else:
+                    self._send(200, found[0], ctype=found[1])
             elif path == "/json":
                 self._send(200, json.dumps({"a": 1}).encode(), ctype="application/json")
             elif path.startswith("/status/"):

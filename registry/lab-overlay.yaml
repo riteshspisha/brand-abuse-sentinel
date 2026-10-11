@@ -87,7 +87,17 @@ payees:
     provenance:
       - {source: "http://luminafoundation.test/donate.html", recorded_by: lab-fixture, recorded_at: 2026-10-09, verified_by: lab-fixture, verified_at: 2026-10-09}
 
-# Reference pages need HTTPS (the collector requires verified TLS); the lab's
-# synthetic reference assets live under labsites/official/static and are wired
-# into the corpus by U17 (M6).
+# Reference pages need HTTPS (the collector requires verified TLS) and the lab is
+# plain HTTP, so the lab corpus comes from curated assets instead: the official
+# lab site's logo, copied to registry/assets/lab/ and pinned by its sha256.
 reference_pages: []
+
+reference_assets:
+  - id: lumina-logo
+    brand: lumina-foundation
+    kind: logo
+    path: lab/lumina-logo.png
+    sha256: 52b0e3eef1b9fd8e97bc25a2c475b6968606575db9bc14fcd4c69de9c13ffcb1
+    status: confirmed
+    provenance:
+      - {source: "labsites/official/static/lumina-logo.png", recorded_by: lab-fixture, recorded_at: 2026-10-11, verified_by: lab-fixture, verified_at: 2026-10-11, note: synthetic logo of the fictional lab brand}

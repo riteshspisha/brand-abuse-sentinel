@@ -15,6 +15,9 @@ catalog) for extractors that attribute what they see to a brand or payee.
 - `brand_references` (association.py): brand mentions, presentation, and
   association claims and disclaimers.
 - `commerce` (commerce.py) and `editorial` (editorial.py, page-provided context).
+- `images` (images.py, M6): icons, og:image and `<img>` candidates for media
+  analysis, with logo and QR hints. Images are fetched and decoded later, by
+  the media stage and the media sandbox, never here.
 
 Extractors observe; they never decide. Nothing is ever submitted or fetched.
 Untrusted HTML is parsed in-process with a size-capped input (accepted residual
@@ -380,6 +383,7 @@ from brandsentinel.analysis import (  # noqa: E402
     association,  # noqa: F401
     commerce,  # noqa: F401
     editorial,  # noqa: F401
+    images,  # noqa: F401
     payment,  # noqa: F401
     static,  # noqa: F401
 )

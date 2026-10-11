@@ -151,7 +151,7 @@ def test_populated_v3_store_migrates_to_v4_and_scores(tmp_path, monkeypatch):
     before = {t: conn.execute(f"SELECT * FROM {t} ORDER BY 1").fetchall() for t in tables}  # noqa: S608
 
     monkeypatch.undo()
-    assert migrate(conn) == [4]
+    assert migrate(conn) == [4, 5]
     assert schema_version(conn) == LATEST
     for t in ("candidates", "facts", "features", "stage_runs"):
         assert conn.execute(f"SELECT * FROM {t} ORDER BY 1").fetchall() == before[t], t  # noqa: S608

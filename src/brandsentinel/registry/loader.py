@@ -3,6 +3,7 @@
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import ValidationError
@@ -88,6 +89,7 @@ def validate(registry: Registry) -> ValidationReport:
         ("domain", [d.name for d in registry.domains]),
         ("payee id", [p.id for p in registry.payees]),
         ("reference page", [r.url for r in registry.reference_pages]),
+        ("reference asset id", [a.id for a in registry.reference_assets]),
     ):
         errors += [f"duplicate {what}: {v}" for v in _duplicates(values)]
 
@@ -107,9 +109,28 @@ def validate(registry: Registry) -> ValidationReport:
         *((f"domain {d.name}", d.brand) for d in registry.domains),
         *((f"payee {p.id}", p.brand) for p in registry.payees),
         *((f"reference page {r.url}", r.brand) for r in registry.reference_pages),
+        *((f"reference asset {a.id}", a.brand) for a in registry.reference_assets),
     ):
         if brand not in brand_ids:
             errors.append(f"{owner}: unknown brand {brand!r}")
+
+    for a in registry.reference_assets:
+        if a.url is None:
+            continue
+        try:
+            host, _ = canonical_host(urlsplit(a.url).hostname or "")
+        except (InvalidName, ValueError):
+            errors.append(f"reference asset {a.id}: invalid URL host")
+            continue
+        if not registry.on_confirmed_official_domain(a.brand, host):
+            msg = (
+                f"reference asset {a.id}: {host} is not a confirmed official domain of"
+                f" brand {a.brand}"
+            )
+            if a.status == "confirmed":
+                errors.append(msg)
+            else:
+                report.warnings.append(msg + "; it cannot be confirmed until it is")
 
     for d in registry.domains:
         try:
@@ -158,5 +179,6 @@ def validate(registry: Registry) -> ValidationReport:
         "relationships": Counter(r.status for r in registry.relationships),
         "payees": Counter(p.status for p in registry.payees),
         "reference pages": Counter(r.status for r in registry.reference_pages),
+        "reference assets": Counter(a.status for a in registry.reference_assets),
     }
     return report
