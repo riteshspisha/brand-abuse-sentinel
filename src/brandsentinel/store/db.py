@@ -93,6 +93,26 @@ def schema_version(conn: sqlite3.Connection) -> int:
     return row[0] or 0
 
 
+def _enable_wal(conn: sqlite3.Connection, wait_seconds: float = 30.0) -> str:
+    """Switch to WAL unless the database already uses it.
+
+    `PRAGMA journal_mode = WAL` answers "database is locked" at once, without
+    the busy handler, while another connection holds a write lock (for example
+    a concurrent first start applying migrations). Asking for the mode first
+    avoids the switch on every open, and a locked switch is retried."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            if mode == "wal":
+                return mode
+            return conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) or time.monotonic() > deadline:
+                raise
+            time.sleep(0.02)
+
+
 def connect(path: Path) -> sqlite3.Connection:
     ensure_private_dir(path.parent)
     # Create the file 0600 up front; SQLite gives the -wal and -shm files the
@@ -102,7 +122,7 @@ def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, isolation_level=None, timeout=30.0)
     try:
         conn.row_factory = sqlite3.Row
-        mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+        mode = _enable_wal(conn)
         if mode != "wal":
             raise sqlite3.OperationalError(f"could not enable WAL mode (got {mode!r})")
         conn.execute("PRAGMA synchronous = FULL")
