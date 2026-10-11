@@ -36,7 +36,13 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 
 from brandsentinel.config import ProxySettings
-from brandsentinel.net.netguard import NetGuard, PolicyViolation, ResolutionFailed, Validated
+from brandsentinel.net.netguard import (
+    NetGuard,
+    PolicyViolation,
+    ResolutionFailed,
+    Target,
+    Validated,
+)
 
 log = logging.getLogger("brandsentinel.proxy")
 
@@ -271,8 +277,9 @@ class EgressProxy:
         if req.header("content-length") or req.header("transfer-encoding"):
             raise Refused(400, "request_body_not_allowed")
         scheme = "https" if rec.port == 443 else "http"
-        target = await self._authorize(f"{scheme}://{req.target}/", rec)
-        self._check_host_header(req, target, required=False)
+        url = f"{scheme}://{req.target}/"
+        self._check_host_header(req, self._parse(url), required=False)
+        target = await self._authorize(url, rec)
         up_reader, up_writer = await self._dial(target, rec)
         try:
             rec.decision, rec.status, rec.reason = "allow", 200, "connect"
@@ -294,10 +301,12 @@ class EgressProxy:
             v.strip() not in ("", "0") for v in req.header("content-length")
         ):
             raise Refused(400, "request_body_not_allowed")
+        parsed = self._parse(req.target)
+        rec.host, rec.port = parsed.host, parsed.port
+        self._check_host_header(req, parsed, required=True)
         target = await self._authorize(req.target, rec)
         if target.port not in self._forward_ports:
             raise Refused(403, "port_not_allowed", {"port": target.port})
-        self._check_host_header(req, target, required=True)
         connection_tokens = {
             t.strip().lower() for v in req.header("connection") for t in v.split(",")
         }
@@ -321,7 +330,15 @@ class EgressProxy:
         finally:
             await _close(up_writer)
 
-    def _check_host_header(self, req: Request, target: Validated, *, required: bool) -> None:
+    def _parse(self, url: str) -> Target:
+        try:
+            return self.guard.parse(url)
+        except PolicyViolation as e:
+            raise Refused(403, e.reason) from e
+
+    def _check_host_header(self, req: Request, target: Target, *, required: bool) -> None:
+        """Runs on the parsed target, before any DNS: a request refused for its
+        own framing never causes a lookup, and its refusal never waits on one."""
         hosts = req.header("host")
         if len(hosts) > 1:
             raise Refused(400, "duplicate_host_header")
