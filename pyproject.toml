@@ -34,8 +34,12 @@ brandsentinel = "brandsentinel.cli:app"
 
 [dependency-groups]
 dev = [
+    "imagehash>=4.3",
+    "pillow>=10.4",
+    "pytesseract>=0.3.10",
     "pytest>=8.3",
     "ruff>=0.6",
+    "zxing-cpp>=2.2",
 ]
 
 [build-system]

@@ -176,6 +176,46 @@ sandbox:
     stdout_max_bytes: 16777216    # 16 MiB: one JSON document
     stderr_max_bytes: 65536
 
+# Untrusted images (U16, U17). Selected page images, favicons and QR codes are
+# fetched through the hardened fetcher, then decoded, hashed, QR-decoded and
+# OCR'd only inside the media sandbox container: no network, read-only root, and
+# these limits. The application itself never decodes an image.
+media:
+  enabled: true
+  max_images_per_case: 8
+  max_image_bytes: 2097152        # 2 MiB per image
+  max_batch_bytes: 12582912       # 12 MiB per worker container
+  max_pixels: 16000000            # from the header, before decoding
+  max_dimension: 8192
+  max_frames: 32                  # animated GIF and WebP
+  max_ico_images: 16
+  ocr: true
+  max_ocr_pixels: 4000000         # larger images are downscaled for OCR and QR
+  ocr_timeout_seconds: 20
+  max_ocr_chars: 4000
+  max_qr_codes: 8
+  max_qr_chars: 2048
+  collect_timeout_seconds: 60     # image fetching budget per case
+  accept_types: [image/png, image/jpeg, image/gif, image/webp, image/x-icon,
+                 image/vnd.microsoft.icon, application/octet-stream]
+  limits:                         # the media container
+    memory_mb: 512
+    cpus: 1.0
+    pids: 64
+    wall_seconds: 90
+    tmpfs_mb: 64
+    shm_mb: 16
+    stdout_max_bytes: 2097152
+    stderr_max_bytes: 65536
+  # Visual matching against the reference corpus (`registry collect`). A
+  # perceptual match needs both hashes within these Hamming distances (of 64)
+  # and similar proportions; flat images match only by exact hash.
+  matching:
+    phash_max_distance: 10
+    dhash_max_distance: 8
+    min_luma_stddev: 12
+    max_aspect_ratio_factor: 1.35
+
 # The egress proxy (U18), read inside the proxy container.
 proxy:
   max_connections: 64

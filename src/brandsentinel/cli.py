@@ -530,6 +530,34 @@ def sandbox_sweep(ctx: typer.Context) -> None:
     typer.echo(f"removed {removed} container(s) of instance {config.sandbox.instance}")
 
 
+@sandbox_app.command("selftest")
+def sandbox_selftest(
+    ctx: typer.Context,
+    role: Annotated[str, typer.Argument(help="Worker to test: media.")],
+) -> None:
+    """Run a worker in a real sandbox container on synthetic fixtures and check its
+    gate (media: hashing, OCR, QR, bomb and format rejection, no network). Exits 1
+    if any check fails."""
+    from brandsentinel.sandbox import preflight
+    from brandsentinel.sandbox.media_selftest import selftest
+
+    if role != "media":
+        typer.echo(f"unknown worker {escape_terminal(role)!s}; expected: media", err=True)
+        raise typer.Exit(2)
+    config = _load(ctx)
+    runner, report = asyncio.run(preflight.prepare_runtime(config))
+    _print_checks("runtime", report)
+    if runner is None:
+        raise typer.Exit(1)
+    report = preflight.Report(checks=asyncio.run(selftest(runner, config.media)))
+    _print_checks("media worker", report)
+    for c in report.checks:
+        if c.ok and c.detail:
+            typer.echo(f"    {c.name}: {escape_terminal(c.detail)}")
+    if not report.ok:
+        raise typer.Exit(1)
+
+
 # --- triage (M5) ----------------------------------------------------------------------
 
 PriorityOpt = Annotated[

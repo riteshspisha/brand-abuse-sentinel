@@ -64,8 +64,12 @@ sandbox = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "imagehash" },
+    { name = "pillow" },
+    { name = "pytesseract" },
     { name = "pytest" },
     { name = "ruff" },
+    { name = "zxing-cpp" },
 ]
 
 [package.metadata]
@@ -93,8 +97,12 @@ provides-extras = ["sandbox"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "imagehash", specifier = ">=4.3" },
+    { name = "pillow", specifier = ">=10.4" },
+    { name = "pytesseract", specifier = ">=0.3.10" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "ruff", specifier = ">=0.6" },
+    { name = "zxing-cpp", specifier = ">=2.2" },
 ]
 
 [[package]]
