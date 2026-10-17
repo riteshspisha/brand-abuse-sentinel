@@ -331,6 +331,81 @@ class SandboxSettings(_Section):
         return v
 
 
+def _media_limits() -> SandboxLimits:
+    return SandboxLimits(
+        memory_mb=512,
+        cpus=1.0,
+        pids=64,
+        wall_seconds=90.0,
+        tmpfs_mb=64,  # Tesseract's temporary image files
+        shm_mb=16,
+        stdout_max_bytes=2 * MiB,
+        stderr_max_bytes=64 * 1024,
+    )
+
+
+class MediaMatching(_Section):
+    """Visual matching against the reference corpus (U17)."""
+
+    # A perceptual match needs both hashes within these Hamming distances (of 64).
+    phash_max_distance: int = Field(10, ge=0, le=32)
+    dhash_max_distance: int = Field(8, ge=0, le=32)
+    # Images flatter than this (grayscale standard deviation, 0-255) carry too
+    # little structure for a perceptual hash; they match only by exact hash.
+    min_luma_stddev: float = Field(12.0, ge=0, le=128)
+    # Width/height ratios of candidate and reference may differ by at most this factor.
+    max_aspect_ratio_factor: float = Field(1.35, ge=1.0, le=4.0)
+
+
+class MediaSettings(_Section):
+    """Untrusted image collection and the media sandbox worker (U16, R21, R42)."""
+
+    enabled: bool = True
+    # Images of one case collected and analyzed per analysis round.
+    max_images_per_case: int = Field(8, ge=1, le=32)
+    max_image_bytes: int = Field(2 * MiB, gt=0, le=16 * MiB)
+    # All images sent to one worker container together (before base64).
+    max_batch_bytes: int = Field(12 * MiB, gt=0, le=64 * MiB)
+    # Checked from the image header, before any pixel is decoded.
+    max_pixels: int = Field(16_000_000, ge=1, le=100_000_000)
+    max_dimension: int = Field(8192, ge=16, le=65535)
+    max_frames: int = Field(32, ge=1, le=1000)  # animated GIF and WebP
+    max_ico_images: int = Field(16, ge=1, le=256)
+    ocr: bool = True
+    # Larger images are downscaled before OCR and QR decoding.
+    max_ocr_pixels: int = Field(4_000_000, ge=10_000, le=40_000_000)
+    ocr_timeout_seconds: float = Field(20.0, gt=0, le=300)
+    max_ocr_chars: int = Field(4000, ge=1, le=100_000)
+    max_qr_codes: int = Field(8, ge=0, le=64)
+    max_qr_chars: int = Field(2048, ge=1, le=16_384)
+    # Wall-clock budget for fetching one case's images (each fetch is also
+    # bounded by the fetcher's own timeouts).
+    collect_timeout_seconds: float = Field(60.0, gt=0, le=1800)
+    # Content types kept by the image fetch. The worker decides by magic bytes,
+    # so a mislabelled body is still checked, never trusted.
+    accept_types: list[str] = Field(
+        default_factory=lambda: [
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/x-icon",
+            "image/vnd.microsoft.icon",
+            "application/octet-stream",
+        ]
+    )
+    limits: SandboxLimits = Field(default_factory=_media_limits)
+    matching: MediaMatching = MediaMatching()
+
+    @model_validator(mode="after")
+    def _consistent(self):
+        if self.max_batch_bytes < self.max_image_bytes:
+            raise ValueError("max_batch_bytes must be at least max_image_bytes")
+        if any(t.startswith(("text/", "image/svg")) for t in self.accept_types):
+            raise ValueError("accept_types are raster image types only")
+        return self
+
+
 class ProxySettings(_Section):
     """The egress proxy (U18): the only way out of the sandbox network."""
 
@@ -369,6 +444,7 @@ class Config(_Section):
     analysis: AnalysisSettings = AnalysisSettings()
     runtime: RuntimeSettings = RuntimeSettings()
     sandbox: SandboxSettings = SandboxSettings()
+    media: MediaSettings = MediaSettings()
     proxy: ProxySettings = ProxySettings()
 
     @model_validator(mode="after")

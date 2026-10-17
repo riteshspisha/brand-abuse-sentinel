@@ -7,6 +7,7 @@ import pytest
 from tests.detection_support import context, lab_registry, lab_site, policy
 
 from brandsentinel.analysis import run_extractors
+from brandsentinel.evidence.bundle import SCHEMA_VERSION
 from brandsentinel.policy.scorer import CaseScorer, evaluate, latest_score
 from brandsentinel.store import db as store_db
 from brandsentinel.store import open_store
@@ -151,7 +152,7 @@ def test_populated_v3_store_migrates_to_v4_and_scores(tmp_path, monkeypatch):
     before = {t: conn.execute(f"SELECT * FROM {t} ORDER BY 1").fetchall() for t in tables}  # noqa: S608
 
     monkeypatch.undo()
-    assert migrate(conn) == [4]
+    assert migrate(conn) == [4, 5]
     assert schema_version(conn) == LATEST
     for t in ("candidates", "facts", "features", "stage_runs"):
         assert conn.execute(f"SELECT * FROM {t} ORDER BY 1").fetchall() == before[t], t  # noqa: S608
@@ -198,10 +199,53 @@ def test_scores_from_an_earlier_policy_keep_their_provenance(tmp_path):
     assert outcome.changed
     assert (outcome.result.policy_version, outcome.result.bundle_schema) == (
         policy().version,
-        "bundle/2",
+        SCHEMA_VERSION,
     )
     rows = conn.execute("SELECT * FROM scores ORDER BY id").fetchall()
     assert len(rows) == 2 and tuple(rows[0]) == tuple(old_row)
-    assert [r["policy_version"] for r in rows] == ["policy/1", "policy/2"]
-    assert [h["policy_version"] for h in load_case(conn, 7).history] == ["policy/1", "policy/2"]
+    assert [r["policy_version"] for r in rows] == ["policy/1", policy().version]
+    history = [h["policy_version"] for h in load_case(conn, 7).history]
+    assert history == ["policy/1", policy().version]
     conn.close()
+
+
+def test_wal_switch_waits_for_a_writer_instead_of_failing(tmp_path):
+    """Regression for store.db._enable_wal: a fresh database whose first
+    opener holds a write lock no longer makes a second opener fail at once."""
+    import sqlite3
+
+    db = tmp_path / "locked.db"
+    holder = sqlite3.connect(db, isolation_level=None)
+    holder.execute("CREATE TABLE t (x)")
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute("INSERT INTO t VALUES (1)")
+    done, errors = [], []
+
+    def opener():
+        try:
+            connect(db).close()
+            done.append(True)
+        except Exception as e:
+            errors.append(e)
+
+    t = threading.Thread(target=opener)
+    t.start()
+    t.join(0.5)
+    assert t.is_alive() and not errors  # waiting, not failed
+    holder.execute("COMMIT")
+    holder.close()
+    t.join(10)
+    assert done == [True] and errors == []
+
+
+def test_wal_switch_reraises_other_errors(tmp_path, monkeypatch):
+    import sqlite3
+
+    from brandsentinel.store import db as store_db
+
+    class Conn:
+        def execute(self, sql):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O"):
+        store_db._enable_wal(Conn(), wait_seconds=1)

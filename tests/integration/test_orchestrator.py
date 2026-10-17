@@ -218,3 +218,120 @@ def test_lease_is_renewed_while_waiting_for_the_domain_lock(store):
     drain(orch, lambda: done_count(store) == 2)
     attempts = [r[0] for r in store.conn.execute("SELECT attempts FROM jobs")]
     assert attempts == [1, 1] and len(finished) == 2
+
+
+def test_shutdown_while_a_job_finishes_is_not_swallowed(store, clock):
+    """Regression: a worker cancelled (shutdown) while it waited for its lease
+    renewer to stop swallowed its own cancellation and ran forever, so
+    Orchestrator.run never returned after `stop`.
+
+    Coordination is explicit: the renewer signals once it is inside its
+    cancellation cleanup and holds there until released, so the worker is
+    provably waiting in run_job's `finally` when it is cancelled. Then the
+    lifecycle contract: a cancelled job is not completed, its lease is not
+    renewed, the renewer ends cancelled, and the expired lease returns the job
+    to pending (at-least-once delivery)."""
+    store.jobs._clock = clock
+    store.jobs.enqueue("work", {"i": 1})
+    job = store.jobs.claim("work", "o", 60)
+    orch = Orchestrator(store)
+    renewals: list[float] = []
+    real_renew = store.jobs.renew
+
+    def counting_renew(job, lease_seconds):
+        renewals.append(clock())
+        return real_renew(job, lease_seconds)
+
+    store.jobs.renew = counting_renew
+    handled = asyncio.Event()
+    renewer_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    renewer_task: list[asyncio.Task] = []
+
+    async def handler(job):
+        await renewer_started.wait()  # the renewer exists before the job ends
+        handled.set()
+
+    async def renewer(stage, job, work):  # holds its cleanup until released
+        renewer_task.append(asyncio.current_task())
+        renewer_started.set()
+        try:
+            await asyncio.Event().wait()  # never renews on its own
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            raise
+
+    orch._renew = renewer
+    stage = Stage("work", handler, concurrency=1, lease_seconds=60)
+
+    def row():
+        return store.conn.execute(
+            "SELECT status, lease_expires_at FROM jobs WHERE id = ?", (job.id,)
+        ).fetchone()
+
+    async def main():
+        lease_before = row()[1]
+        task = asyncio.create_task(orch.run_job(stage, job))
+        await handled.wait()
+        await cleanup_started.wait()  # run_job is now waiting for the renewer in `finally`
+        assert not task.done()
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert done, "run_job did not finish"
+        assert task.cancelled(), "the cancellation was swallowed"
+        # Cancellation does not complete the job or touch its lease.
+        assert tuple(row()) == ("running", lease_before)
+        # The renewer was cancelled and ends as soon as its cleanup finishes.
+        release_cleanup.set()
+        (rt,) = renewer_task
+        done, _ = await asyncio.wait({rt}, timeout=5)
+        assert done and rt.cancelled()
+        return lease_before
+
+    lease_before = asyncio.run(main())
+    assert renewals == []  # no lease renewal ran after the handler
+    assert tuple(row()) == ("running", lease_before)
+    clock.advance(61)  # the lease expires; startup recovery retries the job
+    assert store.jobs.recover_expired() == 1
+    assert row()[0] == "pending"
+
+
+def test_shutdown_during_a_job_with_the_real_renewer_leaves_no_lease_work(store, clock):
+    """The production renewer: cancelling run_job mid-handler cancels the
+    handler, completes nothing, and leaves no renewer task running; the job's
+    lease then expires and recovery returns it to pending."""
+    store.jobs._clock = clock
+    store.jobs.enqueue("work", {"i": 1})
+    job = store.jobs.claim("work", "o", 60)
+    orch = Orchestrator(store)
+    started = asyncio.Event()
+    handler_cancelled = asyncio.Event()
+
+    async def handler(job):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            handler_cancelled.set()
+            raise
+
+    stage = Stage("work", handler, concurrency=1, lease_seconds=60)
+
+    async def main():
+        task = asyncio.create_task(orch.run_job(stage, job))
+        await started.wait()
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert done and task.cancelled()
+        assert handler_cancelled.is_set()
+        others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        assert all(t.done() for t in others), others  # no renewer or handler left
+
+    asyncio.run(main())
+    assert store.conn.execute("SELECT status FROM jobs WHERE id = ?", (job.id,)).fetchone()[0] == (
+        "running"
+    )
+    clock.advance(61)
+    assert store.jobs.recover_expired() == 1

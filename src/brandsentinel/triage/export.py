@@ -54,6 +54,9 @@ COLUMNS = (
     "bundle_sha256",
     "scored_at",
     "analyst_verdict",
+    # Added in M6, at the end so earlier columns keep their positions.
+    "media_status",
+    "visual_matches",
 )
 SEP = " | "
 MAX_CELL = 2000
@@ -113,6 +116,17 @@ def row(report: CaseReport) -> dict[str, object]:
             "manual_review": SEP.join(p.manual_review),
             "policy_version": p.policy_version,
             "bundle_sha256": p.bundle_sha256,
+            "media_status": b.visual.status,
+            "visual_matches": SEP.join(
+                f"{m.role} {m.image_ref} ~ {m.reference.get('brand')} {m.reference.get('kind')}"
+                f" ({m.method}"
+                + (
+                    f" p{m.phash_distance}/d{m.dhash_distance})"
+                    if m.method == "perceptual"
+                    else ")"
+                )
+                for m in b.visual.matches
+            ),
         }
     return out
 

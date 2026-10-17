@@ -32,9 +32,12 @@ from brandsentinel.registry.model import Registry
 from brandsentinel.textsafe import sanitize_fact
 
 # bundle/2 (M5 corrections): RegistryContext gained credential_destinations and
-# vouching_brands. bundle/1 is still accepted, only so stored scores made with it
-# load with their original label.
-SCHEMA_VERSION = "bundle/2"
+# vouching_brands. bundle/3 (M6): the `visual` block (media analysis, OCR, QR,
+# visual matches) and payment observations read from images. Earlier versions
+# are still accepted, only so stored scores made with them load with their
+# original label; every block they lack has a default.
+SCHEMA_VERSION = "bundle/3"
+SCHEMA_VERSIONS = ("bundle/1", "bundle/2", "bundle/3")
 MAX_SNIPPETS = 20
 MAX_SNIPPET_CHARS = 300
 MAX_EXCERPT_CHARS = 1000
@@ -210,6 +213,8 @@ class PaymentObservation(_Block):
     attributed_brands: list[str] = []
     registry_payee: dict[str, str] | None = None
     extractor_version: str
+    # The image a QR code or image text was read from (sha256); None for page text.
+    image_sha256: str | None = None
     refs: list[str] = []
 
 
@@ -256,13 +261,77 @@ class EditorialBlock(_Block):
     refs: list[str] = []
 
 
+class VisualImage(_Block):
+    """One image selected for media analysis, and what became of it."""
+
+    ref: str  # its URL, or inline:<n> for a data: image in the page
+    role: str  # qr | logo | favicon | og_image | page_image | inline
+    why: list[str] = []
+    fetch_outcome: str | None = None  # None for inline images
+    status: str  # ok | rejected | failed | not_fetched
+    reason: str | None = None
+    sha256: str | None = None
+    stored: bool = False
+    format: str | None = None
+    width: int | None = None
+    height: int | None = None
+    frames: int | None = None
+    phash: str | None = None
+    dhash: str | None = None
+    favicon_mmh3: int | None = None
+    low_information: bool = False
+    ocr_status: str | None = None
+    ocr_chars: int = 0
+    qr_codes: int = 0
+    gaps: list[str] = []  # requested OCR or QR decoding that did not finish
+    refs: list[str] = []
+
+
+class VisualMatch(_Block):
+    image_sha256: str
+    image_ref: str
+    role: str
+    method: str  # sha256 | perceptual
+    phash_distance: int
+    dhash_distance: int
+    reference: dict[str, Any]  # corpus entry: brand, kind, origin, source, ...
+    refs: list[str] = []
+
+
+class VisualBlock(_Block):
+    """Media analysis (M6): which images were examined and why, what the media
+    sandbox reported, OCR and QR content, and matches against the reference
+    corpus. `status` keeps what was not observed visible: `pending`, `failed`,
+    `partial` and `disabled` are unknowns, never a clean result."""
+
+    status: Literal[
+        "not_run", "not_triggered", "disabled", "pending", "complete", "partial", "failed"
+    ] = "not_run"
+    analysis_round: int | None = None
+    reasons: list[str] = []  # why media analysis was triggered
+    skipped: str | None = None  # why it was not
+    images: list[VisualImage] = []
+    rejected: list[dict[str, Any]] = []  # media_rejected: {ref, role, reason}
+    matches: list[VisualMatch] = []
+    matcher: dict[str, Any] | None = None
+    corpus_version: str | None = None
+    corpus_entries: int = 0
+    images_not_selected: int = 0  # wanted images left out by the per-case cap
+    ocr_text: list[dict[str, Any]] = []  # {image, role, text}: bounded, sanitized
+    ocr_brands: list[dict[str, Any]] = []
+    ocr_presented: list[str] = []  # brands an image presents by a strong term
+    donation_cues: list[str] = []
+    qr_payloads: list[dict[str, Any]] = []
+    refs: list[str] = []
+
+
 class Snippet(_Block):
     field: str
     text: str
 
 
 class EvidenceBundle(_Block):
-    schema_version: Literal["bundle/1", "bundle/2"] = SCHEMA_VERSION
+    schema_version: Literal[SCHEMA_VERSIONS] = SCHEMA_VERSION  # type: ignore[valid-type]
     subject: Subject
     discovery: Discovery = Discovery()
     registry: RegistryContext = RegistryContext()
@@ -274,7 +343,9 @@ class EvidenceBundle(_Block):
     association: AssociationBlock = AssociationBlock()
     commerce: CommerceBlock = CommerceBlock()
     editorial: EditorialBlock = EditorialBlock()
-    # Filled by later milestones (M6 visual matching, M7 rendering and cloaking).
+    visual: VisualBlock = VisualBlock()
+    # Never filled: superseded by visual.matches (bundle/3). Kept so bundle/1 and
+    # bundle/2 documents keep loading. M7 fills the next two.
     visual_matches: list[dict[str, Any]] = []
     render_reason: str | None = None
     cloaking: dict[str, Any] | None = None
@@ -656,6 +727,154 @@ def _features_for(features: list[FeatureRecord], fact: FactRecord | None) -> dic
     return out
 
 
+MAX_MEDIA_OBSERVATIONS = 10
+MAX_OCR_SNIPPET = 500
+
+
+def _round_fact(facts: list[FactRecord], name: str, rnd: int | None) -> FactRecord | None:
+    same = [f for f in facts if f.name == name and f.round == rnd]
+    return same[-1] if same else None
+
+
+def _visual(
+    facts: list[FactRecord], features: list[FeatureRecord], rnd: int | None
+) -> tuple[VisualBlock, list[PaymentObservation]]:
+    """The visual block for the round of the final static fetch, and payment
+    observations read from its images."""
+    decision = _round_fact(facts, "media_decision", rnd) if rnd is not None else None
+    if decision is None:
+        return VisualBlock(), []
+    dv = decision.value
+    base = {
+        "analysis_round": rnd,
+        "reasons": _s(list(dv.get("reasons") or [])[:MAX_LIST], 100),
+        "skipped": _s(dv.get("skipped"), 100),
+        "images_not_selected": int(dv.get("images_not_selected") or 0),
+        "refs": [f"fact:{decision.id}"],
+    }
+    if not dv.get("triggered"):
+        return VisualBlock(status="not_triggered", **base), []
+    if not dv.get("media_enabled", True):
+        return VisualBlock(status="disabled", **base), []
+    # A recheck whose content did not change carries the earlier round's result.
+    source = dv.get("carried_from_round", rnd)
+    analysis = _round_fact(facts, "media_analysis", source)
+    if analysis is None:
+        return VisualBlock(status="pending", **base), []
+    av = analysis.value
+    status = av.get("status") if av.get("status") in ("complete", "partial", "failed") else "failed"
+    if "images" not in av:  # dropped by the fact size cap: nothing is known about them
+        status = "failed"
+    afact = f"fact:{analysis.id}"
+    stored = set(analysis.artifact_refs)
+
+    def image_refs(sha: str | None) -> list[str]:
+        return [afact] + ([f"artifact:{sha}"] if sha and sha in stored else [])
+
+    images, rejected, ocr_text = [], [], []
+    for im in (av.get("images") or [])[:MAX_LIST]:
+        r = im.get("result") or {}
+        ocr = r.get("ocr") or {}
+        sha = im.get("sha256")
+        vi = VisualImage(
+            ref=_s(im.get("ref") or "?", 500),
+            role=_s(im.get("role") or "?", 40),
+            why=_s(list(im.get("why") or [])[:10], 60),
+            fetch_outcome=(im.get("fetch") or {}).get("outcome"),
+            status=im.get("status") or "failed",
+            reason=_s(im.get("reason"), 200),
+            sha256=sha,
+            stored=bool(sha and sha in stored),
+            format=r.get("format"),
+            width=r.get("width"),
+            height=r.get("height"),
+            frames=r.get("frames"),
+            phash=r.get("phash"),
+            dhash=r.get("dhash"),
+            favicon_mmh3=r.get("favicon_mmh3"),
+            low_information=bool(im.get("low_information")),
+            ocr_status=ocr.get("status"),
+            gaps=_s(list(im.get("gaps") or [])[:5], 40),
+            ocr_chars=int(ocr.get("chars") or 0),
+            qr_codes=len((r.get("qr") or {}).get("codes") or []),
+            refs=image_refs(sha),
+        )
+        images.append(vi)
+        if im.get("status") in ("rejected", "failed"):  # media_rejected (AE12)
+            rejected.append({"ref": vi.ref, "role": vi.role, "reason": vi.reason})
+        if ocr.get("text"):
+            ocr_text.append(
+                {
+                    "image": sha,
+                    "role": vi.role,
+                    "text": sanitize_fact(ocr["text"], MAX_OCR_SNIPPET),
+                }
+            )
+    own = [f for f in features if analysis.id in f.fact_refs]
+    feats = {f.name: f for f in own}
+    vm, mt = feats.get("visual_matches"), feats.get("media_text")
+    vmv = vm.value if vm and isinstance(vm.value, dict) else {}
+    mtv = mt.value if mt and isinstance(mt.value, dict) and mt.value.get("available") else {}
+    by_sha = {i.sha256: i for i in images if i.sha256}
+    matches = []
+    for m in (vmv.get("matches") or [])[:MAX_LIST]:
+        img = by_sha.get(m.get("image"))
+        matches.append(
+            VisualMatch(
+                image_sha256=m.get("image") or "",
+                image_ref=img.ref if img else "?",
+                role=img.role if img else "?",
+                method=m.get("method") or "?",
+                phash_distance=int(m.get("phash_distance") or 0),
+                dhash_distance=int(m.get("dhash_distance") or 0),
+                reference=_s(m.get("reference") or {}, 500),
+                refs=[f"feature:{vm.id}", *image_refs(m.get("image"))],
+            )
+        )
+    payments = []
+    for o in (mtv.get("observations") or [])[:MAX_MEDIA_OBSERVATIONS]:
+        payments.append(
+            PaymentObservation(
+                kind=o["kind"],
+                source=o.get("source"),
+                identifier_type=o.get("identifier_type"),
+                payee_identifier=_s(o.get("payee_identifier")),
+                payee_name=_s(o.get("payee_name")),
+                destination=_s(o.get("destination"), 500),
+                amount=_s(o.get("amount")),
+                currency=_s(o.get("currency")),
+                ifsc=_s(o.get("ifsc")),
+                attribution=o.get("attribution", "unknown"),
+                attribution_reason=_s(o.get("reason")),
+                attributed_brands=o.get("brands", []),
+                registry_payee=o.get("registry_payee"),
+                extractor_version=mt.extractor_version,
+                image_sha256=o.get("image"),
+                refs=[f"feature:{mt.id}", *image_refs(o.get("image"))],
+            )
+        )
+    refs = base.pop("refs") + [afact] + [f"feature:{f.id}" for f in (vm, mt) if f]
+    return (
+        VisualBlock(
+            status=status,
+            **base,
+            images=images,
+            rejected=rejected,
+            matches=matches,
+            matcher=_s(vmv.get("matcher"), 100),
+            corpus_version=vmv.get("corpus_version"),
+            corpus_entries=int(vmv.get("corpus_entries") or 0),
+            ocr_text=ocr_text,
+            ocr_brands=_s(list(mtv.get("brands") or [])[:MAX_LIST], 200),
+            ocr_presented=list(mtv.get("presented") or []),
+            donation_cues=_s(list(mtv.get("donation_cues") or [])[:MAX_LIST], 100),
+            qr_payloads=_s(list(mtv.get("qr_payloads") or [])[:MAX_LIST], 500),
+            refs=refs,
+        ),
+        payments,
+    )  # fmt: skip
+
+
 def build_bundle(
     inputs: CaseInputs, lexicon: BrandLexicon | None, registry: Registry | None = None
 ) -> EvidenceBundle:
@@ -739,6 +958,8 @@ def build_bundle(
         refs=refs("page_content"),
     )
     pay_feature = feats.get("payment")
+    visual, media_payments = _visual(inputs.facts, inputs.features, http.analysis_round)
+    pay_refs = refs("payment")
     payment = PaymentBlock(
         catalog_version=pay.get("catalog_version"),
         providers=_s(pay.get("providers", []), 500),
@@ -759,15 +980,17 @@ def build_bundle(
                 attributed_brands=o.get("brands", []),
                 registry_payee=o.get("registry_payee"),
                 extractor_version=pay_feature.extractor_version if pay_feature else "unknown",
-                refs=refs("payment"),
+                refs=pay_refs,
             )
             for o in pay.get("observations", [])[:MAX_LIST]
-        ],
+        ]
+        + media_payments,
         donation_cues=_s(pay.get("donation_cues", [])),
         card_fields=pay.get("card_fields", 0),
         card_forms=pay.get("card_field_forms", []),
         qr_images=_s(pay.get("qr_images", []), 500),
-        refs=refs("payment"),
+        refs=pay_refs
+        + list(dict.fromkeys(r for o in media_payments for r in o.refs if r not in pay_refs)),
     )
     association = AssociationBlock(
         available=bool(assoc.get("available")),
@@ -853,13 +1076,14 @@ def build_bundle(
         association=association,
         commerce=commerce,
         editorial=editorial,
-        snippets=_snippets(page, credential, payment, association),
+        visual=visual,
+        snippets=_snippets(page, credential, payment, association, visual),
         extractor_errors=errors,
-        incomplete=_incomplete(http, page, infra, errors),
+        incomplete=_incomplete(http, page, infra, errors, visual),
     )
 
 
-def _snippets(page, credential, payment, association) -> list[Snippet]:
+def _snippets(page, credential, payment, association, visual) -> list[Snippet]:
     out: list[Snippet] = []
 
     def add(field: str, text: str | None) -> None:
@@ -879,11 +1103,17 @@ def _snippets(page, credential, payment, association) -> list[Snippet]:
         add("page.lure", lure.get("snippet"))
     for d in association.disclaimers:
         add("association.disclaimer", d.get("snippet"))
+    for t in visual.ocr_text:
+        add("visual.ocr_text", t.get("text"))
+    for q in visual.qr_payloads:
+        add("visual.qr_payload", q.get("text"))
     add("page.text_excerpt", page.text_excerpt)
     return out
 
 
-def _incomplete(http: Http, page: PageBlock, infra: Infrastructure, errors: list) -> list[str]:
+def _incomplete(
+    http: Http, page: PageBlock, infra: Infrastructure, errors: list, visual: VisualBlock
+) -> list[str]:
     out = []
     if not http.fetched:
         out.append("not_fetched" if not http.attempts else "fetch_pending_retry")
@@ -907,4 +1137,10 @@ def _incomplete(http: Http, page: PageBlock, infra: Infrastructure, errors: list
         out.append(f"enrichment_error_{e.get('source')}")
     for e in errors:
         out.append(f"extractor_error_{e['extractor']}")
+    if visual.status in ("pending", "failed", "partial", "disabled"):
+        out.append(f"media_{visual.status}")
+    if visual.rejected:
+        out.append("media_rejected")
+    if visual.status in ("complete", "partial") and not visual.corpus_entries:
+        out.append("reference_corpus_empty")
     return out

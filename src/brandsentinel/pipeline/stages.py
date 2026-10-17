@@ -55,6 +55,8 @@ log = logging.getLogger(__name__)
 
 ENRICH = "enrich"
 FETCH = "fetch"
+MEDIA = "media"
+MEDIA_DECISION_VERSION = "media_decision/1"
 FINGERPRINT_FIELDS = ("addresses", "status", "final_url", "title", "body_sha256")
 # A failed https attempt for these reasons is followed by a plain-http attempt.
 HTTP_FALLBACK = frozenset({"connect_error", "tls_error", "timeout", "protocol_error"})
@@ -214,6 +216,9 @@ class AnalysisStages:
         )
         self.scorer = CaseScorer(store.conn, registry, Policy.load(analysis.policy), clock=clock)
         self.offline_enrich = not self.config.enrich.enabled
+        # Whether media analysis may run at all (M6); run_service narrows it to
+        # the effective sandbox setting. Decisions are recorded either way.
+        self.media_enabled = self.config.media.enabled and self.config.sandbox.enabled
 
     def register(self, orch: Orchestrator, *, enrich: bool = True, fetch: bool = True) -> None:
         c = self.config
@@ -387,8 +392,9 @@ class AnalysisStages:
         if case is None or case.status != "open":
             return
         if self._done(case_id, FETCH, rnd):
-            # Redelivered after the fetch was recorded: make sure it was scored
-            # (a crash or scoring error may have happened in between).
+            # Redelivered after the fetch was recorded: make sure the media
+            # decision and the score exist (a crash may have come in between).
+            self.decide_media(case, rnd)
             self.score(case_id)
             return
         results: list[FetchResult] = []
@@ -423,7 +429,90 @@ class AnalysisStages:
         with transaction(self.store.conn):
             if not self._done(case_id, FETCH, rnd):  # else a redelivery finished first
                 self._record_fetch(case, job, results, final, extracted, rnd)
+        self.decide_media(case, rnd)
         self.score(case_id)
+
+    # --- media decision (M6) ----------------------------------------------------------
+
+    def _final_fetch(self, case_id: int) -> tuple[int, int | None] | None:
+        """(fact id, analysis round) of the case's latest final static fetch."""
+        row = self.store.conn.execute(
+            "SELECT id, json_extract(value_json, '$.analysis_round') FROM facts"
+            " WHERE case_id = ? AND name = 'http_fetch' AND json_extract(value_json, '$.final')"
+            " ORDER BY id DESC LIMIT 1",
+            (case_id,),
+        ).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def _images_feature(self, case_id: int, fact_id: int) -> dict | None:
+        row = self.store.conn.execute(
+            "SELECT value_json FROM features f WHERE case_id = ? AND name = 'images'"
+            " AND EXISTS (SELECT 1 FROM json_each(f.fact_refs) WHERE value = ?)"
+            " ORDER BY id DESC LIMIT 1",
+            (case_id, fact_id),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def _carriable(self, case_id: int, prev: dict) -> bool:
+        """An earlier round's media result may stand for unchanged content only
+        when it was not needed, or ran (enabled) and completed. A pending,
+        failed, partial or disabled result is decided again."""
+        if not prev.get("triggered"):
+            return True
+        if not prev.get("media_enabled"):
+            return False
+        source = prev.get("carried_from_round", prev["analysis_round"])
+        analysis = self._round_fact(case_id, "media_analysis", source)
+        return bool(analysis) and analysis.get("status") == "complete"
+
+    def decide_media(self, case: CaseRow, rnd: int) -> None:
+        """Record once per round whether the case's images are analyzed, and
+        queue the media job when they are. A recheck whose content did not change
+        carries the previous round's decision and result instead."""
+        from brandsentinel.pipeline.media import decide
+
+        if self._round_fact(case.case_id, "media_decision", rnd) is not None:
+            return
+        final = self._final_fetch(case.case_id)
+        if final is None or final[1] != rnd:  # a later round already decides
+            return
+        decision = None
+        change = self._round_fact(case.case_id, "material_change", rnd)
+        if (
+            rnd > 0
+            and change
+            and not change.get("changed")
+            and "body_sha256" not in (change.get("unknown_fields") or [])
+        ):
+            prev = self._round_fact(case.case_id, "media_decision", int(change["previous_round"]))
+            if prev is not None and self._carriable(case.case_id, prev):
+                decision = {
+                    **prev,
+                    "carried_from_round": prev.get("carried_from_round", prev["analysis_round"]),
+                }
+        if decision is None:
+            try:
+                bundle = self.scorer.bundle(case.case_id)
+            except Exception:
+                log.exception("media decision failed", extra={"fields": {"case_id": case.case_id}})
+                return
+            if bundle is None:
+                return
+            decision = decide(
+                bundle,
+                self._images_feature(case.case_id, final[0]),
+                enabled=self.media_enabled,
+                cap=self.config.media.max_images_per_case,
+            )
+        with transaction(self.store.conn):
+            if self._round_fact(case.case_id, "media_decision", rnd) is not None:
+                return
+            self._fact(
+                case.case_id, "pipeline", "media_decision", decision, MEDIA_DECISION_VERSION, rnd
+            )
+            fresh = "carried_from_round" not in decision
+            if decision.get("triggered") and decision.get("media_enabled") and fresh:
+                self._schedule(case, MEDIA, rnd)
 
     def _record_fetch(
         self,

@@ -530,6 +530,34 @@ def sandbox_sweep(ctx: typer.Context) -> None:
     typer.echo(f"removed {removed} container(s) of instance {config.sandbox.instance}")
 
 
+@sandbox_app.command("selftest")
+def sandbox_selftest(
+    ctx: typer.Context,
+    role: Annotated[str, typer.Argument(help="Worker to test: media.")],
+) -> None:
+    """Run a worker in a real sandbox container on synthetic fixtures and check its
+    gate (media: hashing, OCR, QR, bomb and format rejection, no network). Exits 1
+    if any check fails."""
+    from brandsentinel.sandbox import preflight
+    from brandsentinel.sandbox.media_selftest import selftest
+
+    if role != "media":
+        typer.echo(f"unknown worker {escape_terminal(role)!s}; expected: media", err=True)
+        raise typer.Exit(2)
+    config = _load(ctx)
+    runner, report = asyncio.run(preflight.prepare_runtime(config))
+    _print_checks("runtime", report)
+    if runner is None:
+        raise typer.Exit(1)
+    report = preflight.Report(checks=asyncio.run(selftest(runner, config.media)))
+    _print_checks("media worker", report)
+    for c in report.checks:
+        if c.ok and c.detail:
+            typer.echo(f"    {c.name}: {escape_terminal(c.detail)}")
+    if not report.ok:
+        raise typer.Exit(1)
+
+
 # --- triage (M5) ----------------------------------------------------------------------
 
 PriorityOpt = Annotated[
@@ -894,6 +922,97 @@ def registry_validate(
     if missing:
         raise typer.Exit(1)
     typer.echo("ok")
+
+
+@registry_app.command("collect")
+def registry_collect(
+    ctx: typer.Context,
+    brand: Annotated[
+        list[str] | None, typer.Option("--brand", help="Only this brand id (repeatable).")
+    ] = None,
+) -> None:
+    """Build the reference corpus from confirmed reference assets and pages
+    (verified HTTPS on confirmed official domains only). Images are hashed in the
+    media sandbox, which outside lab mode runs only under the dedicated account."""
+    from brandsentinel.analysis.payment import ProviderCatalog
+    from brandsentinel.pipeline.stages import build_network
+    from brandsentinel.sandbox.media_client import MediaClient
+    from brandsentinel.sandbox.preflight import hostile_content_runtime
+    from brandsentinel.sandbox.runner import SandboxError
+    from brandsentinel.visual.collector import Collector
+
+    config = _load(ctx)
+    registry, _ = _load_registry(config.registry_path, _overlay(config))
+    _check_analysis_config(config)
+    unknown = sorted(set(brand or ()) - {b.id for b in registry.brands})
+    if unknown:
+        typer.echo(f"unknown brand(s): {escape_terminal(', '.join(unknown))}", err=True)
+        raise typer.Exit(2)
+    if not (config.sandbox.enabled and config.media.enabled):
+        typer.echo("collection needs the media sandbox (sandbox.enabled, media.enabled)", err=True)
+        raise typer.Exit(1)
+    runner, report = asyncio.run(hostile_content_runtime(config))
+    if runner is None:
+        _print_checks("media sandbox", report)
+        raise typer.Exit(1)
+    store = open_store(config)
+    try:
+        _, fetcher = build_network(config)
+        collector = Collector(
+            store.conn,
+            registry,
+            fetcher,
+            MediaClient(runner, config.media),
+            config.media,
+            config.registry_path.parent / "assets",
+            providers=ProviderCatalog.load(config.analysis.payment_providers),
+        )
+        try:
+            result = asyncio.run(collector.collect(brand))
+        except SandboxError as e:
+            typer.echo(f"media sandbox unavailable: {escape_terminal(str(e))}", err=True)
+            raise typer.Exit(1) from e
+    finally:
+        store.close()
+    for a in result.assets:
+        why = f" ({a['why']})" if a.get("why") else ""
+        typer.echo(escape_terminal(f"asset {a['id']} [{a['brand']}]: {a['result']}{why}"))
+    for p in result.pages:
+        why = f" ({p['why']})" if p.get("why") else ""
+        typer.echo(escape_terminal(f"page {p['url']} [{p['brand']}]: {p['result']}{why}"))
+    for i in result.images:
+        typer.echo(escape_terminal(f"image {i['url']} ({i['kind']}): {i['result']} {i['why']}"))
+    for o in result.observations:
+        typer.echo(escape_terminal(f"candidate {o['kind']} [{o['brand']}]: {o['value']}"))
+    typer.echo(
+        f"corpus: {result.added} added, {result.unchanged} unchanged, {result.retired} retired;"
+        f" {len(result.observations)} candidate observation(s) for review"
+    )
+
+
+@registry_app.command("corpus")
+def registry_corpus(ctx: typer.Context) -> None:
+    """List the reference corpus as matching will use it, and any entry the
+    current registry no longer vouches for."""
+    from brandsentinel.visual.corpus import load_corpus
+
+    config = _load(ctx)
+    registry, _ = _load_registry(config.registry_path, _overlay(config))
+    store = open_store(config)
+    try:
+        corpus = load_corpus(store.conn, registry)
+    finally:
+        store.close()
+    typer.echo(f"corpus {corpus.version}")
+    for e in corpus.entries:
+        typer.echo(
+            escape_terminal(
+                f"  #{e.id} {e.brand} {e.kind} {e.origin} {e.source} sha256 {e.sha256[:16]}"
+                f" phash {e.phash} {e.width}x{e.height}"
+            )
+        )
+    for rid, why in corpus.rejected:
+        typer.echo(escape_terminal(f"  #{rid} NOT USED: {why}"))
 
 
 @app.command()

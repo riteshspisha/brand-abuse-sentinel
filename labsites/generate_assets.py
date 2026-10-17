@@ -41,6 +41,20 @@ def logo(size: int = 256) -> Image.Image:
     return img
 
 
+def valley_sun(size: int = 256) -> Image.Image:
+    """A hard negative for visual matching: an unrelated sun logo in the same
+    colours (a sun rising over hills, no rays, a different word)."""
+    img = Image.new("RGB", (size, size), WHITE)
+    d = ImageDraw.Draw(img)
+    c = size // 2
+    d.ellipse([c - 60, 50, c + 60, 170], fill=GOLD, outline=NAVY, width=4)
+    d.polygon([(0, 190), (70, 120), (140, 190)], fill=NAVY)
+    d.polygon([(90, 190), (180, 110), (size, 190)], fill=NAVY)
+    d.rectangle([0, 190, size, 200], fill=NAVY)
+    d.text((c, size - 30), "VALLEY", fill=NAVY, font=font(size // 7), anchor="mm")
+    return img
+
+
 def qr(data: str) -> Image.Image:
     q = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=6, border=2)
     q.add_data(data)
@@ -71,6 +85,7 @@ def main() -> None:
     # The clone re-encodes a resized copy: same picture, different bytes.
     save(official.resize((200, 200), Image.LANCZOS), "copied-assets/static/logo.png")
     save(appeal(), "image-only/static/appeal.png")
+    save(valley_sun(), "unrelated-tourism/static/valley-sun.png")
     relief = "upi://pay?pa=rivers.relief.fund@quickpaybank&pn=Lumina%20Relief&am=1000&cu=INR"
     save(qr(relief), "donation-fraud/static/upi-qr.png")
     save(qr(relief), "image-only/static/upi-qr.png")

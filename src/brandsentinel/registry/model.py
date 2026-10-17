@@ -145,6 +145,64 @@ class ReferencePage(_Tracked):
         return v
 
 
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ASSET_PATH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$")
+
+
+class ReferenceAsset(_Tracked):
+    """A brand reference image (U17, R10, R13): a logo, favicon or other image a
+    maintainer verified as the brand's own.
+
+    The image is either a file under `registry/assets/` (`path`, curated) or an
+    https URL (`url`), which the collector fetches with verified TLS only from a
+    confirmed official domain of the brand. `sha256` pins the exact bytes. Only a
+    confirmed entry whose content matches its pin enters the reference corpus;
+    a changed file or URL is reported, never trusted."""
+
+    id: str
+    brand: str
+    kind: Literal["logo", "favicon", "og_image", "image"]
+    path: str | None = None
+    url: str | None = None
+    sha256: str | None = None
+
+    @field_validator("id")
+    @classmethod
+    def _check_id(cls, v: str) -> str:
+        if not _ID_RE.match(v):
+            raise ValueError(f"asset id {v!r} must be lowercase letters, digits and hyphens")
+        return v
+
+    @field_validator("path")
+    @classmethod
+    def _relative_path(cls, v: str | None) -> str | None:
+        if v is not None and (not _ASSET_PATH_RE.match(v) or ".." in v.split("/")):
+            raise ValueError("path must be relative to registry/assets/, without '..'")
+        return v
+
+    @field_validator("url")
+    @classmethod
+    def _https_url(cls, v: str | None) -> str | None:
+        if v is not None and not v.startswith("https://"):
+            raise ValueError("reference asset URLs must use https://")
+        return v
+
+    @field_validator("sha256")
+    @classmethod
+    def _digest(cls, v: str | None) -> str | None:
+        if v is not None and not _SHA256_RE.match(v):
+            raise ValueError("sha256 must be 64 lowercase hex digits")
+        return v
+
+    @model_validator(mode="after")
+    def _source(self):
+        if (self.path is None) == (self.url is None):
+            raise ValueError("a reference asset has exactly one of path or url")
+        if self.status == "confirmed" and self.sha256 is None:
+            raise ValueError("a confirmed reference asset pins its content with sha256")
+        return self
+
+
 class Registry(_Entry):
     version: Literal[1]
     brands: list[Brand]
@@ -154,6 +212,20 @@ class Registry(_Entry):
     relationships: list[Relationship] = []
     payees: list[Payee] = []
     reference_pages: list[ReferencePage] = []
+    reference_assets: list[ReferenceAsset] = []
+
+    def confirmed_official_domains(self, brand: str) -> list[str]:
+        return [
+            d.name
+            for d in self.domains
+            if d.brand == brand and d.kind == "official" and d.status == "confirmed"
+        ]
+
+    def on_confirmed_official_domain(self, brand: str, host: str | None) -> bool:
+        """True when `host` is a confirmed official domain of `brand`, or under one."""
+        return bool(host) and any(
+            host == d or host.endswith("." + d) for d in self.confirmed_official_domains(brand)
+        )
 
     def keywords(self) -> list[tuple[Brand, Keyword]]:
         return [(b, k) for b in self.brands if b.active for k in b.keywords if k.active]

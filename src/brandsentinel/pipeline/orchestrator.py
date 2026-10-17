@@ -159,8 +159,10 @@ class Orchestrator:
             return
         finally:
             renewer.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await renewer
+            # Wait for the renewer without suppressing CancelledError: a shutdown
+            # that arrives here must cancel this worker, not be swallowed (the
+            # worker would then run forever and Orchestrator.run never return).
+            await asyncio.wait({renewer})
         try:
             self.store.jobs.complete(job)
         except LeaseLost:
@@ -254,20 +256,11 @@ async def _prepare_sandbox(orch: Orchestrator, config) -> None:
     the account checks fail, or pass only because of
     `runtime.allow_developer_account`, sandbox stages stay disabled outside lab
     mode, whose content is synthetic."""
-    from brandsentinel.sandbox.preflight import check_account, prepare_runtime
+    from brandsentinel.sandbox.preflight import gate_hostile_content, prepare_runtime
     from brandsentinel.sandbox.runner import SandboxError, SandboxRunner
 
     runner, report = await prepare_runtime(config)
-    account = check_account(config)
-    if runner is not None and not config.net.lab.enabled and (not account.ok or account.warnings):
-        runner = None
-        names = [c.name for c in account.failures + account.warnings]
-        report.add(
-            "dedicated_account",
-            False,
-            "sandbox stages run untrusted content only under the dedicated service"
-            " account; account checks did not pass cleanly (" + ", ".join(names) + ")",
-        )
+    runner = gate_hostile_content(config, runner, report)
     passed = {c.name for c in report.checks if c.ok}
     sweeper = runner or (
         SandboxRunner(config.sandbox, report.docker) if {"endpoint", "rootless"} <= passed else None
@@ -297,12 +290,14 @@ async def run_service(
     fetch_enabled: bool | None = None,
     sandbox_enabled: bool | None = None,
     analysis=None,
+    media_client=None,
     clock: Callable[[], float] | None = None,
 ) -> Orchestrator:
     """Wire discovery sources, analysis stages, deferred-work promotion and
     maintenance into an orchestrator and run it until `stop` is set. Replays the
     discovery log before any source starts. `analysis` (an AnalysisStages)
-    replaces the default network wiring, for tests."""
+    replaces the default network wiring and `media_client` the sandboxed media
+    client, for tests."""
     from brandsentinel.pipeline import scheduling
     from brandsentinel.pipeline.stages import AnalysisStages, build_network
 
@@ -327,11 +322,23 @@ async def run_service(
 
     enrich_on = config.enrich.enabled if enrich_enabled is None else enrich_enabled
     fetch_on = config.fetch.enabled if fetch_enabled is None else fetch_enabled
+    sandbox_on = config.sandbox.enabled if sandbox_enabled is None else sandbox_enabled
     if enrich_on or fetch_on:
         if analysis is None:
             guard, fetcher = build_network(config)
             analysis = AnalysisStages(store, registry, guard=guard, fetcher=fetcher, clock=clock)
+        analysis.media_enabled = sandbox_on and config.media.enabled
         analysis.register(orch, enrich=enrich_on, fetch=fetch_on)
+        # The media stage exists only when the runtime preflight, the account
+        # gate and the orphan sweep passed. Otherwise media jobs wait (cases show
+        # `pending`), and run once a restart finds the sandbox available.
+        if fetch_on and analysis.media_enabled and orch.sandbox is not None:
+            from brandsentinel.pipeline.media import MediaStage
+            from brandsentinel.sandbox.media_client import MediaClient
+
+            MediaStage(analysis, media_client or MediaClient(orch.sandbox, config.media)).register(
+                orch
+            )
 
     async def promote() -> None:
         interval = config.scheduling.promote_interval_seconds

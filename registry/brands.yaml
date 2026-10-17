@@ -265,3 +265,9 @@ payees: []
 
 # Official pages for the reference collector; collected only once confirmed.
 reference_pages: []
+
+# Curated brand reference images (logos, favicons). A file lives under
+# registry/assets/ (`path`) or an https URL on a confirmed official domain of
+# the brand (`url`); `sha256` pins the bytes. Only confirmed entries whose
+# content matches the pin enter the reference corpus (`registry collect`).
+reference_assets: []

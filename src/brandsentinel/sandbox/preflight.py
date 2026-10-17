@@ -209,6 +209,35 @@ async def prepare_runtime(config: Config) -> tuple[SandboxRunner | None, Report]
     return (SandboxRunner(config.sandbox, docker) if report.ok else None), report
 
 
+def gate_hostile_content(
+    config: Config, runner: SandboxRunner | None, report: Report
+) -> SandboxRunner | None:
+    """The hostile-content gate (SP1, R50): untrusted content (pages, images)
+    runs in sandboxes only under the dedicated service account. Outside lab mode
+    (synthetic content), the runner is withheld unless the account checks pass
+    cleanly: no failure and nothing allowed only by the developer override.
+    Every entry point that hands real content to a sandbox goes through this."""
+    if runner is None or config.net.lab.enabled:
+        return runner
+    account = check_account(config)
+    if account.ok and not account.warnings:
+        return runner
+    names = [c.name for c in account.failures + account.warnings]
+    report.add(
+        "dedicated_account",
+        False,
+        "sandbox stages run untrusted content only under the dedicated service"
+        " account; account checks did not pass cleanly (" + ", ".join(names) + ")",
+    )
+    return None
+
+
+async def hostile_content_runtime(config: Config) -> tuple[SandboxRunner | None, Report]:
+    """`prepare_runtime` followed by the hostile-content gate."""
+    runner, report = await prepare_runtime(config)
+    return gate_hostile_content(config, runner, report), report
+
+
 async def check_network(
     docker: DockerCli,
     settings: SandboxSettings,
