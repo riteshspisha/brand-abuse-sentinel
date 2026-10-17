@@ -101,10 +101,11 @@ Decisions worth knowing before M7:
 
 1. **SP1 code cannot open the current data.** The active `/opt/brandsentinel` has
    migrations up to v4, and `store.db.migrate` raises `SchemaTooNew` on the v5
-   database. Any `brandsentinel` command from the active install against
-   `/var/lib/brandsentinel/data` fails until the cutover, and a rollback to SP1
-   needs a v4 copy of the data or a fresh data directory. Whether a pre-M6
-   backup exists is **unverified**.
+   database (it checks before any write, so nothing is migrated or damaged). Any
+   `brandsentinel` command from the active install against
+   `/var/lib/brandsentinel/data` fails until the cutover. A rollback to SP1 needs
+   a v4 copy of the data or an empty directory, with the v5 data moved aside
+   (promotion step 6). Whether a pre-M6 backup exists is **unverified**.
 2. **The staged install cannot be renamed into place.** Its venv is bound to its
    path: script shebangs and `pyvenv.cfg` name `/opt/brandsentinel-m6-e90c92a`.
    `mv` to `/opt/brandsentinel` breaks every entry point. A symlink would keep it
@@ -126,41 +127,69 @@ Decisions worth knowing before M7:
 
 ### Promoting M6 into the active installation (not done; for an operator)
 
-`$` lines run as the developer; `#` lines need root. This follows
-`docs/runbooks/service-account.md` steps 4, 6 and 7. Reinstall rather than move
-(hazard 2).
+`$` lines run as the developer; `#` lines need root. Every Docker command runs as
+the account against its own socket, `unix:///run/user/1001/docker.sock`; never
+run `docker` as root or as the developer for this procedure (that reaches the
+rootful or the developer's daemon). This follows `docs/runbooks/service-account.md`
+steps 4, 6 and 7. Reinstall rather than move (hazard 2).
 
-1. Preconditions:
-   - no `brandsentinel` application process under UID 1001;
+1. Preconditions, all checked before anything moves:
+   - no `brandsentinel` application process under UID 1001
+     (`pgrep -u brandsentinel -af 'brandsentinel (run|registry|cases|analyze|submit)'`
+     prints nothing);
    - the developer's lab is stopped (`validate.sh` needs 127.0.0.1:3129);
-   - at least 8 GiB free under `/var/lib`;
-   - a clean checkout of `main` at `358bf40` (`git diff e90c92a 358bf40` is empty).
-2. Back up the data, since SP1 cannot read v5:
+   - the rollback image exists in the account's daemon:
+     ```sh
+     # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
+         docker --host unix:///run/user/1001/docker.sock image inspect \
+         --format '{{.Id}}' brandsentinel-sandbox:sp1-31318f0
+     ```
+   - room for a full copy of the data: `# du -sh /var/lib/brandsentinel/data`
+     against `df -h /var/lib`;
+   - the developer's checkout is clean and at the validated commit:
+     `$ git switch --detach e90c92a && git status --porcelain` (prints nothing).
+     Do not install from `main`: it moves past the validated commit as later PRs
+     merge, and `install.sh` records whatever `HEAD` is.
+2. Back up the whole data directory (the database references blobs, raw logs,
+   cache and reports beside it), with nothing running:
    ```sh
-   # install -d -m 0700 -o brandsentinel -g brandsentinel /var/lib/brandsentinel/backup-m6-cutover
+   # STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+   # cp -a /var/lib/brandsentinel/data /var/lib/brandsentinel/data.v5-backup-$STAMP
    # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-       sqlite3 /var/lib/brandsentinel/data/brandsentinel.db \
-       ".backup /var/lib/brandsentinel/backup-m6-cutover/brandsentinel-v5.db"
+       sqlite3 -readonly /var/lib/brandsentinel/data.v5-backup-$STAMP/brandsentinel.db 'PRAGMA integrity_check'
    ```
-   Record whether a v4 (pre-M6) copy exists anywhere. If none does, SP1 rollback
-   means a fresh data directory.
+   Expect `ok`. Write down `$STAMP`; the rollback (step 6) reuses it, possibly
+   from another shell. This copy protects the M6 data. It is not an SP1 rollback point:
+   SP1 cannot read v5 (hazard 1). Record whether a v4 (pre-M6) copy exists
+   anywhere.
 3. Set SP1 aside and install M6 at the canonical path:
    ```sh
    # mv /opt/brandsentinel /opt/brandsentinel.sp1-31318f0
    # install -d -o <developer> -g <developer group> -m 0755 /opt/brandsentinel
-   $ scripts/service-account/install.sh          # from main@358bf40; refuses a dirty tree
+   $ scripts/service-account/install.sh          # at e90c92a; refuses a dirty tree or a non-empty prefix
    # chown -R root:root /opt/brandsentinel && chmod -R go-w /opt/brandsentinel
-   # find /opt/brandsentinel ! -user root | head; cat /opt/brandsentinel/INSTALL
+   # find /opt/brandsentinel ! -user root | head; grep '^commit' /opt/brandsentinel/INSTALL
+   # sha256sum /opt/brandsentinel/bin/dockerd-rootless.sh
    ```
-4. The validated image is already in the account's daemon. Confirm it rather
-   than reloading:
+   - Expect no output from `find`, `commit: e90c92acbd7a83c83f844ae1dddeece075a9c15d`,
+     and `200203633806081a401e60aefdf68a8fa73fc7dc80aa854c52a69d47710a3488`.
+   - Keep this window short. The account's `docker-rootless.service` starts
+     `/opt/brandsentinel/bin/dockerd-rootless.sh` (`Restart=always`;
+     `setup-rootless.sh`). Between the `mv` and the end of the install that file
+     does not exist, so a daemon restart would fail and take down the egress
+     proxy. The running daemon is not affected. Do not restart the account's user
+     manager or reboot inside the window; if the install fails, move SP1 back
+     at once (step 6).
+4. The validated image is already in the account's daemon. Confirm it against
+   the new source rather than reloading:
    ```sh
    # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
        /opt/brandsentinel/venv/bin/python /opt/brandsentinel/src/scripts/service-account/image_manifest.py \
-       --docker-host unix:///run/user/1001/docker.sock --source /opt/brandsentinel/src
+       --docker-host unix:///run/user/1001/docker.sock --source /opt/brandsentinel/src \
+       --expect-id sha256:aafa3d78aafe8c55b80cb70f65073c4b16c69caed0e9355a2e7230bc8238807b
    ```
-   Expect the image id `sha256:aafa3d78…` and `"verdict": "ok"`. On a mismatch,
-   stream the image as in service-account.md step 6.
+   Expect `"verdict": "ok"`. On a mismatch, stop and stream the image as in
+   service-account.md step 6.
 5. Validate the canonical install:
    ```sh
    # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
@@ -176,24 +205,36 @@ Decisions worth knowing before M7:
    print(Policy.load(c.analysis.policy).version, ProviderCatalog.load(c.analysis.payment_providers).version)"
    ```
    Expect:
-   - `SP1 VALIDATION: PASS`;
+   - `SP1 VALIDATION: PASS` (it also runs `compose --profile sandbox up -d` on the
+     account's daemon);
    - a passing selftest;
-   - `status` reporting schema v5;
+   - `status` reporting schema v5 (the store is already v5; no migration runs);
    - `policy/4` printed by the last command. `status` does not load the policy;
      the last command reads both files through the configured paths, with no side
      effects.
-6. Rollback, if needed:
+6. Rollback, if needed. Stop any `brandsentinel` process first.
    ```sh
    # mv /opt/brandsentinel /opt/brandsentinel.m6-failed
    # mv /opt/brandsentinel.sp1-31318f0 /opt/brandsentinel
+   # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
+       docker --host unix:///run/user/1001/docker.sock tag \
+       brandsentinel-sandbox:sp1-31318f0 brandsentinel-sandbox:local
+   # systemd-run --user -M brandsentinel@ --wait --pipe --collect --working-directory=/opt/brandsentinel/src \
+       docker --host unix:///run/user/1001/docker.sock compose -f docker/compose.yaml \
+       --profile sandbox up -d --force-recreate
    ```
-   - Then retag `brandsentinel-sandbox:sp1-31318f0` as `:local` in the account's
-     daemon and recreate the egress proxy (`compose --profile sandbox up -d
-     --force-recreate`).
-   - The data must be a v4 copy or a fresh directory (hazard 1).
+   - Data: SP1 refuses the v5 directory (`SchemaTooNew`, before any write), so
+     SP1 runs only against a v4 copy (if one exists) or an empty directory. Move
+     the v5 data aside, never delete it, so M6 can be promoted again:
+     `# mv /var/lib/brandsentinel/data /var/lib/brandsentinel/data.v5-$STAMP`.
+   - SP1 then starts with an empty store (or the v4 copy restored to
+     `/var/lib/brandsentinel/data`). Cases and evidence from the M6 period are not
+     visible to SP1.
+   - Then run SP1's own `validate.sh` (service-account.md step 7).
 7. After acceptance, remove the superseded trees:
    - `/opt/brandsentinel-m6-stage` and `/opt/brandsentinel-m6-e90c92a`;
-   - eventually `/opt/brandsentinel.prev-4280e42` and the SP1 copy.
+   - the SP1 copy, `/opt/brandsentinel.prev-4280e42` and the data backup only
+     once the rollback window is formally closed.
 
 ### Accepted risks and follow-ups
 
