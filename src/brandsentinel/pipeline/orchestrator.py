@@ -159,8 +159,10 @@ class Orchestrator:
             return
         finally:
             renewer.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await renewer
+            # Wait for the renewer without suppressing CancelledError: a shutdown
+            # that arrives here must cancel this worker, not be swallowed (the
+            # worker would then run forever and Orchestrator.run never return).
+            await asyncio.wait({renewer})
         try:
             self.store.jobs.complete(job)
         except LeaseLost:

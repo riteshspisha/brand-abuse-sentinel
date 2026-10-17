@@ -218,3 +218,37 @@ def test_lease_is_renewed_while_waiting_for_the_domain_lock(store):
     drain(orch, lambda: done_count(store) == 2)
     attempts = [r[0] for r in store.conn.execute("SELECT attempts FROM jobs")]
     assert attempts == [1, 1] and len(finished) == 2
+
+
+def test_shutdown_while_a_job_finishes_is_not_swallowed(store):
+    """Regression: a worker cancelled (shutdown) while it waited for its lease
+    renewer to stop swallowed its own cancellation and ran forever, so
+    Orchestrator.run never returned after `stop`."""
+    store.jobs.enqueue("work", {"i": 1})
+    orch = Orchestrator(store)
+    handled = asyncio.Event()
+
+    async def handler(job):
+        handled.set()
+
+    async def slow_to_stop(stage, job, work):  # a renewer whose cleanup takes a moment
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            await asyncio.shield(asyncio.sleep(0.3))
+            raise
+
+    orch._renew = slow_to_stop
+    stage = Stage("work", handler, concurrency=1, poll_seconds=0.01)
+
+    async def main():
+        job = store.jobs.claim("work", "o", 60)
+        task = asyncio.create_task(orch.run_job(stage, job))
+        await handled.wait()
+        await asyncio.sleep(0.05)  # now inside `finally`, waiting for the renewer
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=5)
+        assert done, "run_job did not finish"
+        assert task.cancelled(), "the cancellation was swallowed"
+
+    asyncio.run(main())
