@@ -515,6 +515,18 @@ def _match_text(b: EvidenceBundle, matches) -> str:
     return "; ".join(parts) + more
 
 
+MEDIA_SOURCES = frozenset({"qr_code", "image_text"})
+
+
+def _independent_of(o, matched: set[str]) -> bool:
+    """Whether payment observation `o` comes from outside the matched images. A
+    payee read from an image whose source image is unknown (a bundle stored
+    before the image was recorded) cannot be shown to be independent."""
+    if o.source not in MEDIA_SOURCES:
+        return True
+    return o.image_sha256 is not None and o.image_sha256 not in matched
+
+
 def visual_corroboration(b: EvidenceBundle, brands: set[str]) -> list[tuple[str, list[str]]]:
     """Independent signs that this page or domain presents one of `brands` (the
     brands whose reference assets an image matched): (what, evidence refs).
@@ -556,6 +568,7 @@ def visual_corroboration(b: EvidenceBundle, brands: set[str]) -> list[tuple[str,
         o
         for o in unconfirmed_payees(b)
         if brands & set(o.attributed_brands)
+        and _independent_of(o, matched)
         and (
             (o.attribution_reason or "").startswith(("payee name", "read by OCR"))
             or brands & set(outside)

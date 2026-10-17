@@ -487,3 +487,135 @@ def test_populated_bundle3_round_trips_through_stored_scores(env):
     stored, _, _ = latest_score(store.conn, case_id)
     assert stored.schema_version == "bundle/3" and stored.visual.matches and stored.visual.images
     assert bundle_json(stored) == bundle_json(stages.scorer.bundle(case_id))
+
+
+# --- a matched image must not corroborate itself (PR #9 review) -----------------------
+#
+# The worker's OCR/QR result for chosen images is injected through the in-process
+# runner's output hook (the host has no Tesseract); everything after it is the real
+# path: client validation, media_text attribution, bundle, policy.
+
+LOOKALIKE = "lumina.foundati0n@lumenbank"  # one edit from the lab's confirmed payee
+SCAM_QR = "upi://pay?pa=relief.desk@quickpaybank&pn=Lumina%20Foundation"
+
+
+def reading(texts_by_sha: dict[str, dict]):
+    """A tamper hook giving chosen images (by sha256) OCR text and/or QR codes."""
+
+    def tamper(doc):
+        for item in doc.get("items", []):
+            got = texts_by_sha.get(item.get("sha256"))
+            if got and item.get("status") == "ok":
+                if "ocr" in got:
+                    t = got["ocr"]
+                    item["ocr"] = {"status": "ok", "text": t, "chars": len(t), "truncated": False}
+                if "qr" in got:
+                    item["qr"] = {
+                        "status": "ok",
+                        "codes": [{"format": "qr", "text": got["qr"], "truncated": False}],
+                    }
+        return doc
+
+    return tamper
+
+
+def run_read(store, stages, case_id, texts_by_sha):
+    run(
+        store,
+        stages,
+        media_done(store, case_id),
+        runner=M.InProcessRunner(tamper=reading(texts_by_sha)),
+    )
+    return load_case(store.conn, case_id)
+
+
+def sha(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "inside",
+    [{"ocr": f"Donations: {LOOKALIKE}"}, {"qr": SCAM_QR}],
+    ids=["ocr-lookalike-payee", "qr-payee-named-for-brand"],
+)
+def test_payee_read_from_the_matched_image_does_not_corroborate_its_match(env, inside):
+    """The copied logo itself carries a payee (OCR lookalike of the confirmed payee,
+    or a QR whose payee name names the brand). Nothing outside that image ties
+    the page to the brand: the match stays uncorroborated. The payee is still
+    reported, and still scored as an unconfirmed brand payee."""
+    store, stages, matcher, h = env
+    logo = M.lab_logo()
+    url = page(
+        h,
+        "sc-" + next(iter(inside)),
+        f'<img src="{blob(h, "mp-sc-" + next(iter(inside)), logo)}" alt="">',
+    )
+    case_id = submit(store, matcher, url).case_id
+    r = run_read(store, stages, case_id, {sha(logo): inside})
+    rules_fired = {x.rule for x in r.result.reasons}
+    assert [m.method for m in r.bundle.visual.matches] == ["sha256"]
+    media_payees = [
+        o for o in r.bundle.payment.observations if o.source in ("image_text", "qr_code")
+    ]
+    assert media_payees and all(o.attributed_brands == ["lumina-foundation"] for o in media_payees)
+    assert "copied_asset_match" not in rules_fired
+    assert "visual_match_uncorroborated" in rules_fired
+    assert "payment_brand_unconfirmed_payee" in rules_fired  # the payee finding stands
+
+
+@pytest.mark.parametrize(
+    "elsewhere",
+    [{"ocr": f"Donations: {LOOKALIKE}"}, {"qr": SCAM_QR}],
+    ids=["ocr-lookalike-payee", "qr-payee-named-for-brand"],
+)
+def test_payee_in_another_image_still_corroborates(env, elsewhere):
+    """Positive control: the same payee shown in a second, unmatched image is
+    independent of the matched logo and corroborates it."""
+    store, stages, matcher, h = env
+    logo, other = M.lab_logo(), M.payment_screenshot()
+    key = "mp-ind-" + next(iter(elsewhere))
+    url = page(
+        h,
+        key,
+        f'<img src="{blob(h, key + "-l", logo)}" alt="">'
+        f'<img src="{blob(h, key + "-o", other)}" alt="">',
+    )
+    case_id = submit(store, matcher, url).case_id
+    r = run_read(store, stages, case_id, {sha(other): elsewhere})
+    reason = next(x for x in r.result.reasons if x.rule == "copied_asset_match")
+    assert "an unconfirmed payee is presented under the brand" in reason.explanation
+
+
+def test_page_payee_named_for_the_brand_still_corroborates(env):
+    """Positive control: a UPI deep link in the page HTML whose payee name names
+    the brand is independent of the matched logo."""
+    store, stages, matcher, h = env
+    logo = M.lab_logo()
+    link = "upi://pay?pa=relief.desk@quickpaybank&amp;pn=Lumina%20Foundation"
+    url = page(
+        h,
+        "mp-htmlpayee",
+        f'<img src="{blob(h, "mp-htmlpayee", logo)}" alt=""><a href="{link}">Pay</a>',
+    )
+    case_id = submit(store, matcher, url).case_id
+    r = run_read(store, stages, case_id, {})
+    assert "copied_asset_match" in {x.rule for x in r.result.reasons}
+
+
+def test_payee_in_the_matched_image_with_independent_support_still_matches(env):
+    """The image's own payee is excluded, but independent support (the page
+    presents the brand in its title) still corroborates the match."""
+    store, stages, matcher, h = env
+    logo = M.lab_logo()
+    url = page(
+        h,
+        "mp-both",
+        f'<title>Lumina Foundation</title><img src="{blob(h, "mp-both", logo)}" alt="">',
+    )
+    case_id = submit(store, matcher, url).case_id
+    r = run_read(store, stages, case_id, {sha(logo): {"ocr": f"Donations: {LOOKALIKE}"}})
+    reason = next(x for x in r.result.reasons if x.rule == "copied_asset_match")
+    assert "the page presents Lumina Foundation" in reason.explanation
+    assert "unconfirmed payee" not in reason.explanation

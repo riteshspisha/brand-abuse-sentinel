@@ -2,7 +2,10 @@
 # src/brandsentinel/policy/rules.py; this file holds their points and thresholds.
 # Every rule must be listed here (and nothing else), so a typo fails loudly.
 # Change `version` whenever you change a number: each stored score records it.
-version: policy/3
+version: policy/4
+# policy/4 (M6 review): a payee read from a matched image (QR code or image
+# text) no longer corroborates that image's copied_asset_match; payees must come
+# from page text or another image. Points are unchanged.
 # policy/3 (M6): copied_asset_match (abuse) and visual_match_uncorroborated
 # (supporting); brand text and donation language read from images, and payees
 # from QR codes and image text, count like their page-text counterparts. A

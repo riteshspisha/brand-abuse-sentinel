@@ -213,6 +213,8 @@ class PaymentObservation(_Block):
     attributed_brands: list[str] = []
     registry_payee: dict[str, str] | None = None
     extractor_version: str
+    # The image a QR code or image text was read from (sha256); None for page text.
+    image_sha256: str | None = None
     refs: list[str] = []
 
 
@@ -847,6 +849,7 @@ def _visual(
                 attributed_brands=o.get("brands", []),
                 registry_payee=o.get("registry_payee"),
                 extractor_version=mt.extractor_version,
+                image_sha256=o.get("image"),
                 refs=[f"feature:{mt.id}", *image_refs(o.get("image"))],
             )
         )

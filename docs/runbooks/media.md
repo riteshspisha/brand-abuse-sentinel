@@ -41,7 +41,7 @@ visual matching of candidate images against it.
 | Untrusted references in the corpus | only confirmed registry assets whose bytes match their pin, and images from confirmed reference pages fetched with verified TLS on confirmed official domains of the brand; every row re-checked on load; evidence-mode artifacts refused | `visual/corpus.py`, `visual/collector.py` | `test_corpus.py`, `test_collector.py` |
 | Third parties on official pages | recorded as `candidate` observations (R14), never corpus, never suppressing | collector | `test_collector.py::test_r14_...` |
 
-## How matching becomes evidence (policy/3)
+## How matching becomes evidence (policy/4)
 
 - `HashMatcher` (`visual/compare.py`): exact sha256, or pHash ≤ 10 **and** dHash ≤ 8
   (of 64 bits) with proportions within 1.35×; images with luminance standard
@@ -65,7 +65,10 @@ visual matching of candidate images against it.
   that payee's brand, and adds a manual-review note.
 - Payee and credential ties count as corroboration only when they do not rest
   on the matched image's own text (a payee name naming the brand, or the brand
-  presented by the page or by another image).
+  presented by the page or by another image). A payee read from a matched image
+  itself (its QR code or its text) never corroborates; each media payee records
+  the image it was read from (`image_sha256`), and one whose image is unknown is
+  not treated as independent.
 - Media status `pending`, `failed`, `partial` or `disabled`, and rejected
   images, are listed as incomplete (`partial` also covers an image whose
   requested OCR or QR decoding was unavailable, timed out or failed) with the `needs_media` flag, a

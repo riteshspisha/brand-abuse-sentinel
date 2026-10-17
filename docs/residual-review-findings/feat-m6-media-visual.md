@@ -70,10 +70,55 @@ Verification after the fixes:
 - 1158 non-docker tests pass.
 - All 86 docker tests pass on an image rebuilt from the tree: the `security and docker` gate, the media containers, and the lab static and media demos.
 
-Two time-bounded integration tests (`test_html_served_as_an_image...` and M3's
-`test_retry_policy_by_outcome[/slow...]`) each failed once, in runs that took
-about twice the usual time, and passed on rerun. Host load is suspected, not
-the change.
+Two integration tests (`test_html_served_as_an_image...` and M3's
+`test_retry_policy_by_outcome[/slow...]`) each failed once. This report first
+blamed host load, which was wrong. The cause was a shutdown hang in the
+orchestrator, fixed after the second review (see below).
+
+## Second review (PR #9, after the service-account validation at 316eed2)
+
+- **Confirmed and fixed: a matched image could corroborate itself through a
+  payee** (independent review). `visual_corroboration` accepted any payee
+  whose attribution reason began with `payee name` or `read by OCR`. It never
+  checked which image the payee was read from, and the bundle did not keep that
+  image (only an `artifact:` ref, and only when the blob was stored).
+  - Two routes reached it:
+    - an OCR lookalike of the confirmed payee printed in the copied logo (the
+      reported route);
+    - a QR code inside the copied image whose payee name names the brand (not
+      in the report).
+  - Prerequisites:
+    - a corpus match on a host the registry does not vouch for;
+    - no other corroboration (domain match, presentation, claim, another image);
+    - a brand-attributed payee inside the matched image.
+  - Effect: `copied_asset_match` (+40, impersonation) fired instead of
+    `visual_match_uncorroborated`, with an explanation claiming independent
+    support. The priority did not change, because the payee alone already
+    scores P2 through `payment_brand_unconfirmed_payee`.
+  - Fix:
+    - Media payees carry `image_sha256` (bundle/3, additive with a default).
+    - A payee read from a matched image, or from an unknown image, does not
+      corroborate.
+    - Payee findings, the OCR lookalike guard and other corroboration are
+      unchanged.
+    - The policy version moves to policy/4.
+  - Reproduced end to end before the fix (3 tests failed). Covered by:
+    - `tests/integration/test_media_pipeline.py`: matched-image payee via OCR
+      and via QR; the same payee in another image; a page-text payee;
+      independent page support;
+    - `tests/unit/test_visual_policy.py`: multi-image pages, one independent
+      payee among self-derived ones, every matched image excluded, unknown
+      source image, and stored bundle/3 documents without the field.
+- **Found while testing it and fixed: shutdown could hang** (pre-existing since
+  M2, `17c4603`). `Orchestrator.run_job` awaited the lease renewer under
+  `contextlib.suppress(asyncio.CancelledError)`. A worker cancelled at that
+  moment swallowed its own cancellation, kept running, and `Orchestrator.run`
+  never returned after `stop` (`brandsentinel run` could hang on SIGTERM).
+  - It is now awaited with `asyncio.wait`.
+  - Deterministic test:
+    `tests/integration/test_orchestrator.py::test_shutdown_while_a_job_finishes_is_not_swallowed`.
+  - The two-image tests that hung about 1 run in 4 then passed 10 of 10, and
+    the full suite passed three times.
 
 ## Accepted, not fixed (for the reviewer's decision)
 

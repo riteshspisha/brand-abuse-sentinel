@@ -232,9 +232,12 @@ def test_payee_resting_on_the_matched_images_own_text_is_not_corroboration():
         visual=visual(ocr_brands=ocr, ocr_presented=["lumina-foundation"]),
     )
     assert "copied_asset_match" not in rules(evaluate(b, policy()))
-    named = _qr_payee().model_copy(update={"attribution_reason": "payee name 'Lumina Relief' ..."})
+    # A QR payee from another image whose own name names the brand does tie it.
+    named = _qr_payee().model_copy(
+        update={"attribution_reason": "payee name 'Lumina Relief' ...", "image_sha256": OTHER_SHA}
+    )
     b2 = bundle(payment=PaymentBlock(observations=[named]), visual=visual(ocr_brands=ocr))
-    assert "copied_asset_match" in rules(evaluate(b2, policy()))  # its own name ties it
+    assert "copied_asset_match" in rules(evaluate(b2, policy()))
 
 
 def test_unexamined_images_are_reported():
@@ -288,3 +291,96 @@ def test_bundles_without_media_data_score_as_before():
         rules(b),
     )
     assert not {"copied_asset_match", "visual_match_uncorroborated"} & rules(a)
+
+
+# --- a matched image must not corroborate itself through a payee (PR #9) --------------
+
+
+def _media_payee(image, attribution="possible_ocr_misread_of_registry_payee", source="image_text"):
+    reason = (
+        "read by OCR within two characters of confirmed registry payee lumina-foundation-upi"
+        if attribution == "possible_ocr_misread_of_registry_payee"
+        else "payee name 'Lumina Foundation' names Lumina Foundation; not a confirmed payee"
+    )
+    return PaymentObservation(
+        kind="upi",
+        source=source,
+        identifier_type="upi_vpa",
+        payee_identifier="lumina.foundati0n@lumenbank",
+        attribution=attribution,
+        attribution_reason=reason,
+        attributed_brands=["lumina-foundation"],
+        extractor_version="media_text/1",
+        image_sha256=image,
+        refs=["feature:11", "fact:8"],
+    )
+
+
+def _corroborated(*payees, **visual_kw) -> set[str]:
+    b = bundle(payment=PaymentBlock(observations=list(payees)), visual=visual(**visual_kw))
+    return rules(evaluate(b, policy()))
+
+
+def test_ocr_lookalike_payee_from_the_matched_image_does_not_corroborate():
+    fired = _corroborated(_media_payee(LOGO_SHA))
+    assert "copied_asset_match" not in fired and "visual_match_uncorroborated" in fired
+    assert "payment_brand_unconfirmed_payee" in fired  # the lookalike payee still scores
+
+
+def test_qr_payee_named_for_the_brand_from_the_matched_image_does_not_corroborate():
+    p = _media_payee(LOGO_SHA, "claims_brand_unconfirmed", "qr_code")
+    assert "copied_asset_match" not in _corroborated(p)
+
+
+def test_the_same_payees_from_an_unmatched_image_corroborate():
+    assert "copied_asset_match" in _corroborated(_media_payee(OTHER_SHA))
+    qr = _media_payee(OTHER_SHA, "claims_brand_unconfirmed", "qr_code")
+    assert "copied_asset_match" in _corroborated(qr)
+
+
+def test_page_text_payee_named_for_the_brand_corroborates():
+    page = _media_payee(None, "claims_brand_unconfirmed", "deep_link")
+    assert "copied_asset_match" in _corroborated(page)
+
+
+def test_one_independent_payee_is_enough_among_self_derived_ones():
+    fired = _corroborated(_media_payee(LOGO_SHA), _media_payee(OTHER_SHA))
+    assert "copied_asset_match" in fired
+
+
+def test_every_matched_image_is_excluded_not_only_the_first():
+    second = match().model_copy(
+        update={"image_sha256": OTHER_SHA, "image_ref": "http://x.test/b.png"}
+    )
+    fired = _corroborated(_media_payee(OTHER_SHA), matches=[match(), second])
+    assert "copied_asset_match" not in fired
+
+
+def test_media_payee_of_unknown_source_image_is_not_counted_as_independent():
+    """A bundle stored before the source image was recorded (image_sha256 None)
+    cannot show the payee came from elsewhere; it does not corroborate."""
+    assert "copied_asset_match" not in _corroborated(_media_payee(None))
+
+
+def test_credential_and_text_corroboration_are_unaffected():
+    fired = rules(
+        evaluate(
+            bundle(
+                association=brand_page(),
+                payment=PaymentBlock(observations=[_media_payee(LOGO_SHA)]),
+                visual=visual(),
+            ),
+            policy(),
+        )
+    )
+    assert "copied_asset_match" in fired  # the page presents the brand itself
+
+
+def test_stored_bundle3_without_payee_image_still_loads():
+    """bundle/3 documents written before image_sha256 existed load (default None)."""
+    current = bundle(payment=PaymentBlock(observations=[_media_payee(LOGO_SHA)]), visual=visual())
+    doc = json.loads(bundle_json(current))
+    for o in doc["payment"]["observations"]:
+        del o["image_sha256"]
+    old = EvidenceBundle.model_validate(doc)
+    assert old.payment.observations[0].image_sha256 is None
