@@ -28,6 +28,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from brandsentinel.analysis.association import BrandLexicon
+from brandsentinel.analysis.media_text import OCR_MISREAD
 from brandsentinel.evidence.bundle import (
     EvidenceBundle,
     build_bundle,
@@ -229,7 +230,7 @@ def _context(b: EvidenceBundle) -> list[ContextNote]:
         refs = _refs(*(m.refs for m in v.matches))
         add("visual_match", f"{len(v.matches)} image match(es) with brand reference assets.", refs)
     if v.rejected:
-        reasons = ", ".join(sorted({str(r.get("reason")) for r in v.rejected}))
+        reasons = _reject_reasons(v)
         add(
             "media_rejected",
             f"{len(v.rejected)} image(s) rejected or stopped by the media sandbox ({reasons});"
@@ -250,6 +251,10 @@ def _unobserved(b: EvidenceBundle) -> list[str]:
     return [g for g in b.incomplete if g in _UNOBSERVED or g.startswith("fetch_")]
 
 
+def _reject_reasons(v) -> str:
+    return ", ".join(sorted({str(r.get("reason")) for r in v.rejected}))
+
+
 def _media_unknown(b: EvidenceBundle) -> str | None:
     """What media analysis left unknown, in words, or None."""
     v = b.visual
@@ -264,8 +269,8 @@ def _media_unknown(b: EvidenceBundle) -> str | None:
     if v.status == "failed":
         return "media analysis failed: images, QR codes and visual matches are unknown"
     if v.status == "partial":
-        bad = sum(1 for i in v.images if i.status not in ("ok", "absent"))
-        return f"{bad} of {len(v.images)} image(s) could not be analyzed"
+        bad = sum(1 for i in v.images if i.status not in ("ok", "absent") or i.gaps)
+        return f"{bad} of {len(v.images)} image(s) could not be analyzed in full"
     return None
 
 
@@ -357,28 +362,30 @@ def evaluate(b: EvidenceBundle, policy: Policy, judgments: Iterable[dict] = ()) 
     if media_gap:
         flags.append("needs_media")
         unknowns.append(media_gap)
+    if b.visual.images_not_selected:
+        unknowns.append(
+            f"{b.visual.images_not_selected} page image(s) were not examined"
+            " (media.max_images_per_case)"
+        )
     if b.visual.rejected:
         manual.append(
             f"{len(b.visual.rejected)} image(s) were rejected or stopped by the media sandbox"
-            f" ({', '.join(sorted({str(r.get('reason')) for r in b.visual.rejected}))}); what"
+            f" ({_reject_reasons(b.visual)}); what"
             " they show is unknown, not benign."
         )
-    if (
-        b.visual.matches
-        and not any(r.rule == "copied_asset_match" for r in reasons)
-        and not (b.registry.official_domain)
-    ):
+    copied = any(r.rule == "copied_asset_match" for r in reasons)
+    if b.visual.matches and not copied and not b.registry.official_domain:
         manual.append(
             "An image matches a brand reference asset, but nothing else on the page or in the"
             " domain ties it to the brand; a visual match alone is not treated as"
             " impersonation. Review it."
         )
     for o in b.payment.observations:
-        if o.attribution == "possible_ocr_misread_of_registry_payee":
+        if o.attribution == OCR_MISREAD:
             manual.append(
                 f"Image text shows {o.payee_identifier}, within two characters of a confirmed"
-                " registry payee: a misreading by OCR, or a lookalike payee. It was neither"
-                " relief nor abuse evidence."
+                " registry payee: a misreading by OCR, or a lookalike payee. It is treated as"
+                " an unconfirmed payee, never as relief; check the image."
             )
     if has_abuse and "editorial_or_critical" in labels:
         manual.append(

@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from brandsentinel.analysis import host_of, registrable_of
+from brandsentinel.analysis.media_text import OCR_MISREAD
 from brandsentinel.evidence.bundle import EvidenceBundle
 
 Kind = Literal["abuse", "supporting", "relief"]
@@ -125,7 +126,9 @@ def _uniq(*groups: list[str]) -> list[str]:
     return out
 
 
-def credential_tie(b: EvidenceBundle) -> tuple[list[str], str] | None:
+def credential_tie(
+    b: EvidenceBundle, presented: list[str] | None = None
+) -> tuple[list[str], str] | None:
     """The brands a credential request is tied to, and how, or None.
 
     Tied when a credential form's own text or enclosing block names a brand,
@@ -151,7 +154,7 @@ def credential_tie(b: EvidenceBundle) -> tuple[list[str], str] | None:
         brands = sorted({h.get("brand") for h in b.discovery.hits if h.get("brand")})
         return brands, f"the domain name matches {_names(b, brands)} ({m})"
     lure = any(lu.get("category") == "account_verification" for lu in b.page.lures)
-    presented = presented_brands(b)
+    presented = presented_brands(b) if presented is None else presented
     if presented and lure:
         return presented, (
             f"the page presents {_names(b, presented)} and asks the reader to"
@@ -160,7 +163,13 @@ def credential_tie(b: EvidenceBundle) -> tuple[list[str], str] | None:
     return None
 
 
-def unconfirmed_payees(b: EvidenceBundle, attributions=("claims_brand_unconfirmed",)):
+# An identifier read from an image within two characters of a confirmed payee is
+# never relief: it counts as an unconfirmed payee (lookalike payees are a fraud
+# pattern; a genuine misreading is explained in the manual-review note).
+CLAIMS = ("claims_brand_unconfirmed", OCR_MISREAD)
+
+
+def unconfirmed_payees(b: EvidenceBundle, attributions=CLAIMS):
     return [
         o
         for o in b.payment.observations
@@ -408,7 +417,7 @@ def _payee_unapproved_vouched(b: EvidenceBundle, p: dict) -> Fired | None:
     # confirmed registry payee.
     payees = [
         o
-        for o in unconfirmed_payees(b, ("claims_brand_unconfirmed", "unrelated"))
+        for o in unconfirmed_payees(b, (*CLAIMS, "unrelated"))
         # The reason wording comes from analysis.payment._attribute.
         if donation or (o.attribution_reason or "").startswith("payee name")
     ]
@@ -529,17 +538,29 @@ def visual_corroboration(b: EvidenceBundle, brands: set[str]) -> list[tuple[str,
             (f"the page claims an association with {_names(b, claimed)}", b.association.refs)
         )
     matched = {m.image_sha256 for m in b.visual.matches}
-    other = sorted(
+    unmatched_ocr = {
         x["brand"]
         for x in b.visual.ocr_brands
-        if x["brand"] in brands and x.get("strength") == "strong" and set(x["images"]) - matched
-    )
+        if x.get("strength") == "strong" and set(x["images"]) - matched
+    }
+    other = sorted(brands & unmatched_ocr)
     if other:
         out.append((f"another image on the page shows {_names(b, other)}", b.visual.refs))
-    tie = credential_tie(b)
+    # Brands the page presents without the matched images' own text: payee and
+    # credential ties count only when they rest on these, or on the payee's name.
+    outside = sorted(set(b.association.presented) | unmatched_ocr)
+    tie = credential_tie(b, presented=outside)
     if tie and brands & set(tie[0]):
         out.append(("a credential form is tied to the brand", b.credential.refs))
-    payees = [o for o in unconfirmed_payees(b) if brands & set(o.attributed_brands)]
+    payees = [
+        o
+        for o in unconfirmed_payees(b)
+        if brands & set(o.attributed_brands)
+        and (
+            (o.attribution_reason or "").startswith(("payee name", "read by OCR"))
+            or brands & set(outside)
+        )
+    ]
     if payees:
         out.append(("an unconfirmed payee is presented under the brand", b.payment.refs))
     return out
@@ -723,7 +744,7 @@ def _confirmed_payee(b: EvidenceBundle, p: dict) -> Fired | None:
     known = [o for o in b.payment.observations if o.attribution == "registry_known_payee"]
     # Relief only when every payee on the page is confirmed: a hidden copy of the
     # real payee must not offset a scam payee beside it.
-    if not known or unconfirmed_payees(b, ("claims_brand_unconfirmed", "unrelated")):
+    if not known or unconfirmed_payees(b, (*CLAIMS, "unrelated")):
         return None
     ids = sorted({(o.registry_payee or {}).get("id", "?") for o in known})
     return Fired(

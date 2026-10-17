@@ -272,3 +272,45 @@ def test_provenance_records_both_fetches(env):
     prov = json.loads(prov)
     assert prov["page_fetch"]["trusted_reference"] and prov["image_fetch"]["mode"] == "verified"
     assert prov["image_fetch"]["hops"][0]["tls"] == "verified"
+
+
+class OneImageDown:
+    """The harness fetcher, except that one image URL fails (a transient 503)."""
+
+    def __init__(self, inner, broken: str) -> None:
+        self.inner, self.broken = inner, broken
+
+    async def fetch(self, url, **kw):
+        if url.endswith(self.broken):
+            return FetchResult(
+                requested_url=url, mode="verified", purpose="reference", started_at="",
+                outcome="connect_error", error={"kind": "unavailable"},
+            )  # fmt: skip
+        return await self.inner.fetch(url, **kw)
+
+
+def test_a_transient_image_failure_keeps_the_pages_entries(env):
+    """Review fix: the page is not examined completely, so nothing is retired."""
+    h, store, assets = env
+    reg = make_registry(h, pages=[page(secure(h, "/mutable?k=home"))])
+    collect(h, store, reg, assets)
+    report = collect(h, store, reg, assets, fetcher=OneImageDown(harness_fetcher(h), "k=og"))
+    assert any(i["kind"] == "og_image" and i["result"] == "refused" for i in report.images)
+    assert report.retired == 0 and sum(r[5] for r in corpus_rows(store)) == 3
+
+
+def test_the_same_image_on_two_pages_is_two_entries(env):
+    h, store, assets = env
+    h.recorder.pages["home2"] = official_page(h)
+    reg = make_registry(
+        h, pages=[page(secure(h, "/mutable?k=home")), page(secure(h, "/mutable?k=home2"))]
+    )
+    collect(h, store, reg, assets)
+    assert len([r for r in corpus_rows(store) if r[0] == "logo" and r[5]]) == 2
+    # The first page drops the logo: the second page's entry survives.
+    h.recorder.pages["home"] = official_page(h).replace(
+        b'<header><img src="/blob?k=logo" alt="Lumina Foundation logo"></header>', b""
+    )
+    collect(h, store, reg, assets)
+    assert len([r for r in corpus_rows(store) if r[0] == "logo" and r[5]]) == 1
+    del h.recorder.pages["home2"]

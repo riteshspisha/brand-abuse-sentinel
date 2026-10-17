@@ -60,10 +60,15 @@ visual matching of candidate images against it.
 - Image text counts as presentation and donation language; QR payees and OCR
   payees join the payment block with `source` `qr_code` or `image_text`. An OCR
   identifier within two edits of a confirmed payee is a
-  `possible_ocr_misread_of_registry_payee`: neither relief nor abuse, and a
-  manual-review note.
+  `possible_ocr_misread_of_registry_payee`: it may be a misreading or a
+  deliberate lookalike, so it is never relief, counts as an unconfirmed payee of
+  that payee's brand, and adds a manual-review note.
+- Payee and credential ties count as corroboration only when they do not rest
+  on the matched image's own text (a payee name naming the brand, or the brand
+  presented by the page or by another image).
 - Media status `pending`, `failed`, `partial` or `disabled`, and rejected
-  images, are listed as incomplete with the `needs_media` flag, a
+  images, are listed as incomplete (`partial` also covers an image whose
+  requested OCR or QR decoding was unavailable, timed out or failed) with the `needs_media` flag, a
   `media_rejected` label and review notes. Missing visual evidence never makes a
   case benign; an image-only page stays at least P4 `insufficient_evidence`
   unless abuse evidence lifts it.
@@ -74,14 +79,19 @@ After each final static fetch the pipeline records a `media_decision`:
 
 - never on a confirmed official domain or without a fetched HTML page;
 - triggered by an image-only page, QR-code candidates, or a brand-related page;
-- at most `media.max_images_per_case` (8): QR candidates, logo candidates (file
-  name, alt text, class or id, brand in alt text, in the header), up to two
-  icons (else the guessed `/favicon.ico`), og:image, the page images of an
-  image-only page, inline `data:` images.
+- at most `media.max_images_per_case` (8): QR candidates (at most half the
+  slots), logo candidates (file name, alt text, class or id, brand in alt text,
+  in the header), up to two icons (else the guessed `/favicon.ico`), og:image,
+  the page images of an image-only page, inline `data:` images, then any other
+  page image in document order. Wanted images left out are counted
+  (`images_not_selected`) and reported as not examined.
+- every image gets QR decoding; OCR when any reference to it asks for it.
 
-A missing image (404/410, or a guessed favicon that is not an image) is
-`absent`; any other fetch failure is unknown. An unchanged recheck carries the
-earlier media result instead of fetching again.
+Only the guessed `/favicon.ico` may be `absent` (404/410 or not an image). A
+404 or failure for an image the page itself references is unknown, since a site
+can hide an image from the scanner. An unchanged recheck carries the earlier
+media result only when that result was complete (or not needed); a pending,
+failed, partial or disabled result is decided again.
 
 ## Operating
 

@@ -40,6 +40,7 @@ from brandsentinel.analysis.media_text import VERSION as MEDIA_TEXT_VERSION
 from brandsentinel.analysis.media_text import media_text
 from brandsentinel.evidence.bundle import EvidenceBundle
 from brandsentinel.pipeline.orchestrator import Orchestrator, Stage
+from brandsentinel.pipeline.stages import MEDIA
 from brandsentinel.policy.rules import presented_brands
 from brandsentinel.sandbox.media_client import MediaClient, MediaItem
 from brandsentinel.sandbox.runner import SandboxError
@@ -52,8 +53,6 @@ from brandsentinel.visual.corpus import load_corpus
 
 log = logging.getLogger(__name__)
 
-MEDIA = "media"
-DECISION_VERSION = "media_decision/1"
 STAGE_VERSION = "media_stage/1"
 MAX_LOGOS = 4
 MAX_ICONS = 2
@@ -63,36 +62,60 @@ class TransientMediaFailure(Exception):
     """The sandbox could not start a container; the queue retries the job."""
 
 
-def _candidates(b: EvidenceBundle, images: dict, reasons: list[str], cap: int) -> list[dict]:
-    out: list[dict] = []
+def _candidates(b: EvidenceBundle, images: dict, reasons: list[str], cap: int) -> tuple[list, int]:
+    """(selected candidates, number of wanted images left out by the cap).
 
-    def add(ref: str | None, role: str, why: list[str], *, ocr: bool, qr: bool) -> None:
-        if ref and len(out) < cap and all(c["ref"] != ref for c in out):
-            out.append({"ref": ref, "role": role, "why": why, "ocr": ocr, "qr": qr})
+    A reference wanted twice is selected once with the OCR request merged, so an
+    icon pointing at a page image never switches OCR off for it, and every image
+    gets QR decoding (cheap, and a payment QR may hide behind any role). QR
+    candidates take at most half the slots, so decoys cannot evict logos."""
+    out: list[dict] = []
+    by_ref: dict[str, dict] = {}
+    wanted: set[str] = set()
+    qr_quota = -(-cap // 2)
+
+    def add(ref: str | None, role: str, why: list[str], *, ocr: bool, quota: bool = False) -> None:
+        if not ref:
+            return
+        wanted.add(ref)
+        if ref in by_ref:
+            c = by_ref[ref]
+            c["ocr"] = c["ocr"] or ocr
+            c["why"] += [w for w in why if w not in c["why"]]
+            return
+        if len(out) >= cap or (quota and sum(c["role"] == "qr" for c in out) >= qr_quota):
+            return
+        c = {"ref": ref, "role": role, "why": list(why), "ocr": ocr, "qr": True}
+        out.append(c)
+        by_ref[ref] = c
 
     imgs = images.get("images") or []
     for url in b.payment.qr_images:
-        add(url, "qr", ["qr_hint"], ocr=False, qr=True)
+        add(url, "qr", ["qr_hint"], ocr=False, quota=True)
     for i in imgs:
         if i.get("qr_hint"):
-            add(i["url"], "qr", ["qr_hint"], ocr=False, qr=True)
+            add(i["url"], "qr", ["qr_hint"], ocr=False, quota=True)
     looks = "brand_related" in reasons or "image_only" in reasons
     if looks:
         logos = [i for i in imgs if i.get("logo_hints")]
         logos.sort(key=lambda i: (-len(i["logo_hints"]), i.get("index", 0)))
         for i in logos[:MAX_LOGOS]:
-            add(i["url"], "logo", i["logo_hints"], ocr=True, qr=False)
+            add(i["url"], "logo", i["logo_hints"], ocr=True)
         for icon in (images.get("icons") or [])[:MAX_ICONS]:
-            add(icon["url"], "favicon", [icon.get("rel") or "icon"], ocr=False, qr=False)
+            add(icon["url"], "favicon", [icon.get("rel") or "icon"], ocr=False)
         for url in (images.get("og_images") or [])[:1]:
-            add(url, "og_image", ["og:image"], ocr=True, qr=True)
+            add(url, "og_image", ["og:image"], ocr=True)
     if "image_only" in reasons:
         for i in imgs:
-            add(i["url"], "page_image", ["image_only_page"], ocr=True, qr=True)
+            add(i["url"], "page_image", ["image_only_page"], ocr=True)
     if looks:
         for n in range(int(images.get("inline_images") or 0)):
-            add(f"inline:{n}", "inline", ["data_uri"], ocr=True, qr=True)
-    return out
+            add(f"inline:{n}", "inline", ["data_uri"], ocr=True)
+        # Then any other page image, in document order: a payment QR or a copied
+        # logo need not be named as one.
+        for i in imgs:
+            add(i["url"], "page_image", ["page_image"], ocr=True)
+    return out, len(wanted - set(by_ref))
 
 
 def decide(b: EvidenceBundle, images: dict | None, *, enabled: bool, cap: int) -> dict:
@@ -118,10 +141,28 @@ def decide(b: EvidenceBundle, images: dict | None, *, enabled: bool, cap: int) -
         reasons.append("brand_related")
     if not reasons:
         return {**base, "triggered": False, "skipped": "not_brand_related", "reasons": []}
-    found = _candidates(b, images or {}, reasons, cap)
+    found, left_out = _candidates(b, images or {}, reasons, cap)
     if not found:
         return {**base, "triggered": False, "skipped": "no_images", "reasons": reasons}
-    return {**base, "triggered": True, "skipped": None, "reasons": reasons, "candidates": found}
+    return {
+        **base,
+        "triggered": True,
+        "skipped": None,
+        "reasons": reasons,
+        "candidates": found,
+        "images_not_selected": left_out,
+    }
+
+
+def _text_gaps(item: dict, *, ocr_requested: bool) -> list[str]:
+    """Reading the worker was asked for but could not finish (never `skipped`)."""
+    gaps = []
+    ocr = (item.get("ocr") or {}).get("status")
+    if ocr_requested and ocr in ("unavailable", "timeout", "error"):
+        gaps.append(f"ocr_{ocr}")
+    if (item.get("qr") or {}).get("status") == "error":
+        gaps.append("qr_error")
+    return gaps
 
 
 class MediaStage:
@@ -207,15 +248,17 @@ class MediaStage:
                 "hops": len(r.hops),
             }
             rec["fetch"] = fetch
+            guessed = "default" in c["why"]  # our guess at /favicon.ico, not the page's
             if r.outcome == "ok" and r.status in (404, 410):
-                # The image does not exist: nothing is hidden from us.
-                out.append({**rec, "status": "absent", "reason": f"http_{r.status}"})
+                # A missing image the page references could be cloaking: unknown.
+                status = "absent" if guessed else "not_fetched"
+                out.append({**rec, "status": status, "reason": f"http_{r.status}"})
             elif r.outcome != "ok":
                 out.append({**rec, "status": "not_fetched", "reason": f"fetch_{r.outcome}"})
             elif r.body is None or not r.body.data:
                 # Not an accepted image type (an HTML page, for instance), or empty.
                 # Unknown, unless it was only our guess at a default favicon.
-                status = "absent" if "default" in c["why"] else "not_fetched"
+                status = "absent" if guessed else "not_fetched"
                 out.append({**rec, "status": status, "reason": f"not_an_image_response_{r.status}"})
             elif r.body.truncated:
                 out.append(
@@ -248,7 +291,11 @@ class MediaStage:
         a = self.a
         case_id, rnd = int(job.payload["case_id"]), int(job.payload.get("round", 0))
         case = a._case(case_id)
-        if case is None or case.status != "open" or a._done(case_id, MEDIA, rnd):
+        if case is None or case.status != "open":
+            return
+        if a._done(case_id, MEDIA, rnd):
+            # Redelivered after the result was recorded: make sure it was scored.
+            a.score(case_id)
             return
         decision_row = self.store.conn.execute(
             "SELECT id, value_json FROM facts WHERE case_id = ? AND name = 'media_decision'"
@@ -261,33 +308,30 @@ class MediaStage:
                 a._finish(case_id, MEDIA, rnd, "skipped")
             return
         collected = await self._collect(decision, self._page(case_id, rnd))
-        items, by_sha = [], {}
+        items: dict[str, MediaItem] = {}  # by sha256
+        by_sha: dict[str, str] = {}
         total = 0
         for i, rec in enumerate(collected):
             data = rec.get("data")
             if data is None:
                 continue
+            sha = hashlib.sha256(data).hexdigest()
+            if sha in items:  # the same bytes under another reference: analyze once
+                rec["sha256"] = sha
+                if rec["ocr"] and not items[sha].ocr:
+                    items[sha] = MediaItem(items[sha].id, data, ocr=True, qr=True)
+                continue
             if total + len(data) > self.settings.max_batch_bytes:
                 rec.update(status="not_fetched", reason="batch_budget_exhausted")
                 rec.pop("data")
                 continue
-            sha = hashlib.sha256(data).hexdigest()
             rec["sha256"] = sha
-            if sha not in by_sha:
-                by_sha[sha] = f"m{i}"
-                items.append(
-                    MediaItem(
-                        f"m{i}", data, ocr=rec["ocr"], qr=rec["qr"] or rec["role"] != "favicon"
-                    )
-                )
-                total += len(data)
-            else:  # the same bytes under another reference: analyze once, OCR if any asks
-                prev = next(x for x in items if x.id == by_sha[sha])
-                if rec["ocr"] and not prev.ocr:
-                    items[items.index(prev)] = MediaItem(prev.id, prev.data, ocr=True, qr=prev.qr)
+            by_sha[sha] = f"m{i}"
+            items[sha] = MediaItem(f"m{i}", data, ocr=rec["ocr"], qr=True)
+            total += len(data)
         try:
             batch = await self.client.analyze(
-                items, job=f"media-{case_id}-r{rnd}", attempt=job.attempts
+                list(items.values()), job=f"media-{case_id}-r{rnd}", attempt=job.attempts
             )
         except SandboxError as e:
             if job.attempts < job.max_attempts:
@@ -343,23 +387,25 @@ class MediaStage:
                 entry["low_information"] = (
                     item["luma_stddev"] < self.settings.matching.min_luma_stddev
                 )
+                gaps = _text_gaps(item, ocr_requested=rec["ocr"] and self.settings.ocr)
+                if gaps:
+                    entry["gaps"] = gaps
             images.append(entry)
             if data is not None:
                 blobs.setdefault(sha, data)
         ok = [i for i in images if i["status"] == "ok"]
         expected = [i for i in images if i["status"] != "absent"]
-        status = "complete" if len(ok) == len(expected) else ("partial" if ok else "failed")
+        # An image whose requested OCR or QR decoding failed was only partly seen.
+        whole = [i for i in ok if not i.get("gaps")]
+        status = "complete" if len(whole) == len(expected) else ("partial" if ok else "failed")
+        unique = list({i["sha256"]: i for i in reversed(ok)}.values())[::-1]
         corpus = load_corpus(self.store.conn, a.registry)
         matches = []
-        for img in ok:
+        for img in unique:
             for m in self.matcher.match(ImageHashes.from_media(img["result"]), corpus):
                 matches.append({"image": img["sha256"], **m.to_dict()})
-        seen_sha: set[str] = set()
         texts = []
-        for img in ok:
-            if img["sha256"] in seen_sha:
-                continue
-            seen_sha.add(img["sha256"])
+        for img in unique:
             r = img["result"]
             texts.append(
                 {
@@ -369,7 +415,9 @@ class MediaStage:
                     "qr": [c["text"] for c in (r.get("qr") or {}).get("codes") or []],
                 }
             )
-        bundle = a.scorer.bundle(case.case_id)
+        # The page's presented brands matter only for attributing image text.
+        has_text = any(t["ocr_text"] or t["qr"] for t in texts)
+        bundle = a.scorer.bundle(case.case_id) if has_text else None
         html_presented = list(bundle.association.presented) if bundle else []
         derived = media_text(texts, a.analysis_context.lexicon, html_presented)
         value = {

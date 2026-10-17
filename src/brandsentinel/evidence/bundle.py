@@ -281,6 +281,7 @@ class VisualImage(_Block):
     ocr_status: str | None = None
     ocr_chars: int = 0
     qr_codes: int = 0
+    gaps: list[str] = []  # requested OCR or QR decoding that did not finish
     refs: list[str] = []
 
 
@@ -313,6 +314,7 @@ class VisualBlock(_Block):
     matcher: dict[str, Any] | None = None
     corpus_version: str | None = None
     corpus_entries: int = 0
+    images_not_selected: int = 0  # wanted images left out by the per-case cap
     ocr_text: list[dict[str, Any]] = []  # {image, role, text}: bounded, sanitized
     ocr_brands: list[dict[str, Any]] = []
     ocr_presented: list[str] = []  # brands an image presents by a strong term
@@ -745,6 +747,7 @@ def _visual(
         "analysis_round": rnd,
         "reasons": _s(list(dv.get("reasons") or [])[:MAX_LIST], 100),
         "skipped": _s(dv.get("skipped"), 100),
+        "images_not_selected": int(dv.get("images_not_selected") or 0),
         "refs": [f"fact:{decision.id}"],
     }
     if not dv.get("triggered"):
@@ -757,6 +760,9 @@ def _visual(
     if analysis is None:
         return VisualBlock(status="pending", **base), []
     av = analysis.value
+    status = av.get("status") if av.get("status") in ("complete", "partial", "failed") else "failed"
+    if "images" not in av:  # dropped by the fact size cap: nothing is known about them
+        status = "failed"
     afact = f"fact:{analysis.id}"
     stored = set(analysis.artifact_refs)
 
@@ -768,39 +774,37 @@ def _visual(
         r = im.get("result") or {}
         ocr = r.get("ocr") or {}
         sha = im.get("sha256")
-        images.append(
-            VisualImage(
-                ref=_s(im.get("ref") or "?", 500),
-                role=_s(im.get("role") or "?", 40),
-                why=_s(list(im.get("why") or [])[:10], 60),
-                fetch_outcome=(im.get("fetch") or {}).get("outcome"),
-                status=im.get("status") or "failed",
-                reason=_s(im.get("reason"), 200),
-                sha256=sha,
-                stored=bool(sha and sha in stored),
-                format=r.get("format"),
-                width=r.get("width"),
-                height=r.get("height"),
-                frames=r.get("frames"),
-                phash=r.get("phash"),
-                dhash=r.get("dhash"),
-                favicon_mmh3=r.get("favicon_mmh3"),
-                low_information=bool(im.get("low_information")),
-                ocr_status=ocr.get("status"),
-                ocr_chars=int(ocr.get("chars") or 0),
-                qr_codes=len((r.get("qr") or {}).get("codes") or []),
-                refs=image_refs(sha),
-            )
+        vi = VisualImage(
+            ref=_s(im.get("ref") or "?", 500),
+            role=_s(im.get("role") or "?", 40),
+            why=_s(list(im.get("why") or [])[:10], 60),
+            fetch_outcome=(im.get("fetch") or {}).get("outcome"),
+            status=im.get("status") or "failed",
+            reason=_s(im.get("reason"), 200),
+            sha256=sha,
+            stored=bool(sha and sha in stored),
+            format=r.get("format"),
+            width=r.get("width"),
+            height=r.get("height"),
+            frames=r.get("frames"),
+            phash=r.get("phash"),
+            dhash=r.get("dhash"),
+            favicon_mmh3=r.get("favicon_mmh3"),
+            low_information=bool(im.get("low_information")),
+            ocr_status=ocr.get("status"),
+            gaps=_s(list(im.get("gaps") or [])[:5], 40),
+            ocr_chars=int(ocr.get("chars") or 0),
+            qr_codes=len((r.get("qr") or {}).get("codes") or []),
+            refs=image_refs(sha),
         )
+        images.append(vi)
         if im.get("status") in ("rejected", "failed"):  # media_rejected (AE12)
-            rejected.append(
-                {"ref": images[-1].ref, "role": images[-1].role, "reason": images[-1].reason}
-            )
+            rejected.append({"ref": vi.ref, "role": vi.role, "reason": vi.reason})
         if ocr.get("text"):
             ocr_text.append(
                 {
                     "image": sha,
-                    "role": images[-1].role,
+                    "role": vi.role,
                     "text": sanitize_fact(ocr["text"], MAX_OCR_SNIPPET),
                 }
             )
@@ -849,8 +853,7 @@ def _visual(
     refs = base.pop("refs") + [afact] + [f"feature:{f.id}" for f in (vm, mt) if f]
     return (
         VisualBlock(
-            status=av.get("status") if av.get("status") in ("complete", "partial", "failed")
-            else "failed",
+            status=status,
             **base,
             images=images,
             rejected=rejected,
@@ -953,6 +956,7 @@ def build_bundle(
     )
     pay_feature = feats.get("payment")
     visual, media_payments = _visual(inputs.facts, inputs.features, http.analysis_round)
+    pay_refs = refs("payment")
     payment = PaymentBlock(
         catalog_version=pay.get("catalog_version"),
         providers=_s(pay.get("providers", []), 500),
@@ -973,7 +977,7 @@ def build_bundle(
                 attributed_brands=o.get("brands", []),
                 registry_payee=o.get("registry_payee"),
                 extractor_version=pay_feature.extractor_version if pay_feature else "unknown",
-                refs=refs("payment"),
+                refs=pay_refs,
             )
             for o in pay.get("observations", [])[:MAX_LIST]
         ]
@@ -982,10 +986,8 @@ def build_bundle(
         card_fields=pay.get("card_fields", 0),
         card_forms=pay.get("card_field_forms", []),
         qr_images=_s(pay.get("qr_images", []), 500),
-        refs=refs("payment")
-        + list(
-            dict.fromkeys(r for o in media_payments for r in o.refs if r not in refs("payment"))
-        ),
+        refs=pay_refs
+        + list(dict.fromkeys(r for o in media_payments for r in o.refs if r not in pay_refs)),
     )
     association = AssociationBlock(
         available=bool(assoc.get("available")),

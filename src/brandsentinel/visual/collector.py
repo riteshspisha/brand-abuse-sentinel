@@ -174,9 +174,12 @@ class Collector:
             asset.brand, asset.kind, "registry_asset", source, data, tls, trusted, prov, asset.id
         )
 
-    async def _page(self, page: ReferencePage, report: CollectReport) -> list[Source] | None:
-        """Sources found on a reference page; None when the page could not be
-        examined (its earlier corpus entries are kept)."""
+    async def _page(
+        self, page: ReferencePage, report: CollectReport
+    ) -> tuple[list[Source], bool] | None:
+        """(sources found on a reference page, whether every in-scope image was
+        fetched); None when the page could not be examined. Earlier corpus
+        entries of a page are kept unless it was examined completely."""
         entry = {"url": page.url, "brand": page.brand}
         if page.status != "confirmed":
             report.pages.append({**entry, "result": "skipped", "why": f"status {page.status}"})
@@ -209,6 +212,7 @@ class Collector:
             :MAX_LOGOS
         ]
         sources: list[Source] = []
+        complete = True
         seen: set[str] = set()
         for url, kind in wanted:
             if url in seen:
@@ -224,6 +228,7 @@ class Collector:
             ir = await self._fetch_image(url, page.brand)
             if why := self._usable(ir):
                 report.images.append({"url": url, "kind": kind, "result": "refused", "why": why})
+                complete = False
                 continue
             sources.append(
                 Source(
@@ -248,7 +253,7 @@ class Collector:
                 detail = {k: o.get(k) for k in ("kind", "provider", "payee_name", "source")}
                 self._observe(report, page.brand, page.url, "payment_destination", value, detail)
         report.pages.append({**entry, "result": "collected", "images": len(sources)})
-        return sources
+        return sources, complete
 
     # --- hashing and writing ------------------------------------------------------------
 
@@ -342,11 +347,12 @@ class Collector:
                 item = hashed.get(i)
                 if item is None:
                     continue
-                key = (s.origin, s.source, item["sha256"])
+                key = (s.origin, s.source, item["sha256"], s.asset_id or "", s.reference_page or "")
                 keep.add(key)
                 exists = self.conn.execute(
                     "SELECT 1 FROM reference_corpus WHERE active = 1 AND origin = ? AND source = ?"
-                    " AND sha256 = ?",
+                    " AND sha256 = ? AND COALESCE(asset_id, '') = ?"
+                    " AND COALESCE(reference_page, '') = ?",
                     key,
                 ).fetchone()
                 if exists:
@@ -391,7 +397,7 @@ class Collector:
                 examined = (origin == "registry_asset" and asset_id in examined_assets) or (
                     origin == "collected" and page in examined_pages
                 )
-                if examined and (origin, source, sha) not in keep:
+                if examined and (origin, source, sha, asset_id or "", page or "") not in keep:
                     self.conn.execute(
                         "UPDATE reference_corpus SET active = 0, retired_at = ? WHERE id = ?",
                         (now, rid),
@@ -415,9 +421,11 @@ class Collector:
         for page in self.registry.reference_pages:
             if page.brand not in wanted:
                 continue
-            found = await self._page(page, report)
-            if found is not None:
-                page_sources[page.url] = list(range(len(sources), len(sources) + len(found)))
+            result = await self._page(page, report)
+            if result is not None:
+                found, complete = result
+                if complete:
+                    page_sources[page.url] = list(range(len(sources), len(sources) + len(found)))
                 sources.extend(found)
         try:
             hashed = await self._hash(sources, report)

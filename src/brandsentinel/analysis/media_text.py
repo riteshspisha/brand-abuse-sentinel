@@ -7,8 +7,10 @@ observation keeps the image it came from (sha256) and its source:
 - `qr_code`: a decoded QR payload, exact. A UPI link gives payee, name, amount.
 - `image_text`: read by OCR, which can misread characters. An OCR identifier
   within two edits of a confirmed registry payee identifier (and not equal to
-  it) is attributed `possible_ocr_misread_of_registry_payee`: it neither earns
-  relief nor counts as an unconfirmed payee, and asks for review.
+  it) is attributed `possible_ocr_misread_of_registry_payee`: it may be a
+  misreading of the real payee or a deliberate lookalike, so it never earns
+  relief, counts as an unconfirmed payee of that payee's brand, and asks for
+  review.
 
 Brands are "presented" by an image when its OCR text holds a strong term of the
 brand (its name, not a common word such as `Lumina` alone). Attribution uses the
@@ -16,6 +18,8 @@ same rules as page payees (payment.attribute).
 """
 
 import re
+
+from rapidfuzz.distance import Levenshtein
 
 from brandsentinel.analysis.association import BrandLexicon, normalize_identifier
 from brandsentinel.analysis.payment import (
@@ -33,26 +37,11 @@ MAX_ITEMS = 20
 OCR_MISREAD = "possible_ocr_misread_of_registry_payee"
 
 
-def _edits(a: str, b: str, limit: int = 2) -> int:
-    """Levenshtein distance, stopping early above `limit`."""
-    if abs(len(a) - len(b)) > limit:
-        return limit + 1
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        cur = [i]
-        for j, cb in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
-        if min(cur) > limit:
-            return limit + 1
-        prev = cur
-    return prev[-1]
-
-
-def _near_registry_payee(lex: BrandLexicon, kind: str, value: str) -> str | None:
+def _near_registry_payee(lex: BrandLexicon, kind: str, value: str):
     v = normalize_identifier(value)
     for (k, known), payee in lex.payees.items():
-        if k == kind and known != v and _edits(known, v) <= 2:
-            return payee.payee_id
+        if k == kind and known != v and Levenshtein.distance(known, v, score_cutoff=2) <= 2:
+            return payee
     return None
 
 
@@ -107,8 +96,9 @@ def media_text(images: list[dict], lex: BrandLexicon | None, html_presented: lis
                 return {
                     "attribution": OCR_MISREAD,
                     "reason": f"read by OCR within two characters of confirmed registry payee"
-                    f" {near}; may be a misreading of it",
-                    "near_registry_payee": near,
+                    f" {near.payee_id}: a misreading, or a lookalike payee; not confirmed",
+                    "near_registry_payee": near.payee_id,
+                    "brands": [near.brand],
                 }
         named = [{"brand": b, "strength": s} for b, s in sorted(_brands(lex, name or "").items())]
         return attribute(

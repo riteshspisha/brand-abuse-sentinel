@@ -207,14 +207,41 @@ def test_image_only_appeal_with_qr_payee_is_donation_fraud():
     assert r.category == "donation_fraud" and r.priority in ("P1", "P2")
 
 
-def test_ocr_misread_of_the_registry_payee_is_neither_abuse_nor_relief():
+def test_lookalike_of_the_registry_payee_in_image_text_is_an_unconfirmed_payee():
+    """Review fix: an OCR identifier within two characters of the confirmed
+    payee may be a misreading or a deliberate lookalike: never relief, counted
+    as an unconfirmed payee of that brand, and explained for review."""
     obs = _qr_payee("possible_ocr_misread_of_registry_payee", "lumina.foundati0n@lumenbank")
     obs = obs.model_copy(update={"source": "image_text", "payee_name": None})
     r = evaluate(
         bundle(association=brand_page(), payment=PaymentBlock(observations=[obs])), policy()
     )
-    assert not {"payment_brand_unconfirmed_payee", "confirmed_payee"} & rules(r)
-    assert any("misreading by OCR" in m for m in r.manual_review)
+    assert "payment_brand_unconfirmed_payee" in rules(r) and "confirmed_payee" not in rules(r)
+    assert any("never as relief" in m for m in r.manual_review)
+
+
+def test_payee_resting_on_the_matched_images_own_text_is_not_corroboration():
+    """Review fix: a nameless QR payee attributed only because the matched logo
+    itself reads as the brand does not corroborate copied_asset_match."""
+    ocr = [{"brand": "lumina-foundation", "strength": "strong", "images": [LOGO_SHA]}]
+    payee = _qr_payee().model_copy(
+        update={"payee_name": None, "attribution_reason": "page presents Lumina Foundation (...)"}
+    )
+    b = bundle(
+        payment=PaymentBlock(observations=[payee]),
+        visual=visual(ocr_brands=ocr, ocr_presented=["lumina-foundation"]),
+    )
+    assert "copied_asset_match" not in rules(evaluate(b, policy()))
+    named = _qr_payee().model_copy(update={"attribution_reason": "payee name 'Lumina Relief' ..."})
+    b2 = bundle(payment=PaymentBlock(observations=[named]), visual=visual(ocr_brands=ocr))
+    assert "copied_asset_match" in rules(evaluate(b2, policy()))  # its own name ties it
+
+
+def test_unexamined_images_are_reported():
+    r = evaluate(
+        bundle(association=brand_page(), visual=visual(matches=[], images_not_selected=3)), policy()
+    )
+    assert any("3 page image(s) were not examined" in u for u in r.unknowns)
 
 
 def test_missing_visual_evidence_is_unknown_never_benign():

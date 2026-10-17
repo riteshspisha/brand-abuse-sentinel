@@ -224,8 +224,9 @@ def validate_output(doc: dict | None, items: list[MediaItem], settings: MediaSet
     for sent, got in zip(items, out.items, strict=True):
         if got.sha256 != sent.sha256 or got.bytes != len(sent.data):
             raise MediaOutputError(f"item {got.id}: hash or size differs from what was sent")
-        if got.status == "ok" and (got.phash is None or got.dhash is None or got.format is None):
-            raise MediaOutputError(f"item {got.id}: ok without hashes")
+        required = ("phash", "dhash", "format", "width", "height", "luma_mean", "luma_stddev")
+        if got.status == "ok" and any(getattr(got, f) is None for f in required):
+            raise MediaOutputError(f"item {got.id}: ok without hashes or dimensions")
         if got.status == "rejected" and got.reason is None:
             raise MediaOutputError(f"item {got.id}: rejected without a reason")
         if got.ocr and len(got.ocr.text) > settings.max_ocr_chars:

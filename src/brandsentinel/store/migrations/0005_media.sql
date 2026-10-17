@@ -32,8 +32,11 @@ CREATE TABLE reference_corpus (
     retired_at        REAL
 );
 CREATE INDEX reference_corpus_active ON reference_corpus (active, brand);
+-- One live row per image and owner: the same image on two reference pages (or
+-- two assets) is two entries, so retiring one keeps the other.
 CREATE UNIQUE INDEX reference_corpus_live
-    ON reference_corpus (origin, source, sha256) WHERE active = 1;
+    ON reference_corpus (origin, source, sha256, COALESCE(asset_id, ''),
+                         COALESCE(reference_page, '')) WHERE active = 1;
 
 -- Reference pages as last collected: what the corpus was built from.
 CREATE TABLE reference_page_snapshots (

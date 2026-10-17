@@ -121,3 +121,12 @@ def test_batch_limits_are_enforced_before_any_container_starts():
 def test_empty_batch_runs_nothing():
     runner = M.InProcessRunner()
     assert analyze([], runner).status == "ok" and runner.calls == []
+
+
+@pytest.mark.parametrize("field", ["width", "height", "luma_stddev", "luma_mean"])
+def test_ok_item_without_dimensions_or_statistics_fails_the_image(field):
+    """Review fix: the host indexes these fields; a forged ok item without them
+    is invalid output, not a crash later."""
+    tamper = lambda d: {**d, "items": [{k: v for k, v in d["items"][0].items() if k != field}]}  # noqa: E731
+    batch = analyze([MediaItem("a", M.lab_logo())], _tampered(tamper))
+    assert batch.items["a"]["reason"] == "sandbox_invalid_output"

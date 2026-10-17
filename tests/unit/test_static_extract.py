@@ -173,3 +173,16 @@ def test_headings_exclude_inline_style_and_script_text():
     html = "<h1><style>.c{font-size:24px}</style>Real heading<script>x=1</script></h1>"
     v = page_content(page(html))
     assert v["headings"] == ["Real heading"]
+
+
+def test_inline_image_count_matches_what_the_media_stage_can_read():
+    """Review fix: an SVG data URI is not counted, so inline:<n> lines up."""
+    from brandsentinel.analysis import AnalysisContext, Page
+    from brandsentinel.analysis.images import images, inline_images
+
+    html = (
+        '<img src="data:image/svg+xml;base64,PHN2Zy8+">'
+        '<img src="data:image/png;base64,iVBORw0KGgo=">'
+    )
+    page = Page(html, "http://x.test/", AnalysisContext())
+    assert images(page)["inline_images"] == len(inline_images(page)) == 1

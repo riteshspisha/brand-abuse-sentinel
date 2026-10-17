@@ -20,8 +20,8 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
+from brandsentinel.analysis import host_of
 from brandsentinel.registry.model import Registry
 
 CORPUS_FORMAT = "corpus/1"
@@ -97,10 +97,7 @@ def check_entry(e: CorpusEntry, registry: Registry) -> str | None:
         page = next((p for p in registry.reference_pages if p.url == e.reference_page), None)
         if page is None or page.status != "confirmed" or page.brand != e.brand:
             return "reference page is not a confirmed reference page of the brand"
-        try:
-            host = (urlsplit(e.source).hostname or "").lower()
-        except ValueError:
-            host = ""
+        host = host_of(e.source)
         if not e.source.startswith("https://") or not registry.on_confirmed_official_domain(
             e.brand, host
         ):

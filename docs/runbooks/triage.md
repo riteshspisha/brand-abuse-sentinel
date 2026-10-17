@@ -52,7 +52,8 @@ entries, and add `--reextract` after an extractor change.
   review note. Labels `visual_match` and `media_rejected` mark these cases.
   Payees from QR codes and image text appear in the payment table with source
   `qr_code` or `image_text`; `possible_ocr_misread_of_registry_payee` means OCR
-  read something within two characters of a confirmed payee: check the image.
+  read something within two characters of a confirmed payee. It is scored as
+  an unconfirmed payee (it may be a lookalike); check the image.
 - **Payment** rows separate the observed fact (provider, payee identifier, payee
   name, destination), the attribution (`registry_known_payee`,
   `claims_brand_unconfirmed`, `unrelated`) and the evidence references.

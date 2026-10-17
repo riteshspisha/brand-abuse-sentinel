@@ -111,7 +111,8 @@ def decode(data: bytes, opts: dict) -> tuple[Image.Image, dict]:
     try:
         img = Image.open(io.BytesIO(data), formats=[fmt])
         if fmt == "ICO":
-            entries = len(getattr(img, "ico", None).entry) if getattr(img, "ico", None) else 0
+            ico = getattr(img, "ico", None)
+            entries = len(ico.entry) if ico else 0
             info["ico_images"] = entries
             if entries > opts["max_ico_images"]:
                 raise Rejected("too_many_ico_images", f"{entries} entries")

@@ -8,7 +8,7 @@ matching. Nothing is fetched or decoded here; this only reads markup.
   size, and why one may be a logo (file name, alt text, class or id says so,
   the alt text names a protected brand, or it sits in the page header) or a
   payment QR code;
-- `inline`: `data:image/...;base64` images (counted by position; the media
+- `inline_images`: the count of `data:image/...;base64` images (the media
   stage reads their bytes from the stored page, never from this feature).
 """
 
@@ -107,8 +107,11 @@ def images(page: Page) -> dict:
     inline = 0
     for index, n in enumerate(tree.css("img")[:MAX_NODES]):
         src = (n.attributes.get("src") or "").strip()
-        if _DATA_URI.match(src):
-            inline += 1
+        m = _DATA_URI.match(src)
+        if m:
+            # Counted as inline_images() reads them, so inline:<n> lines up.
+            if m.group(1).lower() in INLINE_TYPES and inline < MAX_INLINE:
+                inline += 1
             continue
         url = absolute(page.base, src)
         if not url or len(found) >= MAX_IMAGES:

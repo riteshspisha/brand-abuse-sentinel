@@ -434,31 +434,36 @@ class AnalysisStages:
 
     # --- media decision (M6) ----------------------------------------------------------
 
-    def _media_decided(self, case_id: int, rnd: int) -> dict | None:
+    def _final_fetch(self, case_id: int) -> tuple[int, int | None] | None:
+        """(fact id, analysis round) of the case's latest final static fetch."""
         row = self.store.conn.execute(
-            "SELECT value_json FROM facts WHERE case_id = ? AND name = 'media_decision'"
-            " AND json_extract(value_json, '$.analysis_round') = ? ORDER BY id DESC LIMIT 1",
-            (case_id, rnd),
+            "SELECT id, json_extract(value_json, '$.analysis_round') FROM facts"
+            " WHERE case_id = ? AND name = 'http_fetch' AND json_extract(value_json, '$.final')"
+            " ORDER BY id DESC LIMIT 1",
+            (case_id,),
+        ).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def _images_feature(self, case_id: int, fact_id: int) -> dict | None:
+        row = self.store.conn.execute(
+            "SELECT value_json FROM features f WHERE case_id = ? AND name = 'images'"
+            " AND EXISTS (SELECT 1 FROM json_each(f.fact_refs) WHERE value = ?)"
+            " ORDER BY id DESC LIMIT 1",
+            (case_id, fact_id),
         ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def _images_feature(self, case_id: int, rnd: int) -> dict | None:
-        row = self.store.conn.execute(
-            "SELECT id FROM facts WHERE case_id = ? AND name = 'http_fetch'"
-            " AND json_extract(value_json, '$.final')"
-            " AND json_extract(value_json, '$.analysis_round') = ? ORDER BY id DESC LIMIT 1",
-            (case_id, rnd),
-        ).fetchone()
-        if row is None:
-            return None
-        for value, refs in self.store.conn.execute(
-            "SELECT value_json, fact_refs FROM features WHERE case_id = ? AND name = 'images'"
-            " ORDER BY id DESC",
-            (case_id,),
-        ):
-            if row[0] in json.loads(refs):
-                return json.loads(value)
-        return None
+    def _carriable(self, case_id: int, prev: dict) -> bool:
+        """An earlier round's media result may stand for unchanged content only
+        when it was not needed, or ran (enabled) and completed. A pending,
+        failed, partial or disabled result is decided again."""
+        if not prev.get("triggered"):
+            return True
+        if not prev.get("media_enabled"):
+            return False
+        source = prev.get("carried_from_round", prev["analysis_round"])
+        analysis = self._round_fact(case_id, "media_analysis", source)
+        return bool(analysis) and analysis.get("status") == "complete"
 
     def decide_media(self, case: CaseRow, rnd: int) -> None:
         """Record once per round whether the case's images are analyzed, and
@@ -466,14 +471,10 @@ class AnalysisStages:
         carries the previous round's decision and result instead."""
         from brandsentinel.pipeline.media import decide
 
-        if self._media_decided(case.case_id, rnd) is not None:
+        if self._round_fact(case.case_id, "media_decision", rnd) is not None:
             return
-        try:
-            bundle = self.scorer.bundle(case.case_id)
-        except Exception:
-            log.exception("media decision failed", extra={"fields": {"case_id": case.case_id}})
-            return
-        if bundle is None or bundle.http.analysis_round != rnd:
+        final = self._final_fetch(case.case_id)
+        if final is None or final[1] != rnd:  # a later round already decides
             return
         decision = None
         change = self._round_fact(case.case_id, "material_change", rnd)
@@ -483,21 +484,28 @@ class AnalysisStages:
             and not change.get("changed")
             and "body_sha256" not in (change.get("unknown_fields") or [])
         ):
-            prev = self._media_decided(case.case_id, int(change["previous_round"]))
-            if prev is not None:
+            prev = self._round_fact(case.case_id, "media_decision", int(change["previous_round"]))
+            if prev is not None and self._carriable(case.case_id, prev):
                 decision = {
                     **prev,
                     "carried_from_round": prev.get("carried_from_round", prev["analysis_round"]),
                 }
         if decision is None:
+            try:
+                bundle = self.scorer.bundle(case.case_id)
+            except Exception:
+                log.exception("media decision failed", extra={"fields": {"case_id": case.case_id}})
+                return
+            if bundle is None:
+                return
             decision = decide(
                 bundle,
-                self._images_feature(case.case_id, rnd),
+                self._images_feature(case.case_id, final[0]),
                 enabled=self.media_enabled,
                 cap=self.config.media.max_images_per_case,
             )
         with transaction(self.store.conn):
-            if self._media_decided(case.case_id, rnd) is not None:
+            if self._round_fact(case.case_id, "media_decision", rnd) is not None:
                 return
             self._fact(
                 case.case_id, "pipeline", "media_decision", decision, MEDIA_DECISION_VERSION, rnd

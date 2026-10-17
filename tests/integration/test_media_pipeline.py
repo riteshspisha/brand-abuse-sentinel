@@ -30,7 +30,11 @@ ASSETS = M.REPO / "registry" / "assets"
 
 @pytest.fixture
 def env(tmp_path, harness, clock):
-    config = Config(data_dir=tmp_path / "data", fetch={"retry_delay_seconds": 0})
+    # OCR off by default here so results do not depend on a host Tesseract;
+    # test_ocr_that_cannot_run_leaves_media_partial covers OCR gaps.
+    config = Config(
+        data_dir=tmp_path / "data", fetch={"retry_delay_seconds": 0}, media={"ocr": False}
+    )
     store = open_store(config)
     store.jobs._clock = clock
     registry = lab_registry()
@@ -341,3 +345,145 @@ def test_unchanged_recheck_carries_the_media_result_without_refetching(env):
     b = stages.scorer.bundle(case_id)
     assert b.http.analysis_round == 1 and b.visual.matches and b.visual.analysis_round == 1
     assert hits(h, "mp-carry") == fetched
+
+
+def test_ocr_that_cannot_run_leaves_media_partial(env, monkeypatch):
+    """Review fix: requested OCR that is unavailable, times out or fails is a
+    gap, never a complete reading of the image."""
+    import pytesseract
+
+    store, stages, matcher, h = env
+    stages.config = stages.config.model_copy(
+        update={"media": stages.config.media.model_copy(update={"ocr": True})}
+    )
+
+    def missing(*a, **k):
+        raise pytesseract.TesseractNotFoundError()
+
+    monkeypatch.setattr(pytesseract, "image_to_string", missing)
+    url = logo_page(h, "mp-ocrgap", M.resized_jpeg(), "image/jpeg")
+    case_id = submit(store, matcher, url).case_id
+    orch = Orchestrator(store)
+    stages.register(orch)
+    stage = MediaStage(stages, MediaClient(M.InProcessRunner(), stages.config.media))
+    stage.register(orch)
+    for s in orch.stages.values():
+        s.poll_seconds = 0.01
+    drain(orch, media_done(store, case_id), 20)
+    r = load_case(store.conn, case_id)
+    (logo,) = [i for i in r.bundle.visual.images if i.role == "logo"]
+    assert logo.status == "ok" and logo.gaps == ["ocr_unavailable"]
+    assert r.bundle.visual.status == "partial" and "media_partial" in r.bundle.incomplete
+    assert any("could not be analyzed in full" in u for u in r.result.unknowns)
+
+
+def test_referenced_image_returning_404_is_unknown_not_absent(env):
+    """Review fix: a page can 404 its own QR image to the scanner (cloaking)."""
+    store, stages, matcher, h = env
+    url = page(
+        h, "mp-404", '<title>Lumina Foundation</title><img src="/blob?k=gone" alt="Scan to pay">'
+    )
+    case_id = submit(store, matcher, url).case_id
+    run(store, stages, media_done(store, case_id))
+    v = load_case(store.conn, case_id).bundle.visual
+    (qr,) = [i for i in v.images if i.role == "qr"]
+    favicon = [i for i in v.images if i.role == "favicon"]
+    assert (qr.status, qr.reason) == ("not_fetched", "http_404")
+    assert favicon and favicon[0].status == "absent"  # only the guessed favicon may be absent
+    assert v.status == "failed" and "needs_media" in load_case(store.conn, case_id).result.flags
+
+
+def test_icon_pointing_at_a_page_image_keeps_its_qr_and_ocr(env):
+    """Review fix: a favicon role must not switch QR decoding off for the same
+    image (a QR shown on the page and declared as the icon)."""
+    store, stages, matcher, h = env
+    qr = blob(h, "mp-iconqr", M.payment_screenshot())
+    url = page(
+        h,
+        "mp-iconqr",
+        f"""<title>Lumina Foundation</title>
+<link rel="icon" href="{qr}"><img src="{qr}" alt="">""",
+    )
+    case_id = submit(store, matcher, url).case_id
+    run(store, stages, media_done(store, case_id))
+    r = load_case(store.conn, case_id)
+    ((decision, _),) = facts(store, case_id, "media_decision")
+    (cand,) = [c for c in decision["candidates"] if c["ref"].endswith("mp-iconqr")]
+    assert cand["qr"] and cand["ocr"]  # merged from the page-image request
+    assert [o.payee_identifier for o in r.bundle.payment.observations if o.source == "qr_code"] == [
+        "rivers.relief.fund@quickpaybank"
+    ]
+
+
+def test_decide_media_does_not_carry_an_incomplete_result(env):
+    """Review fix: an unchanged recheck re-decides when the earlier media result
+    was pending, failed, partial or disabled."""
+    from brandsentinel.store.db import transaction
+
+    store, stages, matcher, h = env
+    url = logo_page(h, "mp-nocarry", M.resized_jpeg(), "image/jpeg")
+    case_id = submit(store, matcher, url).case_id
+    run(store, stages, scored(store, case_id), media=False)  # round 0 stays pending
+    case = stages._case(case_id)
+    final = facts(store, case_id, "http_fetch")[-1][0]
+    with transaction(store.conn):
+        stages._fact(
+            case_id, "fetcher", "http_fetch", {**final, "analysis_round": 1}, "fetcher/1", 1
+        )
+        stages._fact(case_id, "pipeline", "material_change",
+                     {"previous_round": 0, "changed": False, "fields": [], "unknown_fields": []},
+                     "fingerprint/1", 1)  # fmt: skip
+    stages.decide_media(case, 1)
+    last = facts(store, case_id, "media_decision")[-1][0]
+    # Decided again, not carried (this synthetic round-1 fetch has no extracted
+    # features, so the fresh decision itself sees no page).
+    assert last["analysis_round"] == 1 and "carried_from_round" not in last
+
+
+def test_decide_media_is_a_no_op_for_a_superseded_round(env):
+    store, stages, matcher, h = env
+    url = logo_page(h, "mp-stale", M.resized_jpeg(), "image/jpeg")
+    case_id = submit(store, matcher, url).case_id
+    run(store, stages, media_done(store, case_id))
+    before = len(facts(store, case_id, "media_decision"))
+    stages.decide_media(stages._case(case_id), 5)  # no final fetch for round 5
+    assert len(facts(store, case_id, "media_decision")) == before
+
+
+def test_redelivered_media_job_rescores(env):
+    store, stages, matcher, h = env
+    url = logo_page(h, "mp-rescore", M.lab_logo())
+    case_id = submit(store, matcher, url).case_id
+    run(store, stages, media_done(store, case_id))
+    store.conn.execute("UPDATE cases SET score_id = NULL WHERE id = ?", (case_id,))
+    store.conn.execute("DELETE FROM scores WHERE case_id = ?", (case_id,))
+    from brandsentinel.store.jobs import Job
+
+    job = Job(
+        id=0,
+        stage="media",
+        queue_class="strong",
+        payload={"case_id": case_id, "round": 0},
+        attempts=2,
+        max_attempts=3,
+        lease_owner="t",
+        lease_token="t",  # noqa: S106 - not a secret
+        lease_expires_at=0.0,
+    )
+    asyncio.run(MediaStage(stages, MediaClient(M.InProcessRunner(), MediaSettings())).run(job))
+    assert scored(store, case_id)()
+
+
+def test_populated_bundle3_round_trips_through_stored_scores(env):
+    """Data-migration gap: a bundle/3 with images and matches stored in scores
+    loads back identically."""
+    from brandsentinel.evidence.bundle import bundle_json
+    from brandsentinel.policy.scorer import latest_score
+
+    store, stages, matcher, h = env
+    url = logo_page(h, "mp-rt", M.resized_jpeg(), "image/jpeg")
+    case_id = submit(store, matcher, url).case_id
+    run(store, stages, media_done(store, case_id))
+    stored, _, _ = latest_score(store.conn, case_id)
+    assert stored.schema_version == "bundle/3" and stored.visual.matches and stored.visual.images
+    assert bundle_json(stored) == bundle_json(stages.scorer.bundle(case_id))
