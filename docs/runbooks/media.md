@@ -110,8 +110,8 @@ Corpus entries are used from the moment they are collected. Matches are stored
 with the case (with the corpus version) so a bundle rebuilds identically; a
 later corpus change applies to a case's next media run.
 
-Lab: `config/lab.yaml` enables sandboxes for media jobs only (`bs_lab_sandbox`
-does not exist until M7, so a networked job there fails to start); the lab
+Lab: `config/lab.yaml` enables sandboxes (media jobs without a network; since
+M7 browser jobs on `bs_lab_sandbox`, see `docs/runbooks/browser.md`); the lab
 corpus is the pinned synthetic logo `registry/assets/lab/lumina-logo.png`.
 
 ```sh
@@ -162,8 +162,9 @@ with an empty production registry reports nothing to collect.
 - OCR is basic: stylized or small text is missed, and characters are misread
   (hence the misread guard). An image whose text OCR misses stays unknown, not
   benign, only when its page is image-only; elsewhere the static text decides.
-- The initial matcher misses mirrored, cropped and heavily edited copies, and
-  screenshot similarity arrives with the browser (M7).
+- The initial matcher misses mirrored, cropped and heavily edited copies.
+  Screenshot similarity (M7) uses the same hashes against reference page
+  screenshots (`docs/runbooks/browser.md`).
 - An image served with a non-image content type (other than the guessed
   favicon) is not fetched and stays unknown; browsers may still show it.
 - Docker's OOMKilled flag is not set when the kernel kills the worker under
