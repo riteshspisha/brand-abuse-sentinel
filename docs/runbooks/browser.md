@@ -18,7 +18,7 @@ screenshot analysis in the media sandbox, and reference page screenshots.
  │ network: bs_sandbox (lab mode: bs_lab_sandbox) only; internal, no gateway       │
  │ pwuser, cap-drop ALL, no-new-privileges, Chromium seccomp profile, read-only    │
  │ root, noexec /tmp 256 MiB, private IPC + 256 MiB shm, 1536 MiB (no swap),       │
- │ 2 CPUs, 512 PIDs, 60 s wall from outside, stdout 12 MiB, no mounts, no ports    │
+ │ 2 CPUs, 512 PIDs, 60 s wall from outside, stdout 16 MiB, no mounts, no ports    │
  │ Chromium with its own sandbox: renderers in their own user/PID/net namespaces   │
  │ observe only: no click, type, submit, download, permission; non-GET stopped     │
  └──────────────────────────────┬──────────────────────────────────────────────────┘
@@ -63,6 +63,9 @@ directly, and `bs_lab` has a gateway in the rootless namespace); reusing
 | Container escape via configuration | runner-fixed arguments; Chromium profile = Docker default + `clone`, `unshare`, `chroot`; never `--privileged` or an added capability | runner, client | `test_browser_limits.py` (arguments, profile contents), `test_browser_client.py::test_js_login_renders_in_chromiums_own_sandbox...` (CapEff 0, NoNewPrivs 1, Seccomp 2, uid 1001) |
 | Renderer exploit reaching the container | Chromium's own namespace sandbox stays on (`chromium_sandbox=True`, never `--no-sandbox`) | worker | live: renderers in their own user namespace, `sandbox selftest browser` |
 | Page acting on its own (R39) | worker calls no interaction API; non-GET requests stopped in the browser (a blocked navigation answered locally with 204); downloads refused; service workers blocked; dialogs dismissed; popups closed; no permission granted | worker | `test_browser_limits.py::test_the_worker_never_interacts_with_a_page` (AST, with positive control); `test_browser_client.py::test_page_initiated_actions_are_contained...` (nothing but GET reaches the proxy); lab demo: no action in any lab render |
+| A page denying rendering by inflating output (control characters) | C0 controls stripped, UTF-8 JSON, worst-case output budget | worker, config | `test_browser_limits.py::test_control_characters_...` |
+| A page sending the browser to an error page or the proxy's refusal | no usable page: network log kept, scored on the static view | render stage | `test_render_pipeline.py::test_a_render_without_a_usable_page_...` |
+| Brand shown only to the fetcher | the rendered view keeps the static page's brands and claims | bundle | `test_render_pipeline.py::test_a_brand_hidden_from_the_browser_...` |
 | Hostile worker output | strict schema, exact requested URL, HTML/text/request caps, screenshot strict base64 of a PNG whose IHDR size matches and fits the viewport; else `render_rejected` and nothing used | client | `test_browser_output.py` (sixteen tampering cases) |
 | A page that never settles | settle budget inside; wall time and kill by name outside | worker, runner | `test_browser_client.py::test_a_page_that_never_settles_is_killed...` |
 | Orphans (AE18) | labelled one-shot containers; startup sweep before lease recovery; runner removal finishes even when the job is cancelled | runner | `test_browser_cases.py::test_ae18_...`; `test_runner.py::test_a_shutdown_during_removal_still_removes_the_container` |
@@ -140,8 +143,9 @@ built from this branch (Playwright 1.63.0, Chromium headless shell 1243).
 | `sandbox selftest browser` (lab config) | Chromium sandbox: 3 of 7 Chromium processes in their own user namespace, 0 with `--no-sandbox`; worker uid 1001, CapEff 0, NoNewPrivs 1, Seccomp 2; `http://1.1.1.1/` with no proxy: `ERR_ADDRESS_UNREACHABLE`; container removed |
 | Network check on `bs_lab_sandbox` | passes, including `gateway_inhibited`, `rootless_listeners` (the lab's `127.0.0.1:3129` publish is not an exposed namespace listener) and the direct-egress probe |
 | `-m "security and docker"` | 51 passed, 0 skipped after the network change; the isolation suites run for both sandbox networks |
-| `-m "docker or security"` | 484 passed, 0 skipped |
-| Full suite (`-m "not models"`) | 1379 passed, 1 skipped (no host Tesseract; covered in the container) |
+| `-m "docker or security"` | 487 passed, 0 skipped (after the review fixes) |
+| Full suite (`-m "not models"`) | 1388 passed, 1 skipped (no host Tesseract; covered in the container) |
+| Code review | nine reviewers; findings fixed with regression tests or accepted: `docs/residual-review-findings/feat-m7-isolated-browser.md` |
 | Lab demo | JS login `credential_phishing` P1 (rendered form); JS payment card fields, the gateway script in the network log, the UPI QR read from the screenshot; image-only, copied-assets and redirects reach their `expected.yaml`; cloaking `donation_fraud` with `cloaking_suspected`; no lab render took any page action |
 | AE18 | application SIGKILLed mid-render: the container outlived it, was removed before lease recovery, and the job ran exactly once more |
 
