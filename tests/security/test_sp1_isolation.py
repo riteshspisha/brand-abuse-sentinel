@@ -2,6 +2,9 @@
 from the sandbox network into the rootless namespace, the proxy still reachable,
 no IPv6 on the sandbox interface, and one untrusted container per network.
 
+The tests taking `sandbox_net` run for production `bs_sandbox` and for the
+lab-mode `bs_lab_sandbox` (M7), which is built the same way.
+
 Run under the dedicated service account for SP1 acceptance
 (scripts/service-account/validate.sh); under a developer account they prove the
 same controls on that account's runtime.
@@ -14,12 +17,14 @@ from pathlib import Path
 import pytest
 from tests.docker_support import (
     INSTANCE,
-    PROXY_IP,
+    SANDBOX_NETS,
+    SandboxNet,
     compose,
     docker_json,
     job_id,
     make_runner,
     namespace_listener,
+    net_settings,
     probe,
     runtime_or_skip,
     wait_running,
@@ -35,7 +40,6 @@ pytestmark = [pytest.mark.docker, pytest.mark.security]
 CONTROL_NET = "bs_sp1_control"
 CONTROL_SUBNET = "172.31.249.0/24"
 CONTROL_GATEWAY = "172.31.249.1"
-SANDBOX_SUBNET_GATEWAY = "172.31.251.1"
 IMAGE = "brandsentinel-sandbox:local"
 
 
@@ -45,6 +49,12 @@ def docker():
     compose(d, "compose.yaml", "--profile", "sandbox", "up", "-d")
     wait_running(d, "bs-egress-proxy")
     return d
+
+
+@pytest.fixture(scope="module", params=SANDBOX_NETS, ids=lambda n: n.name)
+def sandbox_net(request, docker) -> SandboxNet:
+    request.param.up(docker)
+    return request.param
 
 
 @pytest.fixture
@@ -60,26 +70,27 @@ def control_network(docker):
     docker.call_sync("network", "rm", CONTROL_NET)
 
 
-def test_sandbox_network_declares_inhibit_ipv4_and_holds_no_gateway(docker):
-    net = docker_json(docker, "network", "inspect", "bs_sandbox")[0]
+def test_sandbox_network_declares_inhibit_ipv4_and_holds_no_gateway(docker, sandbox_net):
+    net = docker_json(docker, "network", "inspect", sandbox_net.name)[0]
     assert net["Internal"] is True and net["EnableIPv6"] is False
     assert net["Options"].get(preflight.INHIBIT_IPV4) == "true"
-    assert net["IPAM"]["Config"][0]["Gateway"] == SANDBOX_SUBNET_GATEWAY  # reserved only
+    assert net["IPAM"]["Config"][0]["Gateway"] == sandbox_net.gateway  # reserved only
+    prefix = sandbox_net.gateway.rsplit(".", 1)[0] + "."
     local = RootlessNamespace.for_endpoint(docker.host).local_ipv4()
-    assert not [a for a in local if a.startswith("172.31.251.")], local
+    assert not [a for a in local if a.startswith(prefix)], local
 
 
 def test_namespace_listener_unreachable_from_sandbox_but_reachable_on_control(
-    docker, control_network
+    docker, sandbox_net, control_network
 ):
     ns = RootlessNamespace.for_endpoint(docker.host)
     targets = sorted(a for a in ns.local_ipv4() if not is_loopback(a))
     with namespace_listener(docker) as port:
         checks = [
             {"id": f"tcp {a}:{port}", "kind": "tcp", "host": a, "port": port}
-            for a in [*targets, SANDBOX_SUBNET_GATEWAY]
+            for a in [*targets, sandbox_net.gateway]
         ]
-        sandbox = probe(make_runner(docker), "bs_sandbox", checks)
+        sandbox = probe(make_runner(docker, net=sandbox_net), sandbox_net.name, checks)
         control = probe(
             make_runner(docker, networks=[control_network]),
             control_network,
@@ -88,7 +99,10 @@ def test_namespace_listener_unreachable_from_sandbox_but_reachable_on_control(
         # Defense in depth notices the careless listener too.
         report = asyncio.run(
             preflight.check_network(
-                docker, SandboxSettings(instance=INSTANCE), make_runner(docker), probe=False
+                docker,
+                net_settings(sandbox_net),
+                make_runner(docker, net=sandbox_net),
+                probe=False,
             )
         )
     assert "connected" not in sandbox.values(), sandbox
@@ -97,13 +111,13 @@ def test_namespace_listener_unreachable_from_sandbox_but_reachable_on_control(
     assert "rootless_listeners" in failed and "gateway_inhibited" not in failed
 
 
-def test_proxy_reachable_while_direct_egress_and_namespace_are_not(docker):
-    via = {"proxy_host": PROXY_IP, "proxy_port": 3128}
+def test_proxy_reachable_while_direct_egress_and_namespace_are_not(docker, sandbox_net):
+    via = {"proxy_host": sandbox_net.proxy_ip, "proxy_port": 3128}
     results = probe(
-        make_runner(docker),
-        "bs_sandbox",
+        make_runner(docker, net=sandbox_net),
+        sandbox_net.name,
         [
-            {"id": "proxy tcp", "kind": "tcp", "host": PROXY_IP, "port": 3128},
+            {"id": "proxy tcp", "kind": "tcp", "host": sandbox_net.proxy_ip, "port": 3128},
             {"id": "proxy refuses metadata", "kind": "connect",
              "authority": "169.254.169.254:80", **via},
             {"id": "direct 1.1.1.1", "kind": "tcp", "host": "1.1.1.1", "port": 443},
@@ -119,19 +133,20 @@ def test_proxy_reachable_while_direct_egress_and_namespace_are_not(docker):
     assert all(iface == "lo" for iface, _ in results["ipv6"]), results["ipv6"]
 
 
-def test_every_tcp_port_of_every_namespace_address_is_closed_to_sandboxes(docker):
+def test_every_tcp_port_of_every_namespace_address_is_closed_to_sandboxes(docker, sandbox_net):
     ns = RootlessNamespace.for_endpoint(docker.host)
     targets = sorted(a for a in ns.local_ipv4() if not is_loopback(a))
     # Every address the namespace holds. The reserved gateway address is held by
     # nothing (test_sandbox_network_declares_...), so it has no ports to scan.
     checks = [{"id": a, "kind": "scan", "host": a, "start": 1, "end": 65535} for a in targets]
-    results = probe(make_runner(docker, wall_seconds=300), "bs_sandbox", checks)
+    runner = make_runner(docker, net=sandbox_net, wall_seconds=300)
+    results = probe(runner, sandbox_net.name, checks)
     assert all(v == [] for v in results.values()), results
 
 
-def _start_extra(docker, name: str) -> None:
+def _start_extra(docker, name: str, network: str = "bs_sandbox") -> None:
     started = docker.call_sync(
-        "run", "--detach", "--rm", "--name", name, "--network", "bs_sandbox",
+        "run", "--detach", "--rm", "--name", name, "--network", network,
         "--label", "brandsentinel.test=sp1", "--read-only", "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges=true", "--entrypoint", "sleep", IMAGE, "120",
     )  # fmt: skip
@@ -139,18 +154,18 @@ def _start_extra(docker, name: str) -> None:
 
 
 @pytest.mark.parametrize("name", ["bs-sp1-manual-launch", "bs-other-probe-orphan-0"])
-def test_a_second_untrusted_container_blocks_jobs_on_the_sandbox_network(docker, name):
+def test_a_second_untrusted_container_blocks_jobs_on_the_sandbox_network(docker, sandbox_net, name):
     # A container started by hand, or a job orphaned by another instance (which
     # this instance's sweep does not remove), makes the run refuse.
-    runner = make_runner(docker)
+    runner = make_runner(docker, net=sandbox_net)
     spec = SandboxSpec(role="probe", command=("python3", "-c", "print('{}')"),
-                       network="bs_sandbox")  # fmt: skip
-    _start_extra(docker, name)
+                       network=sandbox_net.name)  # fmt: skip
+    _start_extra(docker, name, sandbox_net.name)
     try:
         with pytest.raises(SandboxNetworkBusy, match=name):
             asyncio.run(runner.run(spec, job=job_id(), attempt=0))
         report = asyncio.run(
-            preflight.check_network(docker, SandboxSettings(instance=INSTANCE), runner, probe=False)
+            preflight.check_network(docker, net_settings(sandbox_net), runner, probe=False)
         )
         # The preflight cannot tell one orphaned job from a running one: an orphaned
         # job leaves the structural membership checks healthy, a container that is

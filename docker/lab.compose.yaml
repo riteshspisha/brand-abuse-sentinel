@@ -6,6 +6,11 @@
 # (172.31.250.0/24, pinned in netguard). lab-proxy is a separate egress-proxy
 # instance in lab-only mode: it reads config/lab.yaml (read-only), reaches only
 # lab hostnames, and is the host fetcher's lab transport on 127.0.0.1:3129.
+#
+# lab-sandbox-proxy (M7) is a second lab-only instance for lab-mode sandboxes
+# (the browser). They join only bs_lab_sandbox, which is internal with no
+# gateway, so this proxy is the only thing they can reach; it reaches lab-web on
+# bs_lab and has no other network, no published port and no route out.
 name: brandsentinel-lab
 
 services:
@@ -59,7 +64,50 @@ services:
       # every destination that is not a lab hostname.
       bs_lab_edge: {}
 
+  lab-sandbox-proxy:
+    image: brandsentinel-sandbox:local
+    pull_policy: never
+    container_name: bs-lab-sandbox-proxy
+    command:
+      [
+        "brandsentinel", "-c", "/etc/brandsentinel/lab.yaml",
+        "proxy", "--listen", "172.31.254.2:3128",
+      ]
+    user: pwuser
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 128
+    cpus: 1.0
+    labels:
+      brandsentinel.service: lab-sandbox-proxy
+    volumes:
+      - ../config/lab.yaml:/etc/brandsentinel/lab.yaml:ro
+    networks:
+      bs_lab_sandbox:
+        ipv4_address: 172.31.254.2
+      bs_lab: {}
+
 networks:
+  # Lab-mode sandboxes join only this network; built like bs_sandbox
+  # (docker/compose.yaml): internal (no route out) and inhibit_ipv4, so the
+  # bridge holds no address in the rootless namespace and the declared gateway
+  # only reserves .1. Checked by `brandsentinel sandbox check` in lab mode.
+  bs_lab_sandbox:
+    name: bs_lab_sandbox
+    internal: true
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: "true"
+    ipam:
+      config:
+        - subnet: 172.31.254.0/24
+          gateway: 172.31.254.1
   bs_lab:
     name: bs_lab
     internal: true

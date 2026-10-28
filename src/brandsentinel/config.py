@@ -27,6 +27,14 @@ _KNOWN_ENV = frozenset({ENV_CONFIG, ENV_DATA_DIR})
 # The lab network's subnet is pinned in docker/compose.yaml (KTD13). Lab mode may
 # add exactly this subnet to the network policy and nothing else.
 LAB_SUBNET = "172.31.250.0/24"
+# Lab-mode sandboxes (M7) join only this internal network, pinned in
+# docker/lab.compose.yaml, whose one long-running member is a lab-only proxy that
+# also sits on the lab network. It is a transport hop, never a fetch target:
+# netguard's lab exception stays LAB_SUBNET alone.
+LAB_SANDBOX_NETWORK = "bs_lab_sandbox"
+LAB_SANDBOX_SUBNET = "172.31.254.0/24"
+LAB_SANDBOX_PROXY = "bs-lab-sandbox-proxy"
+LAB_SANDBOX_PROXY_URL = "http://172.31.254.2:3128"
 
 STAGES = ("enrich", "fetch", "media", "render", "decision")
 
@@ -457,10 +465,20 @@ class Config(_Section):
             )
         if self.proxy.lab_only and not self.net.lab.enabled:
             raise ValueError("proxy.lab_only requires net.lab.enabled")
-        if self.net.lab.enabled and self.sandbox.enabled and self.sandbox.network == "bs_sandbox":
+        sb = self.sandbox
+        lab_side = (sb.network, sb.proxy_url, sb.proxy_container)
+        pinned = (LAB_SANDBOX_NETWORK, LAB_SANDBOX_PROXY_URL, LAB_SANDBOX_PROXY)
+        if self.net.lab.enabled and sb.enabled and lab_side != pinned:
             # bs_sandbox's proxy reaches the Internet and not the lab; lab-mode
-            # sandboxes need a lab sandbox network (M7).
-            raise ValueError("lab mode cannot use the production sandbox network bs_sandbox")
+            # sandboxes use only the pinned lab sandbox network and its proxy.
+            raise ValueError(
+                "lab mode sandboxes need sandbox.network, proxy_url and proxy_container"
+                f" = {', '.join(pinned)}"
+            )
+        if not self.net.lab.enabled and (
+            sb.network == LAB_SANDBOX_NETWORK or sb.proxy_container == LAB_SANDBOX_PROXY
+        ):
+            raise ValueError(f"{LAB_SANDBOX_NETWORK} and its proxy are for lab mode only")
         return self
 
     @property
