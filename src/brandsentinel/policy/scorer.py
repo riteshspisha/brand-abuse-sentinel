@@ -197,6 +197,13 @@ def _context(b: EvidenceBundle) -> list[ContextNote]:
         )
     if b.page.parked_cues:
         add("parked", "Parking or placeholder page cues.", b.page.refs)
+    if (b.cloaking or {}).get("suspected"):
+        fields = ", ".join(d.get("field") for d in b.cloaking.get("differences") or [])
+        add(
+            "cloaking_suspected",
+            f"Static fetch and browser were shown different pages ({fields}).",
+            _refs(b.cloaking.get("refs") or [], b.render.refs),
+        )
     if b.commerce.commerce:
         add("commerce", "Prices, calls to action, a cart or product markup.", b.commerce.refs)
     if b.payment.providers:
@@ -355,9 +362,18 @@ def evaluate(b: EvidenceBundle, policy: Policy, judgments: Iterable[dict] = ()) 
             "Static content was not observable (" + ", ".join(unobserved) + "); the absence of"
             " abuse indicators here is not evidence of benign use."
         )
-    if b.page.js_shell:
+    if b.page.js_shell and b.render.content_source != "rendered":
         flags.append("needs_render")
-        unknowns.append("page builds its content with script: browser rendering (M7) needed")
+        unknowns.append(
+            "page builds its content with script and was not rendered"
+            + (f" (render {b.render.status})" if b.render.status != "not_run" else "")
+        )
+    if b.render.status in ("failed", "rejected", "refused"):
+        manual.append(
+            f"Browser rendering {b.render.status}"
+            + (f" ({b.render.reason})" if b.render.reason else "")
+            + "; what the page shows a browser is unknown, not benign."
+        )
     media_gap = _media_unknown(b)
     if media_gap:
         flags.append("needs_media")

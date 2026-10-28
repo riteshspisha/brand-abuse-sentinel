@@ -56,6 +56,7 @@ log = logging.getLogger(__name__)
 ENRICH = "enrich"
 FETCH = "fetch"
 MEDIA = "media"
+RENDER = "render"
 MEDIA_DECISION_VERSION = "media_decision/1"
 FINGERPRINT_FIELDS = ("addresses", "status", "final_url", "title", "body_sha256")
 # A failed https attempt for these reasons is followed by a plain-http attempt.
@@ -219,6 +220,8 @@ class AnalysisStages:
         # Whether media analysis may run at all (M6); run_service narrows it to
         # the effective sandbox setting. Decisions are recorded either way.
         self.media_enabled = self.config.media.enabled and self.config.sandbox.enabled
+        # Whether the browser may run at all (M7); narrowed the same way.
+        self.render_enabled = self.config.browser.enabled and self.config.sandbox.enabled
 
     def register(self, orch: Orchestrator, *, enrich: bool = True, fetch: bool = True) -> None:
         c = self.config
@@ -392,9 +395,10 @@ class AnalysisStages:
         if case is None or case.status != "open":
             return
         if self._done(case_id, FETCH, rnd):
-            # Redelivered after the fetch was recorded: make sure the media
-            # decision and the score exist (a crash may have come in between).
+            # Redelivered after the fetch was recorded: make sure the media and
+            # render decisions and the score exist (a crash may have come in between).
             self.decide_media(case, rnd)
+            self.decide_render(case, rnd)
             self.score(case_id)
             return
         results: list[FetchResult] = []
@@ -430,6 +434,7 @@ class AnalysisStages:
             if not self._done(case_id, FETCH, rnd):  # else a redelivery finished first
                 self._record_fetch(case, job, results, final, extracted, rnd)
         self.decide_media(case, rnd)
+        self.decide_render(case, rnd)
         self.score(case_id)
 
     # --- media decision (M6) ----------------------------------------------------------
@@ -513,6 +518,41 @@ class AnalysisStages:
             fresh = "carried_from_round" not in decision
             if decision.get("triggered") and decision.get("media_enabled") and fresh:
                 self._schedule(case, MEDIA, rnd)
+
+    # --- render decision (M7) ---------------------------------------------------------
+
+    def decide_render(self, case: CaseRow, rnd: int) -> None:
+        """Record once per round whether the case is rendered in the browser and
+        why (`render_decision` fact), and queue the render job when it is."""
+        from brandsentinel.sandbox import triggers
+
+        if self._round_fact(case.case_id, "render_decision", rnd) is not None:
+            return
+        final = self._final_fetch(case.case_id)
+        if final is None or final[1] != rnd:  # a later round already decides
+            return
+        try:
+            bundle = self.scorer.bundle(case.case_id)
+        except Exception:
+            log.exception("render decision failed", extra={"fields": {"case_id": case.case_id}})
+            return
+        if bundle is None:
+            return
+        b = self.config.browser
+        decision = triggers.decide(
+            bundle,
+            self._images_feature(case.case_id, final[0]),
+            strength=case.match_strength,
+            sample_rate=b.sample_rate,
+            little_text_chars=b.little_text_chars,
+            enabled=self.render_enabled,
+        )
+        with transaction(self.store.conn):
+            if self._round_fact(case.case_id, "render_decision", rnd) is not None:
+                return
+            self._fact(case.case_id, "pipeline", "render_decision", decision, triggers.VERSION, rnd)
+            if decision["triggered"] and decision["browser_enabled"]:
+                self._schedule(case, RENDER, rnd)
 
     def _record_fetch(
         self,

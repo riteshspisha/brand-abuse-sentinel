@@ -13,6 +13,14 @@ re-sanitized and capped here even though the store already sanitized it.
 
 Analysis rounds: the bundle describes the latest round that has a final static
 fetch, with that round's enrichment (or the latest available) beside it.
+
+Rendering (M7): when the round's browser render completed, the page, credential,
+payment, association, commerce and editorial blocks describe the rendered page
+(its extractor features reference the `browser_render` fact), unless the
+static-versus-rendered comparison says the static page showed abuse indicators
+the rendered one lacks. The `render` block says what the browser did and saw,
+and the screenshot's matches, image text and QR payees join the visual and
+payment blocks under the role `screenshot`.
 """
 
 import hashlib
@@ -36,8 +44,10 @@ from brandsentinel.textsafe import sanitize_fact
 # visual matches) and payment observations read from images. Earlier versions
 # are still accepted, only so stored scores made with them load with their
 # original label; every block they lack has a default.
-SCHEMA_VERSION = "bundle/3"
-SCHEMA_VERSIONS = ("bundle/1", "bundle/2", "bundle/3")
+# bundle/4 (M7): the `render` block, `render_reason` and `cloaking`, content
+# blocks from the rendered page, and screenshot evidence in `visual`.
+SCHEMA_VERSION = "bundle/4"
+SCHEMA_VERSIONS = ("bundle/1", "bundle/2", "bundle/3", "bundle/4")
 MAX_SNIPPETS = 20
 MAX_SNIPPET_CHARS = 300
 MAX_EXCERPT_CHARS = 1000
@@ -325,6 +335,37 @@ class VisualBlock(_Block):
     refs: list[str] = []
 
 
+class RenderBlock(_Block):
+    """Isolated browser rendering (M7): whether the case was rendered and why,
+    and what the browser saw. `status` keeps the unobserved visible: `pending`,
+    `failed`, `rejected` (the worker's document failed validation), `refused`
+    (not started, for example a failed network check) and `disabled` are
+    unknowns, never a clean result."""
+
+    status: Literal[
+        "not_run", "not_triggered", "disabled", "pending", "complete", "failed", "rejected",
+        "refused",
+    ] = "not_run"  # fmt: skip
+    analysis_round: int | None = None
+    reasons: list[str] = []  # why it was rendered
+    sampled: bool = False
+    skipped: str | None = None  # why it was not
+    reason: str | None = None  # why it failed
+    requested_url: str | None = None
+    final_url: str | None = None
+    final_host: str | None = None
+    main_status: int | None = None
+    network_idle: bool = False
+    redirect_chain: list[Hop] = []
+    navigations: list[str] = []
+    request_hosts: list[str] = []  # every host the page requested, through the proxy
+    refused_requests: list[dict[str, Any]] = []  # {host, url, reason}: refused by the proxy
+    page_actions: dict[str, int] = {}  # what the page tried on its own and was stopped
+    screenshot: dict[str, Any] | None = None  # {sha256, stored, width, height, media}
+    content_source: Literal["static", "rendered"] = "static"
+    refs: list[str] = []
+
+
 class Snippet(_Block):
     field: str
     text: str
@@ -344,10 +385,12 @@ class EvidenceBundle(_Block):
     commerce: CommerceBlock = CommerceBlock()
     editorial: EditorialBlock = EditorialBlock()
     visual: VisualBlock = VisualBlock()
+    render: RenderBlock = RenderBlock()
     # Never filled: superseded by visual.matches (bundle/3). Kept so bundle/1 and
-    # bundle/2 documents keep loading. M7 fills the next two.
+    # bundle/2 documents keep loading.
     visual_matches: list[dict[str, Any]] = []
-    render_reason: str | None = None
+    render_reason: str | None = None  # the first of render.reasons
+    # The static-versus-rendered comparison (cloaking/1), when the case was rendered.
     cloaking: dict[str, Any] | None = None
     snippets: list[Snippet] = Field(default_factory=list, max_length=MAX_SNIPPETS)
     extractor_errors: list[dict[str, str]] = []
@@ -875,6 +918,166 @@ def _visual(
     )  # fmt: skip
 
 
+RENDER_STATUS = {"ok": "complete", "failed": "failed", "render_rejected": "rejected",
+                 "refused": "refused"}  # fmt: skip
+
+
+def _render(
+    facts: list[FactRecord], features: list[FeatureRecord], rnd: int | None
+) -> tuple[RenderBlock, FactRecord | None, dict | None]:
+    """The render block for the round of the final static fetch, the completed
+    `browser_render` fact (None unless the render completed) and the comparison."""
+    decision = _round_fact(facts, "render_decision", rnd) if rnd is not None else None
+    if decision is None:
+        return RenderBlock(), None, None
+    dv = decision.value
+    base = {
+        "analysis_round": rnd,
+        "reasons": _s(list(dv.get("reasons") or [])[:MAX_LIST], 100),
+        "sampled": bool(dv.get("sampled")),
+        "skipped": _s(dv.get("skipped"), 100),
+        "requested_url": _s(dv.get("url"), 2048),
+    }
+    refs = [f"fact:{decision.id}"]
+    if not dv.get("triggered"):
+        return RenderBlock(status="not_triggered", refs=refs, **base), None, None
+    if not dv.get("browser_enabled", True):
+        return RenderBlock(status="disabled", refs=refs, **base), None, None
+    fact = _round_fact(facts, "browser_render", rnd)
+    if fact is None:
+        return RenderBlock(status="pending", refs=refs, **base), None, None
+    v = fact.value
+    refs += [f"fact:{fact.id}"] + [f"artifact:{a}" for a in fact.artifact_refs]
+    status = RENDER_STATUS.get(v.get("status"), "failed")
+    if status != "complete" or "requests" not in v:  # dropped by the fact size cap: unknown
+        reason = v.get("reason") or ("render fact truncated" if status == "complete" else None)
+        status = "failed" if status == "complete" else status
+        return RenderBlock(status=status, reason=_s(reason, 300), refs=refs, **base), None, None
+    requests = [q for q in v.get("requests") or [] if isinstance(q, dict)]
+    final_host = None
+    if v.get("final_url"):
+        try:
+            final_host = normalize(urlsplit(v["final_url"]).hostname or "").host
+        except (InvalidName, ValueError):
+            final_host = None
+    shot = v.get("screenshot") or {}
+    sha = shot.get("sha256")
+    own = [f for f in features if fact.id in f.fact_refs]
+    comparison = next((f for f in own if f.name == "cloaking"), None)
+    cloaking = None
+    if comparison is not None and isinstance(comparison.value, dict):
+        cloaking = {**_s(comparison.value, 300), "refs": [f"feature:{comparison.id}"]}
+    has_page = any(f.name == "page_content" for f in own)
+    source = "rendered" if has_page and (cloaking or {}).get("score_on") != "static" else "static"
+    block = RenderBlock(
+        status="complete",
+        **base,
+        final_url=_s(v.get("final_url"), 2048),
+        final_host=final_host,
+        main_status=v.get("main_status"),
+        network_idle=bool(v.get("network_idle")),
+        redirect_chain=[
+            Hop(
+                **_s(
+                    {"url": h.get("url"), "status": h.get("status"), "location": h.get("location")},
+                    500,
+                )
+            )
+            for h in (v.get("redirect_chain") or [])[:MAX_HOPS]
+        ],
+        navigations=_s(list(v.get("navigations") or [])[:MAX_HOPS], 500),
+        request_hosts=_s(sorted({str(q["host"]) for q in requests if q.get("host")})[:50], 255),
+        refused_requests=_s(
+            [
+                {"host": q.get("host"), "url": q.get("url"), "reason": q.get("proxy_refusal")}
+                for q in requests
+                if q.get("proxy_refusal")
+            ][:MAX_LIST],
+            500,
+        ),
+        page_actions={
+            k: int(n) for k, n in (v.get("attempt_counts") or {}).items() if isinstance(n, int)
+        },
+        screenshot=_s(
+            {k: shot.get(k) for k in ("status", "sha256", "width", "height", "bytes", "media")}
+            | {"stored": bool(sha and sha in fact.artifact_refs)},
+            300,
+        )
+        if shot
+        else None,
+        content_source=source,
+        refs=refs,
+    )
+    return block, fact, cloaking
+
+
+def _screenshot_evidence(
+    visual: VisualBlock, fact: FactRecord, features: list[FeatureRecord]
+) -> tuple[VisualBlock, list[PaymentObservation]]:
+    """The screenshot's matches, image text and QR payees, joined to the visual
+    block under the role `screenshot`."""
+    shot = fact.value.get("screenshot") or {}
+    sha = shot.get("sha256")
+    if not sha:
+        return visual, []
+    image_refs = [f"fact:{fact.id}"] + ([f"artifact:{sha}"] if sha in fact.artifact_refs else [])
+    own = {f.name: f for f in features if fact.id in f.fact_refs}
+    vm, mt = own.get("screenshot_matches"), own.get("screenshot_text")
+    vmv = vm.value if vm and isinstance(vm.value, dict) else {}
+    mtv = mt.value if mt and isinstance(mt.value, dict) and mt.value.get("available") else {}
+    matches = [
+        VisualMatch(
+            image_sha256=sha,
+            image_ref="screenshot",
+            role="screenshot",
+            method=m.get("method") or "?",
+            phash_distance=int(m.get("phash_distance") or 0),
+            dhash_distance=int(m.get("dhash_distance") or 0),
+            reference=_s(m.get("reference") or {}, 500),
+            refs=[f"feature:{vm.id}", *image_refs],
+        )
+        for m in (vmv.get("matches") or [])[:MAX_LIST]
+    ]
+    text = ((shot.get("media") or {}).get("ocr_text")) or ""
+    ocr_text = [{"image": sha, "role": "screenshot", "text": sanitize_fact(text, MAX_OCR_SNIPPET)}]
+    payments = [
+        PaymentObservation(
+            kind=o["kind"],
+            source=o.get("source"),
+            identifier_type=o.get("identifier_type"),
+            payee_identifier=_s(o.get("payee_identifier")),
+            payee_name=_s(o.get("payee_name")),
+            destination=_s(o.get("destination"), 500),
+            amount=_s(o.get("amount")),
+            currency=_s(o.get("currency")),
+            ifsc=_s(o.get("ifsc")),
+            attribution=o.get("attribution", "unknown"),
+            attribution_reason=_s(o.get("reason")),
+            attributed_brands=o.get("brands", []),
+            registry_payee=o.get("registry_payee"),
+            extractor_version=mt.extractor_version,
+            image_sha256=sha,
+            refs=[f"feature:{mt.id}", *image_refs],
+        )
+        for o in (mtv.get("observations") or [])[:MAX_MEDIA_OBSERVATIONS]
+    ]
+    merged = visual.model_copy(
+        update={
+            "matches": visual.matches + matches,
+            "ocr_text": visual.ocr_text + (ocr_text if text else []),
+            "ocr_brands": visual.ocr_brands + _s(list(mtv.get("brands") or [])[:MAX_LIST], 200),
+            "ocr_presented": sorted(set(visual.ocr_presented) | set(mtv.get("presented") or [])),
+            "donation_cues": list(
+                dict.fromkeys(visual.donation_cues + _s(list(mtv.get("donation_cues") or []), 100))
+            )[:MAX_LIST],
+            "qr_payloads": visual.qr_payloads
+            + _s(list(mtv.get("qr_payloads") or [])[:MAX_LIST], 500),
+            "refs": visual.refs + [f"feature:{f.id}" for f in (vm, mt) if f],
+        }
+    )
+    return merged, payments
+
+
 def build_bundle(
     inputs: CaseInputs, lexicon: BrandLexicon | None, registry: Registry | None = None
 ) -> EvidenceBundle:
@@ -883,11 +1086,11 @@ def build_bundle(
     except InvalidName:
         unicode_host = None
     http, final = _http(inputs.facts)
-    feats = _features_for(inputs.features, final)
+    render, rendered, cloaking = _render(inputs.facts, inputs.features, http.analysis_round)
     infra = _infrastructure(inputs.facts, http.analysis_round)
-    base_refs = (
-        [f"fact:{final.id}"] + [f"artifact:{a}" for a in final.artifact_refs] if final else []
-    )
+    view = rendered if render.content_source == "rendered" else final
+    feats = _features_for(inputs.features, view)
+    base_refs = [f"fact:{view.id}"] + [f"artifact:{a}" for a in view.artifact_refs] if view else []
 
     def refs(name: str) -> list[str]:
         f = feats.get(name)
@@ -959,6 +1162,9 @@ def build_bundle(
     )
     pay_feature = feats.get("payment")
     visual, media_payments = _visual(inputs.facts, inputs.features, http.analysis_round)
+    if rendered is not None:
+        visual, shot_payments = _screenshot_evidence(visual, rendered, inputs.features)
+        media_payments += shot_payments
     pay_refs = refs("payment")
     payment = PaymentBlock(
         catalog_version=pay.get("catalog_version"),
@@ -1077,9 +1283,12 @@ def build_bundle(
         commerce=commerce,
         editorial=editorial,
         visual=visual,
+        render=render,
+        render_reason=render.reasons[0] if render.reasons else None,
+        cloaking=cloaking,
         snippets=_snippets(page, credential, payment, association, visual),
         extractor_errors=errors,
-        incomplete=_incomplete(http, page, infra, errors, visual),
+        incomplete=_incomplete(http, page, infra, errors, visual, render),
     )
 
 
@@ -1112,7 +1321,12 @@ def _snippets(page, credential, payment, association, visual) -> list[Snippet]:
 
 
 def _incomplete(
-    http: Http, page: PageBlock, infra: Infrastructure, errors: list, visual: VisualBlock
+    http: Http,
+    page: PageBlock,
+    infra: Infrastructure,
+    errors: list,
+    visual: VisualBlock,
+    render: RenderBlock,
 ) -> list[str]:
     out = []
     if not http.fetched:
@@ -1143,4 +1357,6 @@ def _incomplete(
         out.append("media_rejected")
     if visual.status in ("complete", "partial") and not visual.corpus_entries:
         out.append("reference_corpus_empty")
+    if render.status in ("pending", "failed", "rejected", "refused", "disabled"):
+        out.append(f"render_{render.status}")
     return out
