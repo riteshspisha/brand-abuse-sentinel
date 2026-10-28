@@ -144,3 +144,32 @@ def test_the_application_never_imports_the_browser_driver():
         [sys.executable, "-I", "-c", code], capture_output=True, text=True, check=True
     )
     assert out.stdout.strip() == "[]", out.stdout + out.stderr
+
+
+def test_only_one_browser_runs_at_a_time():
+    from brandsentinel.config import Config
+
+    with pytest.raises(ValueError):
+        Config(stages={"render": 2})
+
+
+def test_the_worker_has_time_to_report_before_the_wall():
+    from brandsentinel.config import SandboxLimits
+
+    with pytest.raises(ValueError, match="wall_seconds"):
+        BrowserSettings(limits=SandboxLimits(wall_seconds=45, stdout_max_bytes=16 * 2**20))
+    s = BrowserSettings()
+    assert s.navigation_timeout_seconds + s.settle_seconds + W.POST_SETTLE_SECONDS < (
+        s.limits.wall_seconds
+    )
+
+
+def test_control_characters_cannot_inflate_the_worker_output():
+    # Each C0 control is six bytes in JSON; a page of them must not overflow stdout.
+    page = "\x01\x02\x1b\x7f" * 1000 + "\tok\n\r"
+    assert W.clean(page) == "\tok\n\r"
+    s = BrowserSettings()
+    html, _ = W.cap_bytes(W.clean("\x00" * s.max_html_bytes + '"\\' * s.max_html_bytes),
+                          s.max_html_bytes)  # fmt: skip
+    doc = json.dumps({"html": html}, ensure_ascii=False).encode()
+    assert len(doc) <= 2 * s.max_html_bytes + 64

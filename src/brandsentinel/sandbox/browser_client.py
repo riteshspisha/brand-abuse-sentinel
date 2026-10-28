@@ -352,6 +352,20 @@ class BrowserClient:
         )
 
 
+async def build_browser_client(runner: SandboxRunner, config) -> tuple[BrowserClient | None, list]:
+    """The browser client for the service and `registry collect`, only once the
+    sandbox network check with its direct-egress probe passes; otherwise None and
+    the failed checks. In lab mode it renders lab hostnames only."""
+    from brandsentinel.sandbox.preflight import check_network
+
+    report = await check_network(runner.docker, config.sandbox, runner)
+    if not report.ok:
+        return None, report.reasons()
+    lab = config.net.lab
+    hosts = frozenset(lab.hosts) if lab.enabled else None
+    return BrowserClient(runner, config.browser, config.sandbox, lab_hosts=hosts), []
+
+
 def _sandbox_reason(result: SandboxResult) -> str:
     if result.status == "exit_error" and result.exit_code == 137 and not result.killed:
         return "sandbox_killed"  # SIGKILL the runner did not send: the memory limit

@@ -56,7 +56,9 @@ class StageLimits(_Section):
     enrich: int = Field(8, ge=1)
     fetch: int = Field(4, ge=1)
     media: int = Field(2, ge=1)
-    render: int = Field(1, ge=1)
+    # One browser at a time: a sandbox network carries one untrusted container
+    # (the runner's network lease, SP1); a second render would only wait or fail.
+    render: int = Field(1, ge=1, le=1)
     decision: int = Field(1, ge=1)
     # Jobs of one registrable domain that may run at once in a stage, so one
     # domain with many subdomains cannot occupy every worker.
@@ -422,7 +424,7 @@ def _browser_limits() -> SandboxLimits:
         wall_seconds=60.0,
         tmpfs_mb=256,  # the throwaway browser profile
         shm_mb=256,
-        stdout_max_bytes=12 * MiB,  # rendered HTML and the screenshot, base64
+        stdout_max_bytes=16 * MiB,  # rendered HTML (escaped) and the screenshot, base64
         stderr_max_bytes=256 * 1024,
     )
 
@@ -439,15 +441,16 @@ class BrowserSettings(_Section):
     little_text_chars: int = Field(200, ge=0, le=100_000)
     viewport_width: int = Field(1280, ge=320, le=1920)
     viewport_height: int = Field(800, ge=240, le=1920)
-    navigation_timeout_seconds: float = Field(20.0, gt=0, le=600)
+    navigation_timeout_seconds: float = Field(15.0, gt=0, le=600)
     # After the load event, how long to wait for the network to go idle.
-    settle_seconds: float = Field(8.0, ge=0, le=600)
+    settle_seconds: float = Field(5.0, ge=0, le=600)
     max_html_bytes: int = Field(2 * MiB, gt=0, le=8 * MiB)
     max_text_chars: int = Field(50_000, gt=0, le=1_000_000)
     max_requests: int = Field(300, ge=1, le=5000)
     max_forms: int = Field(32, ge=1, le=256)
     max_inputs: int = Field(256, ge=1, le=4096)
-    max_screenshot_bytes: int = Field(3 * MiB, gt=0, le=8 * MiB)
+    # Screenshots over media.max_image_bytes are kept but not analyzed.
+    max_screenshot_bytes: int = Field(2 * MiB, gt=0, le=8 * MiB)
     # None: Chromium's own user agent (the cloaking comparison relies on it).
     user_agent: str | None = None
     # The Chromium seccomp profile; None: the one shipped with the package.
@@ -456,14 +459,23 @@ class BrowserSettings(_Section):
 
     @model_validator(mode="after")
     def _fits(self):
-        budget = self.navigation_timeout_seconds + self.settle_seconds + 10
+        from brandsentinel.sandbox.browser_worker import POST_SETTLE_SECONDS
+
+        budget = self.navigation_timeout_seconds + self.settle_seconds + POST_SETTLE_SECONDS
         if budget >= self.limits.wall_seconds:
             raise ValueError(
-                "navigation_timeout_seconds + settle_seconds + 10 must be under"
-                " limits.wall_seconds, so the worker reports before it is killed"
+                f"navigation_timeout_seconds + settle_seconds + {POST_SETTLE_SECONDS} must be"
+                " under limits.wall_seconds, so the worker reports before it is killed"
             )
-        b64 = (self.max_html_bytes + self.max_screenshot_bytes) * 4 // 3
-        if b64 + self.max_text_chars * 6 + 4 * MiB > self.limits.stdout_max_bytes:
+        # Worst cases in the worker's UTF-8 JSON: HTML and text escaped (quotes,
+        # backslashes: 2 bytes per byte), text in 4-byte characters, the PNG in base64.
+        worst = (
+            self.max_html_bytes * 2
+            + self.max_text_chars * 4
+            + self.max_screenshot_bytes * 4 // 3
+            + 4 * MiB  # requests, attempts and the rest
+        )
+        if worst > self.limits.stdout_max_bytes:
             raise ValueError("limits.stdout_max_bytes is too small for the output caps")
         return self
 

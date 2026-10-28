@@ -49,7 +49,11 @@ from brandsentinel.visual.corpus import load_corpus
 log = logging.getLogger(__name__)
 
 STAGE_VERSION = "render_stage/1"
-MAX_STORED_URL = 500  # per request URL kept in the fact
+# What the fact keeps of a page-inflatable document, so it always fits
+# text.max_fact_bytes (a dropped field would read as a failed render).
+MAX_STORED_URL = 300
+MAX_STORED_REQUESTS = 150
+MAX_STORED_ATTEMPTS = 20
 COMPARED = ("page_content", "page_basics", "brand_references", "payment")
 
 
@@ -118,16 +122,30 @@ class RenderStage:
             render = Render("failed", url, f"sandbox unavailable: {e}"[:300])
         if render.status == "refused" and render.reason == "network_check_failed" and not last:
             raise TransientRenderFailure("network check failed: " + "; ".join(render.network_check))
-        extracted, shot = [], None
-        if render.status == "ok":
-            final = render.doc.get("final_url") or ""
-            page_url = final if urlsplit(final).scheme in ("http", "https") else url
-            extracted = await asyncio.to_thread(
-                run_extractors, render.html, "text/html", "utf-8", page_url, a.analysis_context
-            )
-            if render.screenshot:
-                shot = await self._screenshot(render.screenshot, case_id, rnd, job.attempts)
-        self._record(case, rnd, row[0], render, extracted, shot)
+        extracted, shot, unusable = [], None, None
+        try:
+            if render.status == "ok":
+                unusable = no_usable_page(render)
+            if render.status == "ok" and unusable is None:
+                final = render.doc["final_url"]
+                extracted = await asyncio.to_thread(
+                    run_extractors, render.html, "text/html", "utf-8", final, a.analysis_context
+                )
+                if render.screenshot:
+                    shot = await self._screenshot(render.screenshot, case_id, rnd, job.attempts)
+                    if (shot.get("reason") or "").startswith("sandbox unavailable") and not last:
+                        raise TransientRenderFailure(shot["reason"])
+        except TransientRenderFailure:
+            raise
+        except Exception as e:
+            if not last:
+                raise
+            # The last attempt records what happened instead of leaving no outcome.
+            log.exception("render processing failed", extra={"fields": {"case_id": case_id}})
+            render = Render("failed", url, f"processing_error: {type(e).__name__}: {e}"[:300],
+                            runs=render.runs)  # fmt: skip
+            extracted, shot, unusable = [], None, None
+        self._record(case, rnd, row[0], render, extracted, shot, unusable)
         a.score(case_id)
 
     async def _screenshot(self, data: bytes, case_id: int, rnd: int, attempt: int) -> dict:
@@ -146,14 +164,12 @@ class RenderStage:
             return {"status": "failed", "reason": f"sandbox unavailable: {e}"[:200]}
         return batch.items.get("s0") or {"status": "failed", "reason": batch.error}
 
-    def _record(self, case, rnd, decision_id, render: Render, extracted, shot) -> None:
+    def _record(self, case, rnd, decision_id, render: Render, extracted, shot, unusable) -> None:
         a = self.a
-        value = render.to_fact()
+        value = _bounded(render.to_fact())
         value["decision_fact"] = decision_id
-        value.pop("text", None)  # the extractors read the stored HTML
-        value["requests"] = [
-            {**q, "url": (q.get("url") or "")[:MAX_STORED_URL]} for q in value.get("requests", [])
-        ]
+        if unusable:
+            value["unusable"] = unusable
         blobs: dict[str, tuple[bytes, str]] = {}
         if render.html is not None:
             sha = self._sha(render.html)
@@ -286,6 +302,51 @@ class RenderStage:
         except QuotaExceeded:
             return False
         return got == sha
+
+
+def no_usable_page(render: Render) -> str | None:
+    """Why a completed render shows no page of the site (or None): the browser
+    ended on an error page, got no response, or its final document is the proxy's
+    refusal. Its network log is still evidence; its content is not the site's."""
+    doc = render.doc
+    final = doc.get("final_url") or ""
+    if doc.get("navigation_error") and doc.get("main_status") is None:
+        return f"no usable page: {doc['navigation_error']}"[:300]
+    if urlsplit(final).scheme not in ("http", "https") or doc.get("main_status") is None:
+        return f"no usable page: ended on {final[:200] or 'nothing'}"
+    documents = [q for q in doc.get("requests") or [] if q.get("navigation")]
+    if documents and documents[-1].get("proxy_refusal"):
+        refusal = documents[-1]["proxy_refusal"]
+        return f"no usable page: final document refused by the proxy ({refusal})"
+    return None
+
+
+def _bounded(value: dict) -> dict:
+    """The render fact with every page-inflatable list and URL capped."""
+    value.pop("text", None)  # the extractors read the stored HTML
+
+    def url(u):
+        return (u or "")[:MAX_STORED_URL] if isinstance(u, str) else u
+
+    value["requests"] = [
+        {**q, "url": url(q.get("url"))} for q in value.get("requests", [])[:MAX_STORED_REQUESTS]
+    ]
+    value["requests_stored"] = len(value["requests"])
+    value["navigations"] = [url(n) for n in value.get("navigations", [])]
+    value["redirect_chain"] = [
+        {**h, "url": url(h.get("url")), "location": url(h.get("location"))}
+        for h in value.get("redirect_chain", [])
+    ]
+    attempts = value.get("attempts") or {}
+    value["attempts"] = {
+        kind: [
+            {k: url(v) if k == "url" else (v[:120] if isinstance(v, str) else v)
+             for k, v in entry.items()}
+            for entry in entries[:MAX_STORED_ATTEMPTS]
+        ]
+        for kind, entries in attempts.items()
+    }  # fmt: skip
+    return value
 
 
 def _media_summary(shot: dict | None, max_ocr_chars: int) -> dict:

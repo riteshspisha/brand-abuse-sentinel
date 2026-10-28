@@ -34,7 +34,7 @@ LOGIN_RENDERED = (
 )
 
 
-def doc(url: str, *, final: str | None = None, requests=None) -> dict:
+def doc(url: str, *, final: str | None = None, requests=None, **extra) -> dict:
     final = final or url
     return {
         "worker": "browser_worker/1",
@@ -67,7 +67,7 @@ def doc(url: str, *, final: str | None = None, requests=None) -> dict:
         "html_truncated": False,
         "text": "",
         "elapsed_ms": 10,
-    }
+    } | extra
 
 
 class ScriptedBrowser:
@@ -316,3 +316,103 @@ def test_reports_show_the_render_escaped_and_never_embed_the_screenshot(env):
     assert "data:image" not in page and "<img" not in page
     text = "\n".join(render_case_text(r))
     assert "cloaking suspected" in text and "refused by proxy" in text
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        # The page took the browser to an error page (it never loaded).
+        {"final": "chrome-error://chromewebdata/", "main_status": None,
+         "navigation_error": "Page.goto: net::ERR_TUNNEL_CONNECTION_FAILED"},
+        # The final document is the proxy's refusal, not the site.
+        {"final": "http://169.254.169.254/", "main_status": 403, "requests": [
+            {"url": "http://169.254.169.254/", "host": "169.254.169.254", "method": "GET",
+             "resource_type": "document", "navigation": True, "status": 403, "failure": None,
+             "proxy_refusal": "not_lab_host", "blocked": False}]},
+    ],
+)  # fmt: skip
+def test_a_render_without_a_usable_page_keeps_the_static_evidence(env, kw):
+    store, stages = env
+    _, shell = lab_site("js-login")
+    case_id = seed(store, stages, shell, LOGIN)
+    page = "<html><head><title>Error</title></head><body><p>Unreachable</p></body></html>"
+    run(store, stages, ScriptedBrowser({LOGIN: ok(LOGIN, page, **kw)}), rendered(store, case_id))
+    r = load_case(store.conn, case_id)
+    b = r.bundle
+    assert b.render.status == "complete" and b.render.content_source == "static"
+    assert b.render.reason and "no usable page" in b.render.reason
+    assert b.cloaking is None and b.page.js_shell  # no comparison against an error page
+    assert "cloaking_suspected" not in {x.rule for x in r.result.reasons}
+    assert any("no usable page" in n for n in r.result.manual_review)
+
+
+def test_a_brand_hidden_from_the_browser_still_ties_the_rendered_form(env):
+    store, stages = env
+    static = ("<html><head><title>Lumina Foundation Members</title></head><body>"
+              "<h1>Lumina Foundation</h1><p>Sign in to your Lumina Foundation account.</p>"
+              "<form action='/s' method='post'><input type='password' name='p'></form>"
+              "</body></html>")  # fmt: skip
+    hidden = ("<html><head><title>Members</title></head><body><h1>Members</h1>"
+              "<p>Sign in to continue.</p><form action='/s' method='post'>"
+              "<input type='password' name='p'></form></body></html>")  # fmt: skip
+    url = "http://sunrise-yoga-studio.test/"  # the domain does not carry the brand
+    case_id = seed(store, stages, static, url)
+    stages.config.browser.__dict__["sample_rate"] = 1.0
+    store.conn.execute("DELETE FROM facts WHERE name = 'render_decision'")
+    stages.decide_render(stages._case(case_id), 0)
+    run(store, stages, ScriptedBrowser({url: ok(url, hidden)}), rendered(store, case_id))
+    r = load_case(store.conn, case_id)
+    assert r.bundle.cloaking["suspected"]
+    assert "lumina-foundation" in r.bundle.association.presented
+    assert r.result.category == "credential_phishing", r.result.reasons
+
+
+def test_a_render_record_inflated_by_the_page_still_fits_the_fact(env):
+    store, stages = env
+    _, shell = lab_site("js-login")
+    case_id = seed(store, stages, shell, LOGIN)
+    long = "http://login-luminafoundation.test/" + "a" * 2000
+    req = {"url": long, "host": "login-luminafoundation.test", "method": "GET",
+           "resource_type": "image", "navigation": False, "status": 404, "failure": None,
+           "proxy_refusal": None, "blocked": False}  # fmt: skip
+    nav = {**req, "url": LOGIN, "resource_type": "document", "navigation": True, "status": 200}
+    flood = {"blocked_requests": [{"method": "POST", "url": long}] * 50,
+             "dialogs": [{"type": "alert", "message": "m" * 200}] * 50,
+             "popups": [{"url": long}] * 50, "downloads": [{"url": long}] * 50}  # fmt: skip
+    render = ok(LOGIN, LOGIN_RENDERED, requests=[nav] + [req] * 299, attempts=flood,
+                navigations=[long] * 20,
+                redirect_chain=[{"url": long, "status": 302, "location": long}] * 19
+                + [{"url": LOGIN, "status": 200, "location": None}])  # fmt: skip
+    run(store, stages, ScriptedBrowser({LOGIN: render}), rendered(store, case_id))
+    (fact,) = facts(store, case_id, "browser_render")
+    assert not fact.get("truncated"), sorted(fact)
+    b = load_case(store.conn, case_id).bundle
+    assert b.render.status == "complete" and b.render.content_source == "rendered"
+
+
+def test_a_matched_screenshot_is_not_corroborated_by_page_images_it_shows(env):
+    from brandsentinel.evidence.bundle import VisualImage
+    from brandsentinel.policy.rules import visual_corroboration
+
+    store, stages = env
+    url = "http://sunrise-yoga-studio.test/"
+    html = "<html><head><title>Studio</title></head><body><p>" + "Classes. " * 30 + "</p>"
+    case_id = seed(store, stages, html + "</body></html>", url)
+    stages.config.browser.__dict__["sample_rate"] = 1.0
+    store.conn.execute("DELETE FROM facts WHERE name = 'render_decision'")
+    stages.decide_render(stages._case(case_id), 0)
+    run(
+        store, stages, ScriptedBrowser({url: ok(url, html, M.lab_logo())}), rendered(store, case_id)
+    )
+    b = load_case(store.conn, case_id).bundle
+    shot = b.render.screenshot["sha256"]
+    img = "b" * 64  # a page image whose text shows the brand (and which the screenshot shows)
+    staged = b.model_copy(update={"visual": b.visual.model_copy(update={
+        "matches": [VisualMatch(image_sha256=shot, image_ref="screenshot", role="screenshot",
+                                method="perceptual", phash_distance=4, dhash_distance=3,
+                                reference={"brand": "lumina-foundation"})],
+        "images": [VisualImage(ref="/banner.png", role="page_image", status="ok", sha256=img)],
+        "ocr_brands": [{"brand": "lumina-foundation", "strength": "strong", "images": [img]}],
+    })})  # fmt: skip
+    support = visual_corroboration(staged, {"lumina-foundation"})
+    assert not [w for w, _ in support if "another image" in w], support

@@ -1003,19 +1003,16 @@ def registry_collect(
 def _reference_browser(config, runner):
     """The browser client for reference page screenshots, once the sandbox network
     check (with its direct-egress probe) passes; otherwise None, and said why."""
-    from brandsentinel.sandbox.browser_client import BrowserClient
-    from brandsentinel.sandbox.preflight import check_network
+    from brandsentinel.sandbox.browser_client import build_browser_client
 
     if not config.browser.enabled:
         return None
-    net = asyncio.run(check_network(runner.docker, config.sandbox, runner))
-    if not net.ok:
-        _print_checks(f"network {config.sandbox.network}", net)
+    client, failed = asyncio.run(build_browser_client(runner, config))
+    if client is None:
+        for reason in failed:
+            typer.echo(f"  network check: {escape_terminal(reason)}", err=True)
         typer.echo("reference screenshots skipped: the sandbox network check failed", err=True)
-        return None
-    lab = config.net.lab
-    hosts = frozenset(lab.hosts) if lab.enabled else None
-    return BrowserClient(runner, config.browser, config.sandbox, lab_hosts=hosts)
+    return client
 
 
 @registry_app.command("corpus")

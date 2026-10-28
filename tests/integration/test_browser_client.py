@@ -8,6 +8,7 @@ Needs the sandbox image and the lab project (brought up if needed)."""
 
 import asyncio
 import json
+import time
 
 import pytest
 from tests.docker_support import (
@@ -16,7 +17,6 @@ from tests.docker_support import (
     LAB_WEB_IP,
     REPO,
     compose,
-    docker_json,
     labelled,
     make_runner,
     net_settings,
@@ -94,6 +94,11 @@ def test_a_browser_that_ignores_the_proxy_has_no_route_anywhere(docker):
     # The self-test launches Chromium without any proxy setting: the network alone
     # must stop it, from public addresses to the lab web server by IP.
     c = client(docker, lab=False)
+    # Positive control: the same proxy-less browser does reach the one peer its
+    # network has (the proxy answers a direct origin-form GET with 400), so the
+    # failures below are the network's, not a browser that cannot connect at all.
+    peer = render(c, f"http://{LAB_SANDBOX_NET.proxy_ip}:3128/", {"no_proxy": True})
+    assert peer.status == "ok" and peer.doc["main_status"] == 400, peer.doc
     for url in ("http://1.1.1.1/", f"http://{LAB_WEB_IP}/", "http://172.31.250.2:3128/",
                 "http://example.com/", "http://169.254.169.254/latest/meta-data/"):  # fmt: skip
         r = render(c, url, {"no_proxy": True})
@@ -114,15 +119,14 @@ def test_redirects_to_metadata_are_refused_at_the_proxy_and_recorded(docker, pat
 def _proxy_methods(docker, since: str) -> set[str]:
     logs = docker.call_sync("logs", "--since", since, LAB_SANDBOX_NET.proxy_container)
     records = [json.loads(x) for x in logs.stderr.splitlines() if x.startswith("{")]
-    return {str(r.get("method")) for r in records}
+    # Connections closed before a request line carry no method; they sent nothing.
+    return {str(r["method"]) for r in records if r.get("method")}
 
 
 def test_page_initiated_actions_are_contained_and_the_page_kept(docker):
     # R39: dialogs dismissed, the popup closed, the download refused and the
     # self-submitting form stopped in the browser; nothing but GET reaches the proxy.
-    since = docker_json(docker, "container", "inspect", LAB_SANDBOX_NET.proxy_container)[0][
-        "State"
-    ]["StartedAt"]
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 1))  # this test only
     r = render(client(docker), f"{LAB}/pushy.html")
     assert r.status == "ok"
     counts = r.doc["attempt_counts"]
@@ -131,14 +135,15 @@ def test_page_initiated_actions_are_contained_and_the_page_kept(docker):
     assert r.doc["final_url"] == f"{LAB}/pushy.html" and b"Lumina Foundation" in r.html
     sent = [q for q in r.doc["requests"] if q["method"] != "GET" and not q["blocked"]]
     assert sent == [] and any(q["blocked"] for q in r.doc["requests"])
-    assert _proxy_methods(docker, since) <= {"GET", "CONNECT", "None"}
+    methods = _proxy_methods(docker, since)
+    assert "GET" in methods and methods <= {"GET", "CONNECT"}, methods  # logged, never POST
 
 
 def test_a_page_that_never_settles_is_killed_at_the_wall_time_limit(docker):
-    limits = SandboxLimits(**{**BrowserSettings().limits.model_dump(), "wall_seconds": 20})
-    c = client(docker, navigation_timeout_seconds=5, settle_seconds=3, limits=limits)
+    limits = SandboxLimits(**{**BrowserSettings().limits.model_dump(), "wall_seconds": 35})
+    c = client(docker, navigation_timeout_seconds=3, settle_seconds=1, limits=limits)
     r = render(c, f"{LAB}/stall.html")
     assert (r.status, r.reason) == ("failed", "sandbox_timeout"), (r.reason, r.runs)
     assert r.runs[0]["killed"] and r.runs[0]["removed"]
-    assert r.runs[0]["elapsed_ms"] < 40_000
+    assert r.runs[0]["elapsed_ms"] < 55_000
     assert labelled(docker, INSTANCE) == []

@@ -368,6 +368,11 @@ def evaluate(b: EvidenceBundle, policy: Policy, judgments: Iterable[dict] = ()) 
             "page builds its content with script and was not rendered"
             + (f" (render {b.render.status})" if b.render.status != "not_run" else "")
         )
+    if b.render.status == "complete" and b.render.reason:
+        manual.append(
+            f"The browser reached {b.render.reason}; the case is scored on the static page,"
+            " and what the site shows a browser is unknown, not benign."
+        )
     if b.render.status in ("failed", "rejected", "refused"):
         manual.append(
             f"Browser rendering {b.render.status}"

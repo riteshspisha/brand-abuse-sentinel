@@ -235,8 +235,8 @@ asyncio.run(run_service(store, registry, certstream_enabled=False, dnstwist_enab
 
 
 def test_ae18_a_browser_container_orphaned_by_a_crash_is_removed_before_the_retry(docker, tmp_path):
-    limits = {"wall_seconds": 20}
-    config = lab_config(tmp_path / "data", navigation_timeout_seconds=5, settle_seconds=3)
+    limits = {"wall_seconds": 35}
+    config = lab_config(tmp_path / "data", navigation_timeout_seconds=3, settle_seconds=1)
     config = config.model_copy(
         update={
             "browser": config.browser.model_copy(

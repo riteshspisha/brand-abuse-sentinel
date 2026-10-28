@@ -46,6 +46,10 @@ MAX_NAVIGATIONS = 20
 MAX_REDIRECTS = 20
 MAX_ATTEMPTS = 50  # per kind of contained page action
 PROXY_HEADER = "x-brandsentinel-proxy"
+# Steps after the page settles, each bounded (BrowserSettings budgets for them).
+TEXT_TIMEOUT_MS = 5000
+SCREENSHOT_TIMEOUT_MS = 10000
+POST_SETTLE_SECONDS = 30  # text + screenshot + reading the page + launch and close
 ALLOWED_METHODS = frozenset({"GET", "HEAD"})
 # Chromium flags beside Playwright's own. None of them is a boundary (the network
 # is); they keep the browser from wandering. Never --no-sandbox.
@@ -102,6 +106,15 @@ def host_of(url: str) -> str | None:
         return urlsplit(url).hostname
     except ValueError:
         return None
+
+
+# C0 controls (but tab, newline, carriage return) and DEL: JSON escapes each as six
+# bytes, so a page made of them could blow the output cap and deny rendering.
+_CONTROLS = dict.fromkeys([*range(0x00, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20), 0x7F])
+
+
+def clean(text: str) -> str:
+    return text.translate(_CONTROLS)
 
 
 def cap_bytes(text: str, limit: int) -> tuple[str, bool]:
@@ -338,10 +351,10 @@ def render(job: dict) -> dict:
                 out["title"] = cap(page.title(), 500)
             except PlaywrightError:
                 out["title"] = None
-            html, truncated = cap_bytes(page.content(), opts["max_html_bytes"])
+            html, truncated = cap_bytes(clean(page.content()), opts["max_html_bytes"])
             out["html"], out["html_truncated"] = html, truncated
             try:
-                text = page.inner_text("body", timeout=5000)
+                text = clean(page.inner_text("body", timeout=TEXT_TIMEOUT_MS))
             except PlaywrightError:
                 text = ""
             out["text"] = cap(text, opts["max_text_chars"])
@@ -362,7 +375,9 @@ def render(job: dict) -> dict:
 
 def _screenshot(page, opts: dict, error) -> dict:
     try:
-        data = page.screenshot(type="png", full_page=False, animations="disabled", timeout=10000)
+        data = page.screenshot(
+            type="png", full_page=False, animations="disabled", timeout=SCREENSHOT_TIMEOUT_MS
+        )
     except error as e:
         return {"status": "error", "error": cap(str(e).splitlines()[0], 200)}
     size = png_size(data)
@@ -396,7 +411,9 @@ def main(argv: list[str] | None = None) -> int:
             "status": "error",
             "error": cap(f"{type(e).__name__}: {e}".splitlines()[0], 200),
         }
-    sys.stdout.write(json.dumps(out, separators=(",", ":")))
+    # UTF-8, not \u escapes: a non-ASCII page costs its own bytes, at most.
+    doc = json.dumps(out, separators=(",", ":"), ensure_ascii=False)
+    sys.stdout.buffer.write(doc.encode("utf-8", "replace"))
     sys.stdout.flush()
     return 0
 

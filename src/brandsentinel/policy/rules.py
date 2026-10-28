@@ -555,6 +555,9 @@ def visual_corroboration(b: EvidenceBundle, brands: set[str]) -> list[tuple[str,
         # The screenshot shows every image on the page, the matched ones too: its
         # text and QR codes are never independent of a match.
         matched.add(shot)
+    if shot in {m.image_sha256 for m in b.visual.matches if m.role == "screenshot"}:
+        # And a matched screenshot shows every page image: their text is part of it.
+        matched |= {i.sha256 for i in b.visual.images if i.sha256}
     unmatched_ocr = {
         x["brand"]
         for x in b.visual.ocr_brands
@@ -617,7 +620,8 @@ def _cloaking(b: EvidenceBundle, p: dict) -> Fired | None:
     c = b.cloaking or {}
     if official(b) or registry_cleared(b) or not c.get("suspected"):
         return None
-    if not (_brand_present(b) or domain_uses_brand(b) or c.get("rendered", {}).get("brands")):
+    shown = c.get("rendered", {}).get("brands") or c.get("static", {}).get("brands")
+    if not (_brand_present(b) or domain_uses_brand(b) or shown):
         return None
     fields = [d.get("field") for d in c.get("differences") or []]
     return Fired(

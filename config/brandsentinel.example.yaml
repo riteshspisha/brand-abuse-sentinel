@@ -11,7 +11,7 @@ stages:
   enrich: 8
   fetch: 4
   media: 2
-  render: 1
+  render: 1                     # at most 1: one untrusted container per sandbox network
   decision: 1
   # Running jobs of one registrable domain allowed at once per stage, so a domain
   # with many matching subdomains cannot occupy every worker.
@@ -225,14 +225,14 @@ browser:
   little_text_chars: 200          # brand-matching page with less static text renders
   viewport_width: 1280            # also the screenshot size
   viewport_height: 800
-  navigation_timeout_seconds: 20
-  settle_seconds: 8               # wait for network idle after the load event
+  navigation_timeout_seconds: 15
+  settle_seconds: 5               # wait for network idle after the load event
   max_html_bytes: 2097152         # rendered HTML kept (2 MiB)
   max_text_chars: 50000           # rendered visible text
   max_requests: 300               # network requests recorded
   max_forms: 32
   max_inputs: 256
-  max_screenshot_bytes: 3145728   # PNG, viewport only (3 MiB)
+  max_screenshot_bytes: 2097152   # PNG, viewport only; analyzed up to media.max_image_bytes
   user_agent: null                # null: Chromium's own
   seccomp_profile: null           # null: the profile shipped with the package
   limits:                         # the browser container
@@ -242,7 +242,7 @@ browser:
     wall_seconds: 60
     tmpfs_mb: 256
     shm_mb: 256
-    stdout_max_bytes: 12582912
+    stdout_max_bytes: 16777216
     stderr_max_bytes: 262144
 
 # The egress proxy (U18), read inside the proxy container.

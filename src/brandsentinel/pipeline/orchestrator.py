@@ -287,25 +287,15 @@ async def _register_render(orch: Orchestrator, analysis, config, browser_client,
     direct-egress probe, passes (R41, R43). Otherwise render jobs wait (cases show
     `render pending`) and run once a restart finds the network sound."""
     from brandsentinel.pipeline.render import RenderStage
-    from brandsentinel.sandbox.browser_client import BrowserClient
+    from brandsentinel.sandbox.browser_client import build_browser_client
     from brandsentinel.sandbox.media_client import MediaClient
-    from brandsentinel.sandbox.preflight import check_network
 
     if browser_client is None:
-        report = await check_network(orch.sandbox.docker, config.sandbox, orch.sandbox)
-        if not report.ok:
-            orch.browser_disabled = report.reasons()
-            log.warning(
-                "browser stage disabled", extra={"fields": {"reasons": orch.browser_disabled}}
-            )
+        browser_client, failed = await build_browser_client(orch.sandbox, config)
+        if browser_client is None:
+            orch.browser_disabled = failed
+            log.warning("browser stage disabled", extra={"fields": {"reasons": failed}})
             return
-        lab = config.net.lab
-        browser_client = BrowserClient(
-            orch.sandbox,
-            config.browser,
-            config.sandbox,
-            lab_hosts=frozenset(lab.hosts) if lab.enabled else None,
-        )
     media = None
     if config.media.enabled:
         media = media_client or MediaClient(orch.sandbox, config.media)

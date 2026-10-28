@@ -972,6 +972,7 @@ def _render(
     block = RenderBlock(
         status="complete",
         **base,
+        reason=_s(v.get("unusable"), 300),
         final_url=_s(v.get("final_url"), 2048),
         final_host=final_host,
         main_status=v.get("main_status"),
@@ -1009,6 +1010,25 @@ def _render(
         refs=refs,
     )
     return block, fact, cloaking
+
+
+def _with_static_association(rendered: dict, static: FeatureRecord | None) -> dict:
+    """The rendered page's brand references joined with the static page's."""
+    sv = static.value if static and isinstance(static.value, dict) else {}
+    if "error" in sv or not sv.get("available"):
+        return rendered
+    known = {b.get("brand") for b in rendered.get("brands", [])}
+    return {
+        **rendered,
+        "available": True,
+        "brands": rendered.get("brands", [])
+        + [{**b, "locations": ["static_page"]} for b in sv.get("brands", [])
+           if b.get("brand") not in known],
+        "presented": sorted(set(rendered.get("presented", [])) | set(sv.get("presented", []))),
+        "strong_mention": bool(rendered.get("strong_mention") or sv.get("strong_mention")),
+        "weak_only": bool(rendered.get("weak_only") and sv.get("weak_only", True)),
+        "claims": rendered.get("claims", []) + sv.get("claims", []),
+    }  # fmt: skip
 
 
 def _screenshot_evidence(
@@ -1198,6 +1218,13 @@ def build_bundle(
         refs=pay_refs
         + list(dict.fromkeys(r for o in media_payments for r in o.refs if r not in pay_refs)),
     )
+    if view is not final and final is not None:
+        # The rendered page is scored, but what the static page presented was
+        # served by the same site: a brand or claim shown only to the fetcher
+        # still ties what the browser saw to the brand.
+        assoc = _with_static_association(
+            assoc, _features_for(inputs.features, final).get("brand_references")
+        )
     association = AssociationBlock(
         available=bool(assoc.get("available")),
         brands=[
