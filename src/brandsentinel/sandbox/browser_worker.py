@@ -258,7 +258,9 @@ def render(job: dict) -> dict:
             context = browser.new_context(
                 accept_downloads=False,
                 service_workers="block",
-                ignore_https_errors=True,  # certificate problems are facts, not stops
+                # Evidence: a certificate problem is a fact, not a stop. Reference
+                # pages (`registry collect`) are rendered only with verified TLS.
+                ignore_https_errors=not opts.get("verify_tls", False),
                 java_script_enabled=True,
                 permissions=[],
                 viewport={"width": opts["viewport_width"], "height": opts["viewport_height"]},

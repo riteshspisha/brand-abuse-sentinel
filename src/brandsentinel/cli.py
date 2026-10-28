@@ -533,24 +533,32 @@ def sandbox_sweep(ctx: typer.Context) -> None:
 @sandbox_app.command("selftest")
 def sandbox_selftest(
     ctx: typer.Context,
-    role: Annotated[str, typer.Argument(help="Worker to test: media.")],
+    role: Annotated[str, typer.Argument(help="Worker to test: media or browser.")],
 ) -> None:
-    """Run a worker in a real sandbox container on synthetic fixtures and check its
-    gate (media: hashing, OCR, QR, bomb and format rejection, no network). Exits 1
-    if any check fails."""
+    """Run a worker in a real sandbox container and check its gate (media: hashing,
+    OCR, QR, bomb and format rejection, no network; browser: after the network
+    check, Chromium's own sandbox, an unprivileged worker, and no direct route
+    for a browser without a proxy). Exits 1 if any check fails."""
     from brandsentinel.sandbox import preflight
-    from brandsentinel.sandbox.media_selftest import selftest
 
-    if role != "media":
-        typer.echo(f"unknown worker {escape_terminal(role)!s}; expected: media", err=True)
+    if role not in ("media", "browser"):
+        typer.echo(f"unknown worker {escape_terminal(role)!s}; expected: media, browser", err=True)
         raise typer.Exit(2)
     config = _load(ctx)
     runner, report = asyncio.run(preflight.prepare_runtime(config))
     _print_checks("runtime", report)
     if runner is None:
         raise typer.Exit(1)
-    report = preflight.Report(checks=asyncio.run(selftest(runner, config.media)))
-    _print_checks("media worker", report)
+    if role == "media":
+        from brandsentinel.sandbox.media_selftest import selftest
+
+        checks = asyncio.run(selftest(runner, config.media))
+    else:
+        from brandsentinel.sandbox.browser_selftest import selftest
+
+        checks = asyncio.run(selftest(runner, config.browser, config.sandbox))
+    report = preflight.Report(checks=checks)
+    _print_checks(f"{role} worker", report)
     for c in report.checks:
         if c.ok and c.detail:
             typer.echo(f"    {c.name}: {escape_terminal(c.detail)}")
@@ -955,6 +963,7 @@ def registry_collect(
     if runner is None:
         _print_checks("media sandbox", report)
         raise typer.Exit(1)
+    browser = _reference_browser(config, runner)
     store = open_store(config)
     try:
         _, fetcher = build_network(config)
@@ -966,6 +975,7 @@ def registry_collect(
             config.media,
             config.registry_path.parent / "assets",
             providers=ProviderCatalog.load(config.analysis.payment_providers),
+            browser=browser,
         )
         try:
             result = asyncio.run(collector.collect(brand))
@@ -988,6 +998,24 @@ def registry_collect(
         f"corpus: {result.added} added, {result.unchanged} unchanged, {result.retired} retired;"
         f" {len(result.observations)} candidate observation(s) for review"
     )
+
+
+def _reference_browser(config, runner):
+    """The browser client for reference page screenshots, once the sandbox network
+    check (with its direct-egress probe) passes; otherwise None, and said why."""
+    from brandsentinel.sandbox.browser_client import BrowserClient
+    from brandsentinel.sandbox.preflight import check_network
+
+    if not config.browser.enabled:
+        return None
+    net = asyncio.run(check_network(runner.docker, config.sandbox, runner))
+    if not net.ok:
+        _print_checks(f"network {config.sandbox.network}", net)
+        typer.echo("reference screenshots skipped: the sandbox network check failed", err=True)
+        return None
+    lab = config.net.lab
+    hosts = frozenset(lab.hosts) if lab.enabled else None
+    return BrowserClient(runner, config.browser, config.sandbox, lab_hosts=hosts)
 
 
 @registry_app.command("corpus")

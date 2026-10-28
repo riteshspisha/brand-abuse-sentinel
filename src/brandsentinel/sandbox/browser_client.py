@@ -183,8 +183,9 @@ class Render:
         }
 
 
-def worker_options(settings: BrowserSettings) -> dict:
+def worker_options(settings: BrowserSettings, *, verify_tls: bool = False) -> dict:
     return {
+        "verify_tls": verify_tls,
         "viewport_width": settings.viewport_width,
         "viewport_height": settings.viewport_height,
         "navigation_timeout_seconds": settings.navigation_timeout_seconds,
@@ -197,8 +198,11 @@ def worker_options(settings: BrowserSettings) -> dict:
     }
 
 
-def job_document(url: str, proxy: str, settings: BrowserSettings, *, selftest=None) -> bytes:
-    doc = {"version": 1, "url": url, "proxy": proxy, "options": worker_options(settings)}
+def job_document(
+    url: str, proxy: str, settings: BrowserSettings, *, selftest=None, verify_tls: bool = False
+) -> bytes:
+    options = worker_options(settings, verify_tls=verify_tls)
+    doc = {"version": 1, "url": url, "proxy": proxy, "options": options}
     if selftest:
         doc["selftest"] = selftest
     return json.dumps(doc, separators=(",", ":")).encode("utf-8")
@@ -299,10 +303,17 @@ class BrowserClient:
         return None
 
     async def render(
-        self, url: str, *, job: str, attempt: int = 0, selftest: dict | None = None
+        self,
+        url: str,
+        *,
+        job: str,
+        attempt: int = 0,
+        selftest: dict | None = None,
+        verify_tls: bool = False,
     ) -> Render:
-        """Render `url` once. Raises SandboxError only when no container could be
-        started (the caller retries later)."""
+        """Render `url` once. `verify_tls`: Chromium refuses certificate errors
+        (reference pages); otherwise they are recorded, not stops. Raises
+        SandboxError only when no container could be started (the caller retries)."""
         reason = self.refusal(url)
         if reason is not None:
             return Render("refused", url, reason)
@@ -310,7 +321,9 @@ class BrowserClient:
         if failed:
             log.warning("browser not started", extra={"fields": {"network_check": failed}})
             return Render("refused", url, "network_check_failed", network_check=failed[:20])
-        stdin = job_document(url, self.sandbox.proxy_url, self.settings, selftest=selftest)
+        stdin = job_document(
+            url, self.sandbox.proxy_url, self.settings, selftest=selftest, verify_tls=verify_tls
+        )
         result = await self.runner.run(
             browser_spec(self.sandbox, self.settings), job=job, attempt=attempt, stdin=stdin
         )
@@ -325,6 +338,7 @@ class BrowserClient:
         if out.status == "error":
             return Render("failed", url, f"worker_error: {out.error}"[:300], runs=runs)
         doc = out.model_dump(mode="json", exclude={"html", "text"})
+        doc["verify_tls"] = verify_tls
         shot = doc.get("screenshot") or {}
         png = shot.pop("png", None)
         doc["text"] = out.text

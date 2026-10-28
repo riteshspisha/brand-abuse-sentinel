@@ -10,7 +10,8 @@ and `docker kill <name>` can always reach it. The job goes in on stdin and one
 JSON document comes back on stdout; stdout and stderr are read under their own
 caps. Wall-time expiry or any cap overflow kills the container by name. Its final
 state is inspected (to tell a memory-limit kill from a crash) and the container
-is then force-removed; no container outlives its `run` call.
+is then force-removed, even when the job is cancelled meanwhile; no container
+outlives its `run` call.
 
 The container configuration is fixed here and cannot be widened by a caller: no
 mounts, no devices, no added capabilities, read-only root with a small noexec
@@ -430,7 +431,7 @@ class SandboxRunner:
             if result.status == "ok":
                 self._judge(spec, result)
         finally:
-            result.removed = await self.remove(name)
+            result.removed = await self._remove_despite_cancel(name)
             result.elapsed_ms = int((time.monotonic() - start) * 1000)
             log.info("sandbox job finished", extra={"fields": {"sandbox": result.summary()}})
         return result
@@ -580,6 +581,17 @@ class SandboxRunner:
 
     async def kill(self, name: str) -> None:
         await self.docker.call("kill", "--signal", "KILL", name, timeout=30)
+
+    async def _remove_despite_cancel(self, name: str) -> bool:
+        """`remove`, finished even when the job is cancelled meanwhile (a service
+        shutting down): a cancelled `docker rm` would leave the container behind.
+        The cancellation is re-raised once the container is gone."""
+        removal = asyncio.ensure_future(self.remove(name))
+        try:
+            return await asyncio.shield(removal)
+        except asyncio.CancelledError:
+            await asyncio.wait({removal})
+            raise
 
     async def remove(self, name: str) -> bool:
         """Force-remove a container; True once it no longer exists."""
