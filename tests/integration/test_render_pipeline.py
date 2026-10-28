@@ -292,3 +292,27 @@ def test_a_screenshot_never_corroborates_a_match_of_an_image_it_shows(env):
     support = visual_corroboration(staged, {"lumina-foundation"})
     assert not [what for what, _ in support if "payee" in what], support
     assert any(o.image_sha256 == sha for o in b.payment.observations)  # the payee exists
+
+
+def test_reports_show_the_render_escaped_and_never_embed_the_screenshot(env):
+    from brandsentinel.triage.report import render_case_html, render_case_text
+
+    store, stages = env
+    benign = (LAB / "cloaking" / "benign" / "index.html").read_text()
+    fraud = (LAB / "cloaking" / "fraud" / "index.html").read_text()
+    case_id = seed(store, stages, benign, GIFT)
+    hostile = 'http://169.254.169.254/<script>alert(1)</script>"'
+    requests = doc(GIFT)["requests"] + [
+        {"url": hostile, "host": "169.254.169.254", "method": "GET", "resource_type": "image",
+         "navigation": False, "status": 403, "failure": None, "proxy_refusal": "not_lab_host",
+         "blocked": False},
+    ]  # fmt: skip
+    browser = ScriptedBrowser({GIFT: ok(GIFT, fraud, M.lab_logo(), requests=requests)})
+    run(store, stages, browser, rendered(store, case_id))
+    r = load_case(store.conn, case_id)
+    page = render_case_html(r)
+    assert "Isolated browser (render: complete)" in page and "cloaking suspected" in page
+    assert "<script>alert(1)" not in page and "&lt;script&gt;alert(1)" in page
+    assert "data:image" not in page and "<img" not in page
+    text = "\n".join(render_case_text(r))
+    assert "cloaking suspected" in text and "refused by proxy" in text

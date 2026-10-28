@@ -137,6 +137,29 @@
 {% if b.payment.qr_images %}<p>Candidate QR images (decoded in media analysis): {% for q in b.payment.qr_images %}<span class="mono chip">{{ q }}</span>{% endfor %}</p>{% endif %}
 {% endif %}
 
+{% set rd = b.render %}
+{% if rd.status != 'not_run' %}
+<h3>Isolated browser (render: {{ rd.status }})</h3>
+<p class="note">Rendered in a sandboxed Chromium whose only way out is the validating egress proxy; the page was only observed, never clicked, typed into or submitted. The screenshot is analyzed in the media sandbox and is not displayed here.</p>
+<dl>
+  {% if rd.reasons %}<dt>Why rendered</dt><dd>{{ rd.reasons | join(', ') }}{% if rd.sampled %} (sampled){% endif %}</dd>{% endif %}
+  {% if rd.skipped %}<dt>Not rendered</dt><dd>{{ rd.skipped }}</dd>{% endif %}
+  {% if rd.reason %}<dt>Outcome</dt><dd class="mono">{{ rd.reason }}</dd>{% endif %}
+  {% if rd.final_url %}<dt>Final URL</dt><dd class="mono">{{ rd.final_url }} (status {{ rd.main_status if rd.main_status is not none else 'none' }}{% if not rd.network_idle %}; network never idle{% endif %})</dd>{% endif %}
+  {% if rd.status == 'complete' %}<dt>Scored on</dt><dd>the {{ rd.content_source }} page</dd>{% endif %}
+  {% if rd.redirect_chain | length > 1 %}<dt>Redirects</dt><dd class="mono">{% for h in rd.redirect_chain %}{{ h.status }} {{ h.url }}<br>{% endfor %}</dd>{% endif %}
+  {% if rd.navigations | length > 1 %}<dt>Navigations</dt><dd class="mono">{% for n in rd.navigations %}{{ n }}<br>{% endfor %}</dd>{% endif %}
+  {% if rd.request_hosts %}<dt>Hosts requested</dt><dd>{% for h in rd.request_hosts %}<span class="mono chip">{{ h }}</span>{% endfor %}</dd>{% endif %}
+  {% if rd.refused_requests %}<dt>Refused by the proxy</dt><dd class="mono">{% for q in rd.refused_requests %}{{ q.get('reason') }}: {{ q.get('url') }}<br>{% endfor %}</dd>{% endif %}
+  {% set acted = rd.page_actions | dictsort | selectattr(1) | list %}
+  {% if acted %}<dt>Page actions stopped</dt><dd>{% for k, n in acted %}<span class="chip">{{ k }} {{ n }}</span>{% endfor %}</dd>{% endif %}
+  {% if rd.screenshot %}<dt>Screenshot</dt><dd class="mono">{{ rd.screenshot.get('width') }}x{{ rd.screenshot.get('height') }} sha256 {{ (rd.screenshot.get('sha256') or '')[:16] }}{% if rd.screenshot.get('stored') %} (stored){% endif %} &middot; media {{ (rd.screenshot.get('media') or {}).get('status') }}</dd>{% endif %}
+</dl>
+{% if b.cloaking %}
+<p><strong>Static versus rendered:</strong> {% if b.cloaking.get('suspected') %}cloaking suspected{% elif b.cloaking.get('expected_difference') %}differences expected ({{ b.cloaking.get('expected_difference') }}){% else %}no material difference{% endif %}{% for d in b.cloaking.get('differences') or [] %} <span class="chip">{{ d.get('field') }}</span>{% endfor %}</p>
+{% endif %}
+{% endif %}
+
 {% set v = b.visual %}
 {% if v.status != 'not_run' %}
 <h3>Images and visual matches (media analysis: {{ v.status }})</h3>

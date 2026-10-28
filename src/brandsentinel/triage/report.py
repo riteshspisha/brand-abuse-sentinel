@@ -202,6 +202,19 @@ def render_case_text(report: CaseReport) -> list[str]:
         lines.append(_kv("donation cues", ", ".join(b.payment.donation_cues)))
     if b.page.lures:
         lines.append(_kv("lures", ", ".join(f"{x['category']}: {x['cue']}" for x in b.page.lures)))
+    rd = b.render
+    if rd.status != "not_run":
+        why = ", ".join(rd.reasons) or rd.skipped or ""
+        lines.append(_kv("render", f"{rd.status} ({why})" if why else rd.status))
+        if rd.reason:
+            lines.append(_kv("render outcome", rd.reason))
+        if rd.final_url:
+            lines.append(_kv("rendered final URL", rd.final_url))
+        for q in rd.refused_requests[:5]:
+            lines.append(_kv("refused by proxy", f"{q.get('reason')}: {q.get('url')}"))
+    if (b.cloaking or {}).get("suspected"):
+        fields = ", ".join(d.get("field") for d in b.cloaking.get("differences") or [])
+        lines.append(_kv("cloaking suspected", fields))
     redirects = b.page.meta_refresh + b.page.script_redirects
     for r in redirects:
         lines.append(f"    client redirect {r.get('kind', 'meta_refresh')} -> {r.get('url')}")
