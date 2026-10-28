@@ -91,7 +91,10 @@ services:
     networks:
       bs_lab_sandbox:
         ipv4_address: 172.31.254.2
-      bs_lab: {}
+      # Pinned like every bs_lab member: a dynamic address could take .2 or .10
+      # from a container that is being recreated.
+      bs_lab:
+        ipv4_address: 172.31.250.3
 
 networks:
   # Lab-mode sandboxes join only this network; built like bs_sandbox

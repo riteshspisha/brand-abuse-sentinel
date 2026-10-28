@@ -10,8 +10,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY dist/ /tmp/dist/
-# The image's own Playwright stays visible to the venv (--system-site-packages);
-# every other dependency is installed from hash-pinned requirements.
+# Every dependency, Playwright included, is installed from hash-pinned
+# requirements. The base image provides the Chromium build Playwright 1.63.0
+# drives (PLAYWRIGHT_BROWSERS_PATH=/ms-playwright), but not the Python package.
 RUN python3 -m venv --system-site-packages /opt/brandsentinel \
     && /opt/brandsentinel/bin/pip install --no-cache-dir --require-hashes \
         -r /tmp/dist/requirements.txt \

@@ -414,6 +414,60 @@ class MediaSettings(_Section):
         return self
 
 
+def _browser_limits() -> SandboxLimits:
+    return SandboxLimits(
+        memory_mb=1536,
+        cpus=2.0,
+        pids=512,  # Chromium's processes and threads
+        wall_seconds=60.0,
+        tmpfs_mb=256,  # the throwaway browser profile
+        shm_mb=256,
+        stdout_max_bytes=12 * MiB,  # rendered HTML and the screenshot, base64
+        stderr_max_bytes=256 * 1024,
+    )
+
+
+class BrowserSettings(_Section):
+    """Isolated browser rendering (U19, KTD9, KTD23). The browser container joins
+    only the sandbox network (lab mode: the lab sandbox network); its proxy is the
+    only way out, and the network check must pass before any page is rendered."""
+
+    enabled: bool = True
+    # Share of strong-strength cases rendered without another trigger (KTD23).
+    sample_rate: float = Field(0.1, ge=0.0, le=1.0)
+    # A brand-matching page with less visible static text than this renders.
+    little_text_chars: int = Field(200, ge=0, le=100_000)
+    viewport_width: int = Field(1280, ge=320, le=1920)
+    viewport_height: int = Field(800, ge=240, le=1920)
+    navigation_timeout_seconds: float = Field(20.0, gt=0, le=600)
+    # After the load event, how long to wait for the network to go idle.
+    settle_seconds: float = Field(8.0, ge=0, le=600)
+    max_html_bytes: int = Field(2 * MiB, gt=0, le=8 * MiB)
+    max_text_chars: int = Field(50_000, gt=0, le=1_000_000)
+    max_requests: int = Field(300, ge=1, le=5000)
+    max_forms: int = Field(32, ge=1, le=256)
+    max_inputs: int = Field(256, ge=1, le=4096)
+    max_screenshot_bytes: int = Field(3 * MiB, gt=0, le=8 * MiB)
+    # None: Chromium's own user agent (the cloaking comparison relies on it).
+    user_agent: str | None = None
+    # The Chromium seccomp profile; None: the one shipped with the package.
+    seccomp_profile: Path | None = None
+    limits: SandboxLimits = Field(default_factory=_browser_limits)
+
+    @model_validator(mode="after")
+    def _fits(self):
+        budget = self.navigation_timeout_seconds + self.settle_seconds + 10
+        if budget >= self.limits.wall_seconds:
+            raise ValueError(
+                "navigation_timeout_seconds + settle_seconds + 10 must be under"
+                " limits.wall_seconds, so the worker reports before it is killed"
+            )
+        b64 = (self.max_html_bytes + self.max_screenshot_bytes) * 4 // 3
+        if b64 + self.max_text_chars * 6 + 4 * MiB > self.limits.stdout_max_bytes:
+            raise ValueError("limits.stdout_max_bytes is too small for the output caps")
+        return self
+
+
 class ProxySettings(_Section):
     """The egress proxy (U18): the only way out of the sandbox network."""
 
@@ -453,6 +507,7 @@ class Config(_Section):
     runtime: RuntimeSettings = RuntimeSettings()
     sandbox: SandboxSettings = SandboxSettings()
     media: MediaSettings = MediaSettings()
+    browser: BrowserSettings = BrowserSettings()
     proxy: ProxySettings = ProxySettings()
 
     @model_validator(mode="after")

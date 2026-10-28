@@ -85,7 +85,9 @@ def test_lab_pages_load_nothing_from_the_internet_except_the_marked_fixture():
         for _ in external.finditer(page.read_text()):
             offenders.append(page.relative_to(LAB).as_posix())
     # The yoga studio's Stripe tag is a static indicator; the offline lab never loads it.
-    assert offenders == ["unrelated-yoga/index.html"]
+    # The escape page (M7) tries metadata and loopback on purpose: the browser
+    # tests prove the proxy refuses them.
+    assert sorted(set(offenders)) == ["redirects/escape.html", "unrelated-yoga/index.html"]
 
 
 def test_lab_config_is_offline_and_lab_only():
@@ -186,3 +188,9 @@ def test_lab_sandbox_proxy_reaches_only_the_lab_and_listens_only_on_its_sandbox_
     assert proxy["container_name"] == LAB_SANDBOX_PROXY
     lab = load_config(REPO / "config" / "lab.yaml")
     assert lab.proxy.lab_only and lab.sandbox.proxy_url == LAB_SANDBOX_PROXY_URL
+
+
+def test_every_lab_network_member_has_a_pinned_address():
+    services = compose("lab.compose.yaml")["services"]
+    addresses = [svc["networks"]["bs_lab"]["ipv4_address"] for svc in services.values()]
+    assert len(addresses) == len(set(addresses)) == len(services)

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lumina Foundation - Confirm</title></head>
+<body><h1>Lumina Foundation</h1>
+<!-- A page that tries to act on its own: dialogs, a popup, a download and a form
+     that submits itself. The browser worker must never let any of it act (R39). -->
+<form id="f" action="/collect" method="post"><input type="password" name="p" value="x"></form>
+<a id="d" href="/static/payload.bin" download="payload.bin">file</a>
+<script>
+alert("Lumina Foundation notice");
+confirm("Continue?");
+window.open("http://go-luminafoundation.test/chain", "_blank");
+document.getElementById("d").click();
+setTimeout(function () { document.getElementById("f").submit(); }, 200);
+</script></body></html>

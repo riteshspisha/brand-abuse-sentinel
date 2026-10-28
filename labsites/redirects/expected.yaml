@@ -22,6 +22,15 @@ paths:
 - path: /js-redirect.html
   status: 200
   script_redirect: http://login-luminafoundation.test/
+- path: /js-to-metadata.html
+  status: 200
+  script_redirect: http://169.254.169.254/latest/meta-data/
+- path: /escape.html
+  status: 200
+- path: /pushy.html
+  status: 200
+- path: /stall.html
+  status: 200
 - path: /to-metadata
   status: 302
   location: http://169.254.169.254/latest/meta-data/
