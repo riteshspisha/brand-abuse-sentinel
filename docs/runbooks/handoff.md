@@ -4,12 +4,49 @@ The state a new session needs before it touches code or the installation. It is
 updated at each milestone close. Facts below were checked on the development
 host at the date given; re-check anything marked *reported*.
 
-## Current: M7 implemented on `feat/m7-isolated-browser` (2026-10-28); M6 deployed
+## Current: M7 merged (2026-10-29), NOT deployed; M6 is the installation
 
-M7 (U19, isolated browser) is implemented, reviewed and verified on the
-developer's rootless runtime, on branch `feat/m7-isolated-browser` (PR pending
-merge). It is **not deployed**: the canonical installation still runs M6, and
-promotion is a separate, gated operation (see "M7 promotion").
+M7 (U19, isolated browser) is merged to `main`: PR #12, merge commit `d3949a7`,
+whose tree is identical to the final feature commit `1388180`. It was
+reviewed and verified on the developer's rootless runtime (UID 1000) only.
+
+**It is not deployed.** Production baseline, unchanged by M7 (*reported* at
+merge; not re-checked, as the closeout did not touch the service account):
+- the canonical installation is M6 `e90c92a`, deployment state S6;
+- the live store is schema v5;
+- the proxy and lab containers keep their current Compose metadata (residual
+  issues 1 and 2).
+
+Promotion is a separate operation needing operator approval ("M7 promotion").
+
+### M7 development verification (developer runtime, 2026-10-28 to 29)
+
+- **Final branch head (`ff5bb46` code, `1388180` documentation and one
+  in-process test):**
+  - `-m "docker or security"`: 497 passed, 0 skipped (SP3).
+  - Full suite: 1397 passed, 1 skipped (no host Tesseract). The single failure
+    was a lab assertion that still expected `CONNECT :80`; it was fixed, then
+    covered by the 497-test run.
+  - After `1388180`: the proxy, worker-limits and lab-transport suites, 114
+    passed.
+- **Before the review follow-ups:** `-m "docker or security"`: 487 passed,
+  0 skipped. Full suite: 1388 passed, 1 skipped.
+- **Security gates:**
+  - Chromium's own sandbox stays on (`sandbox selftest browser`: renderers in
+    their own user namespace, no `--no-sandbox`; worker uid 1001, CapEff 0,
+    NoNewPrivs 1, Seccomp 2).
+  - A proxy-less Chromium has no route anywhere, with a positive control.
+  - Proxy refusals hold: metadata, loopback, literal IPs, non-lab names,
+    redirects.
+  - `check_network` passes before every launch.
+  - No page action in any lab render.
+  - AE18: an orphaned container is removed before the retry.
+  - Page sockets (`tests/lab/test_browser_sockets.py`): nothing reaches a real
+    WebSocket server. The test fails on the M7 image before the fix.
+- **Lab demo:** every browser-relevant lab site reaches its `expected.yaml`
+  outcome.
+- **Records:** `docs/runbooks/browser.md` (verification record and residual
+  risks) and `docs/residual-review-findings/feat-m7-isolated-browser.md`.
 
 ### M7 delivered
 
@@ -66,6 +103,17 @@ promotion is a separate, gated operation (see "M7 promotion").
 
 ### M7 promotion (not authorized; separate gated operation)
 
+**Behavior change at promotion: the egress proxy's `CONNECT`.** M7's proxy
+(production `bs-egress-proxy` and both lab proxies) tunnels only to port 443,
+and only when the first six bytes look like a TLS ClientHello. It refuses
+`CONNECT` to port 80 and plain tunnels. Plain HTTP stays forwarded as GET or
+HEAD.
+- Nothing in BrandSentinel needs the refused tunnels: the host fetcher forwards
+  plain HTTP, and media jobs have no network.
+- The account's existing proxy probes still expect `CONNECT :80` to succeed and
+  must be updated: `test_docker_isolation.py` `connect public 80` now expects
+  403, and `test_lab_sites_up.py` connects to port 443 and expects 502.
+
 Promoting M7 needs, each separately approved: a new image on the service
 account's daemon (adds Playwright; the image grows slightly), a fresh install,
 the account's lab project recreated (new service and network; residual issues
@@ -82,7 +130,7 @@ now **active** in the canonical installation:
 - **Merge:** PR #9, merge commit `358bf40`, whose tree is identical to the final feature commit `e90c92a`.
 - **Deployment:** five operator gates on 2026-10-26 to 28. Each was separately approved, and the evidence for all of them is
   outside the repository (see "M6 deployment record").
-- **Next:** M7 is implemented on its branch (above); M8 follows.
+- **Next:** M7 is merged, not deployed (above); M8 follows.
 
 ### Delivered
 
