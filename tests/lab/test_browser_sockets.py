@@ -7,8 +7,9 @@ WebSocket server runs beside lab-web, in its network namespace on port 443, so
 lab hostnames on 443 reach it through the lab sandbox proxy. Two layers keep it
 unreached:
 
-- the proxy, without the browser: no tunnel to port 80, and a tunnel that does
-  not open with a TLS ClientHello is closed before a byte reaches the server;
+- the proxy, without the browser: no tunnel to port 80, and a tunnel that
+  does not start like a TLS ClientHello (a prefix check) is closed before a byte
+  reaches the server;
 - the browser worker: every WebSocket is answered inside the browser and
   recorded, and WebRTC and workers are removed from every frame.
 

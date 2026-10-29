@@ -63,7 +63,7 @@ directly, and `bs_lab` has a gateway in the rootless namespace); reusing
 | Container escape via configuration | runner-fixed arguments; Chromium profile = Docker default + `clone`, `unshare`, `chroot`; never `--privileged` or an added capability | runner, client | `test_browser_limits.py` (arguments, profile contents), `test_browser_client.py::test_js_login_renders_in_chromiums_own_sandbox...` (CapEff 0, NoNewPrivs 1, Seccomp 2, uid 1001) |
 | Renderer exploit reaching the container | Chromium's own namespace sandbox stays on (`chromium_sandbox=True`, never `--no-sandbox`) | worker | live: renderers in their own user namespace, `sandbox selftest browser` |
 | Page acting on its own (R39) | worker calls no interaction API; non-GET requests stopped in the browser (a blocked navigation answered locally with 204); downloads refused; service workers blocked; dialogs dismissed; popups closed; no permission granted | worker | `test_browser_limits.py::test_the_worker_never_interacts_with_a_page` (AST, with positive control); `test_browser_client.py::test_page_initiated_actions_are_contained...` (nothing but GET reaches the proxy); lab demo: no action in any lab render |
-| Page-opened sockets: WebSocket, WebRTC through a TURN relay, a worker's sockets (outside the HTTP method gate) | proxy: tunnels only to 443 and only TLS (first bytes a ClientHello), so plain `ws://` and TURN go nowhere; worker: every WebSocket answered inside the browser and recorded (`websockets`), `RTCPeerConnection`, `Worker`, `SharedWorker` removed from every frame | proxy, worker | `test_browser_sockets.py` (a WebSocket server beside lab-web; raw tunnels from a sandbox and a real render; positive controls; fails on the M7 image); `test_proxy.py` tunnel-policy cases; `test_docker_isolation.py` (`tunnel plain 443` cut, `tunnel tls 443` answered) |
+| Page-opened sockets: WebSocket, WebRTC through a TURN relay, a worker's sockets (outside the HTTP method gate) | proxy: tunnels only to 443 whose first six bytes look like a TLS ClientHello (a prefix filter, not TLS enforcement), so Chromium's plain `ws://` and TURN go nowhere; worker: every WebSocket answered inside the browser and recorded (`websockets`), `RTCPeerConnection`, `Worker`, `SharedWorker` removed from every frame | proxy, worker | `test_browser_sockets.py` (a WebSocket server beside lab-web; raw tunnels from a sandbox and a real render; positive controls; fails on the M7 image); `test_proxy.py` tunnel-policy cases; `test_docker_isolation.py` (`tunnel plain 443` cut, `tunnel tls 443` answered) |
 | A page denying rendering by inflating output (control characters) | C0 controls stripped, UTF-8 JSON, worst-case output budget | worker, config | `test_browser_limits.py::test_control_characters_...` |
 | A page sending the browser to an error page or the proxy's refusal | no usable page: network log kept, scored on the static view | render stage | `test_render_pipeline.py::test_a_render_without_a_usable_page_...` |
 | Brand shown only to the fetcher | the rendered view keeps the static page's brands and claims | bundle | `test_render_pipeline.py::test_a_brand_hidden_from_the_browser_...` |
@@ -165,8 +165,13 @@ The service-account validation and promotion are separate, gated operations
   every remote side effect.** The worker never clicks, types, submits or
   downloads, and stops what it can see: non-GET HTTP, WebSockets, WebRTC and
   workers. What is enforced without the browser is the proxy's: destinations
-  validated by netguard, plain HTTP only as GET or HEAD, tunnels only TLS to
-  443. A page's scripts can still send GET requests, with whatever they encode
+  validated by netguard, plain HTTP only as GET or HEAD, tunnels only to 443
+  and only when they start like TLS. That last check is a TLS-prefix filter,
+  not TLS enforcement: it reads six bytes, which Chromium writes itself and a
+  page cannot choose, but which code with raw socket access (a compromised
+  renderer, or code running in the container) can forge before plaintext. Such
+  code can equally speak real TLS to its own server on 443, so the filter is no
+  bound on it; destination validation is. A page's scripts can still send GET requests, with whatever they encode
   in the URL, to any destination the proxy allows, and TLS tunnels are opaque:
   a page's HTTPS POST, a `wss://` WebSocket or a `turns:` relay is stopped only
   by the browser-side layer. A compromised renderer or a page API this layer

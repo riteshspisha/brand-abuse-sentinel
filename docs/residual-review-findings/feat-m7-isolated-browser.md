@@ -53,11 +53,19 @@ code (`1ff9cf5`).
 - **Page-opened sockets bypassed the HTTP method gate** (owner's security
   review). `context.route` sees HTTP only: a page's WebSocket (also from a
   worker) exchanged messages through a proxy tunnel, and WebRTC sent TURN
-  traffic through one. Fixed in the proxy (tunnels only TLS to 443) and the
+  traffic through one. Fixed in the proxy (tunnels only to 443, first bytes a
+  TLS ClientHello header) and the
   worker (WebSockets refused and recorded; WebRTC and workers removed).
   Test: `tests/lab/test_browser_sockets.py` (fails on the M7 image).
   Residual: GET requests and TLS-tunnelled traffic a page itself sends towards
   allowed destinations (`docs/runbooks/browser.md`).
+- **The tunnel check is a TLS-prefix filter** (follow-up review of `ff5bb46`,
+  low): six forged bytes let a raw-socket client send plaintext through a 443
+  tunnel. Not reachable from an uncompromised page (Chromium writes the first
+  bytes; WebRTC and workers are removed, WebSockets refused); needs code
+  execution, which can already use real TLS to an attacker's server. Accepted;
+  real enforcement would need TLS interception. Pinned by
+  `test_proxy.py::test_the_tls_check_is_a_prefix_filter_...`.
 - **KTD20 screenshot embedding**: not implemented, recorded as a deviation.
 - **Lab reference screenshots**: accepted as a documented test limitation.
 

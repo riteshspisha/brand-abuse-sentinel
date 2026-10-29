@@ -183,7 +183,7 @@ def test_proxy_refuses_blocked_destinations_and_allows_public_ones(docker):
         assert results[refused] == "status:403", (refused, results)
     assert results["get host mismatch"] == "status:400"
     assert results["connect public 443"] == "status:200", results
-    # A tunnel carries TLS only: plain HTTP (or a WebSocket, or TURN) is cut before
+    # A tunnel must start like TLS: plain HTTP (or a WebSocket, or TURN) is cut before
     # the server can answer, while a real ClientHello gets the server's reply.
     assert results["tunnel plain 443"] == "status:200 closed", results
     assert results["tunnel tls 443"] == "status:200 reply", results

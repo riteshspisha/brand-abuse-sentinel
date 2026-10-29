@@ -7,12 +7,15 @@ the proxy connects only to the address netguard validated, so DNS rebinding
 between check and connect is impossible.
 
 Accepted:
-- `CONNECT host:443` for TLS only: the tunnel's first bytes must open a TLS
-  handshake (a ClientHello record), or it is closed before anything reaches the
-  destination. A `Host` header, if sent, must name the same authority. Plain
-  tunnels, and tunnels to any other port, are refused: a browser needs neither
-  for HTTP(S), and they would carry what absolute-form forwarding refuses, such
-  as a page's `ws://` WebSocket or a TURN relay over TCP, past the method rule.
+- `CONNECT host:443` whose first bytes look like a TLS ClientHello record header;
+  otherwise the tunnel is closed before anything reaches the destination. A
+  `Host` header, if sent, must name the same authority. Tunnels to any other
+  port are refused. A browser needs neither a plain tunnel nor port 80 for
+  HTTP(S), and they would carry what absolute-form forwarding refuses, such as a
+  page's `ws://` WebSocket or a TURN relay over TCP, past the method rule.
+  This is a prefix filter, not TLS enforcement: a client that writes raw bytes
+  can forge the six checked bytes and send anything after them. Chromium always
+  writes its own first bytes, which a page cannot choose.
 - absolute-form `GET` or `HEAD` `http://host/...` to port 80, without a body.
   `Host` must name the URL's authority. Hop-by-hop headers (and those listed in
   `Connection`) are stripped, the request goes upstream with `Connection: close`
@@ -310,9 +313,10 @@ class EgressProxy:
             await _close(up_writer)
 
     async def _client_hello(self, reader) -> bytes | None:
-        """The tunnel's first bytes if they start a TLS ClientHello record (content
-        type 22, version 3.x, handshake type 1), else None (also when the client
-        sends too little within the header timeout)."""
+        """The tunnel's first six bytes if they look like the start of a TLS
+        ClientHello record (content type 22, version 3.x, handshake type 1), else
+        None (also when the client sends too little within the header timeout).
+        A prefix check only: nothing after these bytes is inspected."""
         try:
             async with asyncio.timeout(self.settings.header_timeout_seconds):
                 first = await reader.readexactly(6)

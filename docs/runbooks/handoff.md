@@ -52,7 +52,8 @@ promotion is a separate, gated operation (see "M7 promotion").
   Proven with a scripted browser (`tests/integration/test_collector.py`).
 - **Page-opened sockets (PR #12 review finding).** WebSockets and WebRTC were
   outside the browser's GET-only gate and passed through proxy tunnels. Now the
-  proxy tunnels only TLS to 443 (this also changes the production egress proxy
+  proxy tunnels only to 443 and only when the first bytes look like a TLS
+  ClientHello, a prefix filter rather than TLS enforcement (this also changes the production egress proxy
   at promotion: `CONNECT` to port 80 and plain tunnels are refused), and the
   worker refuses WebSockets and removes WebRTC and workers. BrandSentinel does
   not interact with pages; a page's own GET requests and TLS traffic remain

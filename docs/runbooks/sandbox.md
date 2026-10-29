@@ -279,10 +279,18 @@ Sandbox image `brandsentinel-sandbox:local`, 3.97 GB.
   stay on for the proxy). SP1 bounds this to one untrusted container per
   network with the runner's network lease (`docs/runbooks/service-account.md`),
   instead of relying on `stages.render: 1`.
-- Tunnels go only to port 443 and must open with a TLS ClientHello (M7 review,
-  2026-10-29): a plain tunnel would carry a page's `ws://` WebSocket or a TURN
-  relay past the GET/HEAD rule. Inside TLS the bytes are opaque (KTD10): the
-  destination is validated, the content is not.
+- Tunnels go only to port 443 and their first six bytes must look like a TLS
+  ClientHello (M7 review, 2026-10-29): a plain tunnel would carry a page's
+  `ws://` WebSocket or a TURN relay past the GET/HEAD rule. Inside the tunnel
+  the bytes are opaque (KTD10): the destination is validated, the content is not.
+  This is a TLS-prefix filter, not TLS enforcement: only the first six bytes are
+  checked, so a client that writes raw tunnel bytes can forge them and send
+  plaintext after them (`test_proxy.py::test_the_tls_check_is_a_prefix_filter_...`).
+  Chromium writes its own first bytes (a real ClientHello, `GET` for `ws://`, a
+  STUN header for TURN), which a page cannot choose; forging them takes code
+  execution in the container or a compromised renderer, and such code can already
+  speak real TLS to an attacker's server on 443. Accepted residual (PR #12
+  follow-up, low).
 - A tunnel whose client half-closed stays open until the idle timeout (30 s);
   its decision is logged when it ends.
 - In lab mode a lab site could forge the refusal header on a forwarded response;

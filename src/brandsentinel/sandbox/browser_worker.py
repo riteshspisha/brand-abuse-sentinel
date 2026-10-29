@@ -31,7 +31,8 @@ permission. What the page's own scripts try is contained and recorded:
 
 These are browser-side and not the boundary. The proxy enforces its part without
 the browser: plain-HTTP requests other than GET or HEAD are refused, and tunnels
-carry only TLS to port 443, so a plain `ws://` socket or TURN relay goes nowhere.
+go only to port 443 and must start like TLS, so Chromium's plain `ws://` sockets
+and TURN relays go nowhere (a prefix filter: raw-socket code could forge it).
 What is not claimed: the page's scripts can still send GET requests, with
 whatever they put in the URL, to any destination the proxy allows, and what a TLS
 tunnel carries is opaque to the proxy. BrandSentinel does not interact with the

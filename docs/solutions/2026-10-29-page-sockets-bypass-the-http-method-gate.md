@@ -38,8 +38,10 @@ What did not help:
    handshake type 1), checked on its first six bytes. Otherwise it is closed
    before a byte is relayed, and logged as `tunnel_not_tls`. Plain HTTP never
    needs a tunnel: it is forwarded, GET and HEAD only. This stops `ws://` on any
-   port, plain TURN, and any other plaintext protocol tunneled through
-   `CONNECT`.
+   port, plain TURN, and any other plaintext protocol Chromium would tunnel
+   through `CONNECT`. It is a prefix filter, not TLS enforcement: a raw-socket
+   client can forge the six bytes and send plaintext after them (accepted, see
+   Limits).
 2. **The worker, as defense in depth.** It handles every WebSocket with
    `route_web_socket` without calling `connect_to_server` or `close`, and
    records its URL as a `websockets` page action. An init script deletes
@@ -57,7 +59,10 @@ Regression: `tests/lab/test_browser_sockets.py`.
 - Both fail on the M7 image.
 - `tests/security/test_proxy.py` covers the tunnel policy in process.
 
-**Limits (not claimed).** What a TLS tunnel to port 443 carries is opaque, so
+**Limits (not claimed).** The tunnel check stops Chromium's plaintext protocols,
+not a client that controls its own bytes: code with raw socket access can forge
+the prefix (pinned by `test_the_tls_check_is_a_prefix_filter_...`), and could as
+well use real TLS to its own server. What a tunnel to port 443 carries is opaque, so
 `wss://` and `turns:` are stopped only by the browser-side layer. Page scripts
 can still send GET requests, carrying whatever they put in the URL, to any
 destination the proxy allows. BrandSentinel does not interact with the page;

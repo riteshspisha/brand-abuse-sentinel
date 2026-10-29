@@ -295,6 +295,31 @@ def test_a_tunnel_that_does_not_open_with_a_tls_client_hello_carries_nothing(dec
     assert (rec["decision"], rec["reason"], rec["bytes_up"]) == ("deny", "tunnel_not_tls", 0)
 
 
+def test_the_tls_check_is_a_prefix_filter_a_forged_prefix_carries_plaintext(decisions):
+    # Accepted residual (PR #12 follow-up): the proxy reads only the first six
+    # bytes, so a client that writes raw tunnel bytes can put a ClientHello-like
+    # header in front of anything. Chromium never does: it writes its own first
+    # bytes (a real ClientHello, `GET` for ws://, a STUN header for TURN), and a
+    # page cannot choose them. This pins the limit; it is not TLS enforcement.
+    guard = NetGuard(NetSettings(), StaticResolver({"public.example": [PUBLIC_IP]}))
+    received: list = []
+    forged = b"\x16\x03\x01\x00\x05\x01" + b"GET /plaintext HTTP/1.1\r\n\r\n"
+
+    async def scenario(port):
+        r, w, head = await open_tunnel(port, "public.example:443")
+        w.write(forged)
+        await w.drain()
+        w.write_eof()
+        await asyncio.wait_for(r.read(), 10)
+        w.close()
+        return head
+
+    head = with_proxy(guard, scenario, connector=recording_upstream(received), real_tunnels=True)
+    assert head.startswith(b"HTTP/1.1 200")
+    assert received == [forged]  # relayed whole: the plaintext reached the destination
+    assert decisions.last()["reason"] == "connect"
+
+
 def test_a_tunnel_that_opens_with_a_tls_client_hello_is_relayed_whole(harness, decisions):
     authority = f"secure.harness.test:{harness.secure.port}"
 
