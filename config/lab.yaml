@@ -42,14 +42,17 @@ net:
 enrich:
   enabled: false
 
-# Lab sandboxes run media jobs only (M6): those have no network at all. The
-# production bs_sandbox proxy reaches the Internet and not the lab, so lab mode
-# may not use it (config validation refuses it). bs_lab_sandbox does not exist
-# until M7 adds a lab sandbox network, so a networked job here fails to start.
+# Lab sandboxes. Media jobs have no network at all. Browser jobs (M7) join only
+# bs_lab_sandbox (internal, no gateway), whose only other member is the lab-only
+# bs-lab-sandbox-proxy; that proxy reaches lab hostnames on bs_lab and nothing
+# else. The production bs_sandbox proxy reaches the Internet and not the lab, so
+# lab mode may not use it; config validation pins these three values.
 sandbox:
   enabled: true
   instance: lab
   network: bs_lab_sandbox
+  proxy_url: http://172.31.254.2:3128
+  proxy_container: bs-lab-sandbox-proxy
   lab_proxy_url: http://127.0.0.1:3129
 
 # Read by the lab proxy only.

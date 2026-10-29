@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Escape attempts</title></head>
+<body><p id="out">running</p>
+<!-- Tries every way out of the browser sandbox a page has; the network allows none
+     except the proxy, which refuses non-lab destinations (R41, AE11). -->
+<img src="http://169.254.169.254/latest/meta-data/" alt="">
+<img src="http://127.0.0.1/" alt="">
+<script>
+(function () {
+  var targets = ["http://1.1.1.1/", "https://1.1.1.1/", "http://169.254.169.254/latest/meta-data/",
+                 "http://172.31.250.10/", "http://172.31.254.1/", "http://example.com/"];
+  targets.forEach(function (u) { fetch(u, {mode: "no-cors"}).catch(function () {}); });
+  try { new WebSocket("ws://1.1.1.1/"); } catch (e) {}
+  try {
+    var pc = new RTCPeerConnection({iceServers: [{urls: "stun:74.125.250.129:19302"}]});
+    pc.createDataChannel("x");
+    pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).catch(function () {});
+  } catch (e) {}
+  document.getElementById("out").textContent = "done";
+})();
+</script></body></html>

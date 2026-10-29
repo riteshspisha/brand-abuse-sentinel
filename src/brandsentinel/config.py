@@ -27,6 +27,14 @@ _KNOWN_ENV = frozenset({ENV_CONFIG, ENV_DATA_DIR})
 # The lab network's subnet is pinned in docker/compose.yaml (KTD13). Lab mode may
 # add exactly this subnet to the network policy and nothing else.
 LAB_SUBNET = "172.31.250.0/24"
+# Lab-mode sandboxes (M7) join only this internal network, pinned in
+# docker/lab.compose.yaml, whose one long-running member is a lab-only proxy that
+# also sits on the lab network. It is a transport hop, never a fetch target:
+# netguard's lab exception stays LAB_SUBNET alone.
+LAB_SANDBOX_NETWORK = "bs_lab_sandbox"
+LAB_SANDBOX_SUBNET = "172.31.254.0/24"
+LAB_SANDBOX_PROXY = "bs-lab-sandbox-proxy"
+LAB_SANDBOX_PROXY_URL = "http://172.31.254.2:3128"
 
 STAGES = ("enrich", "fetch", "media", "render", "decision")
 
@@ -48,7 +56,9 @@ class StageLimits(_Section):
     enrich: int = Field(8, ge=1)
     fetch: int = Field(4, ge=1)
     media: int = Field(2, ge=1)
-    render: int = Field(1, ge=1)
+    # One browser at a time: a sandbox network carries one untrusted container
+    # (the runner's network lease, SP1); a second render would only wait or fail.
+    render: int = Field(1, ge=1, le=1)
     decision: int = Field(1, ge=1)
     # Jobs of one registrable domain that may run at once in a stage, so one
     # domain with many subdomains cannot occupy every worker.
@@ -406,6 +416,70 @@ class MediaSettings(_Section):
         return self
 
 
+def _browser_limits() -> SandboxLimits:
+    return SandboxLimits(
+        memory_mb=1536,
+        cpus=2.0,
+        pids=512,  # Chromium's processes and threads
+        wall_seconds=60.0,
+        tmpfs_mb=256,  # the throwaway browser profile
+        shm_mb=256,
+        stdout_max_bytes=16 * MiB,  # rendered HTML (escaped) and the screenshot, base64
+        stderr_max_bytes=256 * 1024,
+    )
+
+
+class BrowserSettings(_Section):
+    """Isolated browser rendering (U19, KTD9, KTD23). The browser container joins
+    only the sandbox network (lab mode: the lab sandbox network); its proxy is the
+    only way out, and the network check must pass before any page is rendered."""
+
+    enabled: bool = True
+    # Share of strong-strength cases rendered without another trigger (KTD23).
+    sample_rate: float = Field(0.1, ge=0.0, le=1.0)
+    # A brand-matching page with less visible static text than this renders.
+    little_text_chars: int = Field(200, ge=0, le=100_000)
+    viewport_width: int = Field(1280, ge=320, le=1920)
+    viewport_height: int = Field(800, ge=240, le=1920)
+    navigation_timeout_seconds: float = Field(15.0, gt=0, le=600)
+    # After the load event, how long to wait for the network to go idle.
+    settle_seconds: float = Field(5.0, ge=0, le=600)
+    max_html_bytes: int = Field(2 * MiB, gt=0, le=8 * MiB)
+    max_text_chars: int = Field(50_000, gt=0, le=1_000_000)
+    max_requests: int = Field(300, ge=1, le=5000)
+    max_forms: int = Field(32, ge=1, le=256)
+    max_inputs: int = Field(256, ge=1, le=4096)
+    # Screenshots over media.max_image_bytes are kept but not analyzed.
+    max_screenshot_bytes: int = Field(2 * MiB, gt=0, le=8 * MiB)
+    # None: Chromium's own user agent (the cloaking comparison relies on it).
+    user_agent: str | None = None
+    # The Chromium seccomp profile; None: the one shipped with the package.
+    seccomp_profile: Path | None = None
+    limits: SandboxLimits = Field(default_factory=_browser_limits)
+
+    @model_validator(mode="after")
+    def _fits(self):
+        from brandsentinel.sandbox.browser_worker import POST_SETTLE_SECONDS
+
+        budget = self.navigation_timeout_seconds + self.settle_seconds + POST_SETTLE_SECONDS
+        if budget >= self.limits.wall_seconds:
+            raise ValueError(
+                f"navigation_timeout_seconds + settle_seconds + {POST_SETTLE_SECONDS} must be"
+                " under limits.wall_seconds, so the worker reports before it is killed"
+            )
+        # Worst cases in the worker's UTF-8 JSON: HTML and text escaped (quotes,
+        # backslashes: 2 bytes per byte), text in 4-byte characters, the PNG in base64.
+        worst = (
+            self.max_html_bytes * 2
+            + self.max_text_chars * 4
+            + self.max_screenshot_bytes * 4 // 3
+            + 4 * MiB  # requests, attempts and the rest
+        )
+        if worst > self.limits.stdout_max_bytes:
+            raise ValueError("limits.stdout_max_bytes is too small for the output caps")
+        return self
+
+
 class ProxySettings(_Section):
     """The egress proxy (U18): the only way out of the sandbox network."""
 
@@ -445,6 +519,7 @@ class Config(_Section):
     runtime: RuntimeSettings = RuntimeSettings()
     sandbox: SandboxSettings = SandboxSettings()
     media: MediaSettings = MediaSettings()
+    browser: BrowserSettings = BrowserSettings()
     proxy: ProxySettings = ProxySettings()
 
     @model_validator(mode="after")
@@ -457,10 +532,20 @@ class Config(_Section):
             )
         if self.proxy.lab_only and not self.net.lab.enabled:
             raise ValueError("proxy.lab_only requires net.lab.enabled")
-        if self.net.lab.enabled and self.sandbox.enabled and self.sandbox.network == "bs_sandbox":
+        sb = self.sandbox
+        lab_side = (sb.network, sb.proxy_url, sb.proxy_container)
+        pinned = (LAB_SANDBOX_NETWORK, LAB_SANDBOX_PROXY_URL, LAB_SANDBOX_PROXY)
+        if self.net.lab.enabled and sb.enabled and lab_side != pinned:
             # bs_sandbox's proxy reaches the Internet and not the lab; lab-mode
-            # sandboxes need a lab sandbox network (M7).
-            raise ValueError("lab mode cannot use the production sandbox network bs_sandbox")
+            # sandboxes use only the pinned lab sandbox network and its proxy.
+            raise ValueError(
+                "lab mode sandboxes need sandbox.network, proxy_url and proxy_container"
+                f" = {', '.join(pinned)}"
+            )
+        if not self.net.lab.enabled and (
+            sb.network == LAB_SANDBOX_NETWORK or sb.proxy_container == LAB_SANDBOX_PROXY
+        ):
+            raise ValueError(f"{LAB_SANDBOX_NETWORK} and its proxy are for lab mode only")
         return self
 
     @property

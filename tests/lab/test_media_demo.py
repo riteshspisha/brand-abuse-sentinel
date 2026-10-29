@@ -70,10 +70,12 @@ def demo(tmp_path_factory):
         pending = store.conn.execute(
             "SELECT COUNT(*) FROM cases WHERE score_id IS NULL"
         ).fetchone()[0]
-        media_jobs = store.conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE stage = 'media' AND status IN ('pending', 'running')"
+        # Media and (M7) render jobs: lab mode renders sampled and triggered cases.
+        sandbox_jobs = store.conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE stage IN ('media', 'render')"
+            " AND status IN ('pending', 'running')"
         ).fetchone()[0]
-        return not pending and not media_jobs
+        return not pending and not sandbox_jobs
 
     async def main() -> None:
         stop = asyncio.Event()

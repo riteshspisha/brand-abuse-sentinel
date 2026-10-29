@@ -2,6 +2,7 @@
 
 import asyncio
 import ipaddress
+from pathlib import Path
 
 import pytest
 
@@ -259,11 +260,50 @@ def test_lab_mode_with_live_discovery_fails_validation():
     )
 
 
+LAB_SANDBOX = {
+    "network": "bs_lab_sandbox",
+    "proxy_url": "http://172.31.254.2:3128",
+    "proxy_container": "bs-lab-sandbox-proxy",
+}
+
+
 def test_lab_mode_cannot_use_the_production_sandbox_network():
     offline = {"certstream": {"enabled": False}, "dnstwist": {"enabled": False}}
-    with pytest.raises(ValueError, match="production sandbox network"):
+    with pytest.raises(ValueError, match="lab mode sandboxes need"):
         Config(net={"lab": {"enabled": True}}, discovery=offline)
-    Config(net={"lab": {"enabled": True}}, discovery=offline, sandbox={"network": "bs_lab_sb"})
+    Config(net={"lab": {"enabled": True}}, discovery=offline, sandbox=LAB_SANDBOX)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"network": "bs_lab"},  # the lab network itself: lab-web is a peer there
+        {"network": "bs_sandbox"},
+        {"proxy_url": "http://172.31.251.2:3128"},  # the Internet proxy
+        {"proxy_url": "http://172.31.250.2:3128"},  # the host-transport lab proxy
+        {"proxy_container": "bs-lab-proxy"},
+        {"proxy_container": "bs-egress-proxy"},
+    ],
+)
+def test_lab_mode_sandboxes_are_pinned_to_the_lab_sandbox_network_and_proxy(change):
+    offline = {"certstream": {"enabled": False}, "dnstwist": {"enabled": False}}
+    with pytest.raises(ValueError, match="lab mode sandboxes need"):
+        Config(net={"lab": {"enabled": True}}, discovery=offline, sandbox={**LAB_SANDBOX, **change})
+
+
+@pytest.mark.parametrize(
+    "sandbox", [{"network": "bs_lab_sandbox"}, {"proxy_container": "bs-lab-sandbox-proxy"}]
+)
+def test_production_cannot_use_the_lab_sandbox_network(sandbox):
+    with pytest.raises(ValueError, match="lab mode only"):
+        Config(sandbox=sandbox)
+
+
+def test_the_shipped_lab_config_uses_the_pinned_lab_sandbox():
+    config = load_config(Path(__file__).resolve().parents[2] / "config" / "lab.yaml")
+    assert config.sandbox.network == LAB_SANDBOX["network"]
+    assert config.sandbox.proxy_url == LAB_SANDBOX["proxy_url"]
+    assert config.sandbox.proxy_container == LAB_SANDBOX["proxy_container"]
 
 
 def test_test_address_ranges_cannot_come_from_config_or_environment(tmp_path, monkeypatch):

@@ -4,14 +4,85 @@ The state a new session needs before it touches code or the installation. It is
 updated at each milestone close. Facts below were checked on the development
 host at the date given; re-check anything marked *reported*.
 
-## Current: M6 deployed (2026-10-28); M7 not started
+## Current: M7 implemented on `feat/m7-isolated-browser` (2026-10-28); M6 deployed
+
+M7 (U19, isolated browser) is implemented, reviewed and verified on the
+developer's rootless runtime, on branch `feat/m7-isolated-browser` (PR pending
+merge). It is **not deployed**: the canonical installation still runs M6, and
+promotion is a separate, gated operation (see "M7 promotion").
+
+### M7 delivered
+
+- **Lab sandbox network (design approved 2026-10-28).** `bs_lab_sandbox`
+  (internal, `inhibit_ipv4`, IPv6 off, `172.31.254.0/24`) and the lab-only
+  `bs-lab-sandbox-proxy` on `bs_lab_sandbox` and `bs_lab` only, listening only on
+  `172.31.254.2:3128`, no published port, no route out. Lab mode pins the
+  sandbox network, proxy URL and container; production refuses them. netguard's
+  lab exception is unchanged. The Docker isolation and SP1 suites run for both
+  sandbox networks.
+- **Browser worker and client.** Chromium (Playwright 1.63.0, `sandbox` extra:
+  only in the image) in a per-job container: `pwuser`, no capabilities,
+  `no-new-privileges`, Docker's default seccomp plus `clone`/`unshare`/`chroot`,
+  read-only root, limits; Chromium's own sandbox on. Observe only (R39): non-GET
+  stopped, downloads refused, service workers blocked, dialogs dismissed, popups
+  closed. Strict output validation (`render_rejected`). Network check before
+  every launch; with the direct-egress probe before the stage registers.
+- **Triggers, render stage, cloaking.** `render_decision/1` (AE10 `js_shell`,
+  `static_error`, `decoy_page`, `script_redirect`, `form_hints_without_forms`,
+  `little_text`, `no_static_images`, `sample`); rendered extractor features;
+  screenshot through the media sandbox and corpus; `cloaking/1`; `bundle/4`
+  (scored on the rendered page unless only the static page showed abuse);
+  `policy/5` (`cloaking_suspected`).
+- **Reference screenshots** in `registry collect` (verified TLS, official https
+  only); `brandsentinel sandbox selftest browser`; reports show the render.
+- **Runner fix (affects M6 media jobs too):** a job cancelled during its own
+  container removal left the container behind; removal now finishes first.
+- Details, controls and the verification record: `docs/runbooks/browser.md`.
+
+### M7 decisions and deviations
+
+- **Screenshots are not embedded in reports: a recorded KTD20 deviation**
+  (owner decision, PR #12 review, 2026-10-29). KTD20 says size-capped data
+  URIs; M7 keeps M6's stance that no sandbox-produced image reaches the
+  analyst's browser, and shows the screenshot's hashes, OCR and QR results as
+  text. Embedding is not implemented; revisiting it is a separate decision.
+- **Reference screenshots are not demonstrated in the lab: an accepted test
+  limitation** (owner decision, 2026-10-29). Reference pages are `https`-only
+  with verified TLS and the lab is plain HTTP; TLS verification is not relaxed.
+  Proven with a scripted browser (`tests/integration/test_collector.py`).
+- **Page-opened sockets (PR #12 review finding).** WebSockets and WebRTC were
+  outside the browser's GET-only gate and passed through proxy tunnels. Now the
+  proxy tunnels only to 443 and only when the first bytes look like a TLS
+  ClientHello, a prefix filter rather than TLS enforcement (this also changes the production egress proxy
+  at promotion: `CONNECT` to port 80 and plain tunnels are refused), and the
+  worker refuses WebSockets and removes WebRTC and workers. BrandSentinel does
+  not interact with pages; a page's own GET requests and TLS traffic remain
+  possible towards allowed destinations (`docs/runbooks/browser.md`, residual
+  risks).
+- **Seccomp profile** shipped in the package (`src/brandsentinel/sandbox/
+  chromium-seccomp.json`) rather than `docker/seccomp/chromium.json`, so wheel
+  installs carry it; derived from the vendored Docker default, not Playwright's
+  older copy (`docs/solutions/2026-10-28-chromium-sandbox-under-cap-drop-all.md`).
+
+### M7 promotion (not authorized; separate gated operation)
+
+Promoting M7 needs, each separately approved: a new image on the service
+account's daemon (adds Playwright; the image grows slightly), a fresh install,
+the account's lab project recreated (new service and network; residual issues
+1 and 2 below apply: a lab `up` recreates `bs-lab-web` and `bs-lab-proxy`),
+then under the account: `sandbox check --strict`, `sandbox selftest media`,
+`sandbox selftest browser`, and the `security or docker` suites with no skips.
+Schema stays v5 (no migration); stored scores keep their `policy/4` and
+`bundle/3` labels and rescoring adds rows.
+
+## Earlier: M6 deployed (2026-10-28)
 
 M6 (U16 media sandbox, U17 reference corpus and visual matching) is merged and
 now **active** in the canonical installation:
 - **Merge:** PR #9, merge commit `358bf40`, whose tree is identical to the final feature commit `e90c92a`.
 - **Deployment:** five operator gates on 2026-10-26 to 28. Each was separately approved, and the evidence for all of them is
   outside the repository (see "M6 deployment record").
-- **Next:** M7 (U19, isolated browser) has not started; see "M7 handoff".
+- **Next:** M7 is implemented on its branch (above); M8 follows.
 
 ### Delivered
 
@@ -50,10 +121,8 @@ now **active** in the canonical installation:
 - Lab mode runs media jobs only.
 - Details: `docs/runbooks/media.md`.
 
-Decisions worth knowing before M7:
-- `config/lab.yaml` uses the placeholder sandbox network `bs_lab_sandbox`, which
-  does not exist. M7 must create the lab sandbox network. Config validation still
-  refuses `bs_sandbox` in lab mode.
+Decisions worth knowing (M6):
+- The lab sandbox network `bs_lab_sandbox` was designed and built in M7 (above).
 - The worker's thread pools are pinned to one thread (PID limit).
 - Exit 137 without a runner kill is reported as `sandbox_killed`.
 
@@ -153,7 +222,7 @@ All of them passed with the runtime snapshot unchanged.
 5. **Deployment-specific items:**
    - the offline install inputs in `/var/tmp/bs-*` age out after about 2026-11-17 (only needed for a reinstall);
    - SP2 (instance lock) is not done and blocks M9;
-   - `config/lab.yaml` names the non-existent `bs_lab_sandbox` network, which M7 must design;
+   - `bs_lab_sandbox` exists only in this branch's lab project (M7); the account's lab project gains it on promotion;
    - CertStream reports STALE because no source runs.
 
 ### Accepted risks and follow-ups
@@ -182,62 +251,12 @@ Proposed follow-ups:
 - Who confirms the production reference assets and pages (residual issue 4).
 - The proxy's Compose ownership and lab-container retirement (residual issues 1 and 2), and cleanup of staging, the
   superseded `/opt` trees and the Gate 4 store copy.
-- The M7 lab sandbox network design (`bs_lab_sandbox` placeholder in `config/lab.yaml`).
 - When the first supervised `brandsentinel run` happens (live collection; not authorized).
 
-### M7 handoff (U19: isolated browser)
+### Next: M8 (U20 providers, U21 evaluation)
 
-- **Scope:** the plan (`docs/plans/2026-10-08-001-feat-brandsentinel-local-pipeline-plan.md`): M7 = U19 only. It depends on
-  U17 and U18 (both done) and on M6 (done).
-  - **Goal:** triggered or sampled isolated rendering, which adds to the evidence:
-    - rendered text, form inventory, network request hosts and the redirect chain;
-    - a capped screenshot, which goes to the media sandbox for OCR and screenshot similarity;
-    - visual matches;
-    - a static-versus-rendered cloaking comparison.
-  - **Requirements:** R13, R19–R22, R39, R41, R48, R49. **Acceptance examples:** AE10 (`js_shell` trigger), AE13 (image-only),
-    AE17 (cloaking), AE18 (no orphaned browser container after a kill). **Design:** KTD9 (browser isolation) and KTD23 (triggers
-    and cloaking).
-  - **Demo (Verification Contract):** the JS-login, JS-payment, image-only, malicious-redirect and cloaking lab sites reach their
-    expected outcomes, and the bypass suite still passes.
-- **Planned files:** `sandbox/browser_worker.py`, `browser_client.py`, `triggers.py`, `cloaking.py`, changes to
-  `visual/collector.py` and `visual/corpus.py`, `docker/seccomp/chromium.json` (does not exist yet), and the unit, integration
-  and lab tests listed in U19.
-- **Trust boundaries (non-negotiable; Goal Capsule stop conditions):**
-  - **Network:** the browser container joins only `bs_sandbox` (`internal: true`, `inhibit_ipv4`), and its only way out is the
-    validating egress proxy. R41 is enforced by the network, not by browser flags.
-  - **Container hardening:** `pwuser`, Playwright's seccomp profile, `cap_drop: ALL`, read-only root with tmpfs, a
-    shared-memory size instead of host IPC, memory, CPU, PID and wall limits enforced from outside, no mounts, no published
-    ports. Never `--privileged` or `SYS_ADMIN`; fail the unit rather than weaken it.
-  - **Page interaction:** never click, type, submit, download, grant permissions or start a payment (R39). Dialogs are
-    auto-dismissed, service workers are blocked, QUIC is off, and WebRTC is limited to proxied TCP.
-  - **Worker output:** one JSON document, size- and pixel-capped, validated against a schema by the client before any fact is
-    stored. A rejected document is recorded as `render_rejected`. Rendered HTML goes back through the U12 extractors as
-    `rendered` facts.
-  - **Who launches it:** the browser stage is enabled only after the network preflight passes (`sandbox check`:
-    `network_internal`, `proxy_attached`, `proxy_hardened`, `gateway_inhibited`, `direct_egress_blocked`). Outside lab mode, untrusted
-    content is rendered only under the dedicated account (the hostile-content gate, `gate_hostile_content`).
-  - **Containers:** concurrency 1, and one container per job with orphan removal before a retry (R49, AE18).
-- **Existing architecture to reuse:**
-  - `sandbox/runner.py`: labelled one-shot containers, an exclusive network lease on `bs_sandbox`, the untrusted-members check,
-    kill and remove;
-  - `sandbox/preflight.py`: the runtime, network and account checks;
-  - `net/proxy.py` (the egress proxy) and `net/netguard.py`;
-  - `media_client.py`, a pattern for strict output validation;
-  - the sandbox image, already built on `mcr.microsoft.com/playwright/python:v1.63.0-noble` (Chromium included);
-  - the lab sites `labsites/{js-login,js-payment,image-only,redirects,cloaking}` with their `expected.yaml`;
-  - the runbooks `docs/runbooks/sandbox.md` and `media.md`.
-- **Open design point:** how the browser reaches lab sites in lab mode. The placeholder `bs_lab_sandbox` network in
-  `config/lab.yaml` does not exist, and config validation refuses `bs_sandbox` in lab mode. KTD13's limits (fixed lab subnet,
-  its own lab proxy, metadata and loopback still blocked) must hold.
-- **Standing gate (SP3):** any change under `net/` or `sandbox/` must keep the proxy, bypass and isolation suites passing under
-  `security and docker`, with no skipped tests.
-- **Development runtime:** the developer's own rootless Docker, with `allow_developer_account` in the developer config only.
-  M7 work must never touch the service account's daemon, `/opt/brandsentinel` or `/var/lib/brandsentinel`. Promoting M7 into
-  the deployment is a later, separately gated operation, like M6's.
-- **Downstream:** M8's U21 evaluation depends on M7, and M9 needs M2–M8 plus SP2.
-- **Tooling:** the plan carries `artifact_contract: ce-unified-plan/v1`, `artifact_readiness: implementation-ready` and
-  `execution: code`, so `ce-work` with the plan path, limited to U19, is the intended executor. Settle the lab network design
-  point first (see the session prompt in `~/brandsentinel-cutover-m6-work/M6-CLOSEOUT.md`).
+U21 depends on M7 (merged first). Lab sites now carry rendered evidence; U21's
+evaluation reads each site's `expected.yaml` as before.
 
 ### Developer environment notes
 

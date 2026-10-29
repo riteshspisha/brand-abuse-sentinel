@@ -21,12 +21,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Untrusted-media libraries; installed in the sandbox image (M6), not needed before then.
+# Sandbox-only libraries, installed in the sandbox image and never on the host:
+# untrusted media (M6) and the browser driver (M7). Playwright is pinned to the
+# release whose Chromium build the base image ships (docker/Dockerfile.sandbox).
 sandbox = [
     "Pillow>=10.4",
     "imagehash>=4.3",
     "zxing-cpp>=2.2",
     "pytesseract>=0.3.10",
+    "playwright==1.63.0",
 ]
 
 [project.scripts]

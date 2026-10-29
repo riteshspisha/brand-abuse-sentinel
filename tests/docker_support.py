@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,45 @@ PROBE = (Path(__file__).parent / "probe.py").read_text()
 INSTANCE = "test"
 PROXY_IP = "172.31.251.2"
 LAB_WEB_IP = "172.31.250.10"
+LAB_PROXY_IP = "172.31.250.2"  # bs-lab-proxy on bs_lab (the host's lab transport)
+LAB_SANDBOX_PROXY_IP = "172.31.254.2"
+
+
+@dataclass(frozen=True)
+class SandboxNet:
+    """One sandbox network and its proxy, as a sandbox sees them. The isolation
+    suites run once per network: production (bs_sandbox) and lab (bs_lab_sandbox)."""
+
+    name: str
+    proxy_ip: str
+    proxy_container: str
+    gateway: str  # reserved only (inhibit_ipv4): no container or namespace holds it
+    proxy_networks: frozenset[str]
+    compose_file: str
+    compose_args: tuple[str, ...] = ()
+
+    @property
+    def settings(self) -> dict:
+        return {
+            "network": self.name,
+            "proxy_url": f"http://{self.proxy_ip}:3128",
+            "proxy_container": self.proxy_container,
+        }
+
+    def up(self, docker: "DockerCli") -> None:
+        compose(docker, self.compose_file, *self.compose_args, "up", "-d")
+        wait_running(docker, self.proxy_container)
+
+
+PRODUCTION_NET = SandboxNet(
+    "bs_sandbox", PROXY_IP, "bs-egress-proxy", "172.31.251.1",
+    frozenset({"bs_sandbox", "bs_egress"}), "compose.yaml", ("--profile", "sandbox"),
+)  # fmt: skip
+LAB_SANDBOX_NET = SandboxNet(
+    "bs_lab_sandbox", LAB_SANDBOX_PROXY_IP, "bs-lab-sandbox-proxy", "172.31.254.1",
+    frozenset({"bs_lab_sandbox", "bs_lab"}), "lab.compose.yaml",
+)  # fmt: skip
+SANDBOX_NETS = (PRODUCTION_NET, LAB_SANDBOX_NET)
 
 
 def runtime_or_skip() -> DockerCli:
@@ -35,11 +75,20 @@ def runtime_or_skip() -> DockerCli:
     return docker
 
 
-def make_runner(docker: DockerCli, networks=(), **limits) -> SandboxRunner:
-    settings = SandboxSettings(
-        instance=INSTANCE, limits=SandboxLimits(**{"wall_seconds": 60, **limits})
+def make_runner(
+    docker: DockerCli, networks=(), *, net: SandboxNet = PRODUCTION_NET, **limits
+) -> SandboxRunner:
+    """A test-instance runner whose own sandbox network (exclusive lease,
+    untrusted-member checks) is `net`."""
+    return SandboxRunner(net_settings(net, **limits), docker, networks=networks)
+
+
+def net_settings(net: SandboxNet = PRODUCTION_NET, **limits) -> SandboxSettings:
+    return SandboxSettings(
+        instance=INSTANCE,
+        limits=SandboxLimits(**{"wall_seconds": 60, **limits}),
+        **net.settings,
     )
-    return SandboxRunner(settings, docker, networks=networks)
 
 
 def job_id(prefix: str = "t") -> str:

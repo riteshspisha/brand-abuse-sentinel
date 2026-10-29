@@ -550,6 +550,14 @@ def visual_corroboration(b: EvidenceBundle, brands: set[str]) -> list[tuple[str,
             (f"the page claims an association with {_names(b, claimed)}", b.association.refs)
         )
     matched = {m.image_sha256 for m in b.visual.matches}
+    shot = (b.render.screenshot or {}).get("sha256")
+    if matched and shot:
+        # The screenshot shows every image on the page, the matched ones too: its
+        # text and QR codes are never independent of a match.
+        matched.add(shot)
+    if shot in {m.image_sha256 for m in b.visual.matches if m.role == "screenshot"}:
+        # And a matched screenshot shows every page image: their text is part of it.
+        matched |= {i.sha256 for i in b.visual.images if i.sha256}
     unmatched_ocr = {
         x["brand"]
         for x in b.visual.ocr_brands
@@ -598,6 +606,29 @@ def _copied_asset(b: EvidenceBundle, p: dict) -> Fired | None:
         + ". The host is not vouched for by the registry.",
         _uniq(*(m.refs for m in b.visual.matches), *(refs for _, refs in support)),
         details={"brands": sorted(brands), "corroboration": [w for w, _ in support]},
+    )
+
+
+@rule(
+    "cloaking_suspected",
+    "abuse",
+    "The page shown to a browser differs materially from the one shown to the static fetcher,"
+    " and the page or domain presents a protected brand",
+    "impersonation",
+)
+def _cloaking(b: EvidenceBundle, p: dict) -> Fired | None:
+    c = b.cloaking or {}
+    if official(b) or registry_cleared(b) or not c.get("suspected"):
+        return None
+    shown = c.get("rendered", {}).get("brands") or c.get("static", {}).get("brands")
+    if not (_brand_present(b) or domain_uses_brand(b) or shown):
+        return None
+    fields = [d.get("field") for d in c.get("differences") or []]
+    return Fired(
+        "Static fetch and browser were shown different pages (" + ", ".join(fields) + ");"
+        f" the case is scored on the {c.get('score_on', 'rendered')} page.",
+        _uniq(c.get("refs") or [], b.render.refs, b.http.refs),
+        details={"differences": fields, "score_on": c.get("score_on")},
     )
 
 

@@ -9,7 +9,10 @@ runs the same probe on an ordinary network and must see the leaks, so a pass
 here cannot come from a broken probe or a missing Internet connection.
 
 The stack (bs_sandbox, bs_egress, egress-proxy) is brought up with
-`docker compose --profile sandbox up -d` if it is not running.
+`docker compose --profile sandbox up -d` if it is not running. The tests marked
+by `sandbox_net` run once per sandbox network: production `bs_sandbox` and the
+lab-mode `bs_lab_sandbox` (M7, brought up with the lab project), which must
+hold the same guarantees.
 """
 
 import asyncio
@@ -20,10 +23,13 @@ import time
 import pytest
 from tests.docker_support import (
     PROXY_IP,
+    SANDBOX_NETS,
+    SandboxNet,
     compose,
     docker_json,
     labelled,
     make_runner,
+    net_settings,
     probe,
     runtime_or_skip,
     wait_running,
@@ -51,6 +57,12 @@ def docker():
     assert labelled(d) == []
 
 
+@pytest.fixture(scope="module", params=SANDBOX_NETS, ids=lambda n: n.name)
+def sandbox_net(request, docker) -> SandboxNet:
+    request.param.up(docker)
+    return request.param
+
+
 @pytest.fixture(scope="module")
 def gateway(docker) -> str:
     # With inhibit_ipv4 (SP1) the bridge holds no gateway address; probe the
@@ -76,10 +88,12 @@ def escape_checks(gateway: str) -> list[dict]:
     return checks
 
 
-def test_no_direct_route_out_of_the_sandbox_network(docker, gateway):
+def test_no_direct_route_out_of_the_sandbox_network(docker, sandbox_net):
     # Covers AE11: direct IP, IPv6, UDP STUN, DNS, gateway and host addresses.
-    runner = make_runner(docker)
-    results = probe(runner, "bs_sandbox", escape_checks(gateway))
+    net = docker_json(docker, "network", "inspect", sandbox_net.name)[0]
+    assert net["IPAM"]["Config"][0]["Gateway"] == sandbox_net.gateway
+    runner = make_runner(docker, net=sandbox_net)
+    results = probe(runner, sandbox_net.name, escape_checks(sandbox_net.gateway))
     leaks = {k: v for k, v in results.items() if v in ("connected", "answered")}
     leaks |= {k: v for k, v in results.items() if str(v).startswith("resolved:")}
     assert leaks == {}, results
@@ -112,6 +126,20 @@ def proxy_checks() -> list[dict]:
         {"id": "connect port 22", "kind": "connect", "authority": "example.com:22", **via},
         {"id": "connect public 443", "kind": "connect", "authority": "example.com:443", **via},
         {"id": "connect public 80", "kind": "connect", "authority": "example.com:80", **via},
+        {
+            "id": "tunnel plain 443",
+            "kind": "tunnel",
+            "authority": "example.com:443",
+            "payload_hex": b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".hex(),
+            **via,
+        },
+        {
+            "id": "tunnel tls 443",
+            "kind": "tunnel",
+            "authority": "example.com:443",
+            "client_hello": "example.com",
+            **via,
+        },
         {
             "id": "get metadata",
             "kind": "http",
@@ -149,12 +177,16 @@ def test_proxy_refuses_blocked_destinations_and_allows_public_ones(docker):
         "connect v6 loopback",
         "connect mapped",
         "connect port 22",
+        "connect public 80",  # tunnels go to 443 only (a ws:// WebSocket would use 80)
         "get metadata",
     ):
         assert results[refused] == "status:403", (refused, results)
     assert results["get host mismatch"] == "status:400"
     assert results["connect public 443"] == "status:200", results
-    assert results["connect public 80"] == "status:200", results
+    # A tunnel must start like TLS: plain HTTP (or a WebSocket, or TURN) is cut before
+    # the server can answer, while a real ClientHello gets the server's reply.
+    assert results["tunnel plain 443"] == "status:200 closed", results
+    assert results["tunnel tls 443"] == "status:200 reply", results
     assert results["get public"].startswith("status:"), results
 
 
@@ -190,17 +222,20 @@ def test_proxy_decisions_are_logged_with_the_validated_address(docker):
     assert allowed and ipaddress.ip_address(allowed[-1]["address"]).is_global
 
 
-def test_proxy_container_is_hardened(docker):
-    inspect = docker_json(docker, "container", "inspect", "bs-egress-proxy")[0]
+def test_proxy_container_is_hardened(docker, sandbox_net):
+    inspect = docker_json(docker, "container", "inspect", sandbox_net.proxy_container)[0]
     assert preflight.proxy_hardening_problems(inspect) == []
     networks = set(inspect["NetworkSettings"]["Networks"])
-    assert networks == {"bs_sandbox", "bs_egress"}
+    assert networks == sandbox_net.proxy_networks
     assert inspect["HostConfig"]["PortBindings"] in ({}, None)
+    assert inspect["NetworkSettings"]["Networks"][sandbox_net.name]["IPAddress"] == (
+        sandbox_net.proxy_ip
+    )
 
 
-def test_network_preflight_passes_with_the_direct_egress_probe(docker):
-    settings = SandboxSettings(instance="test")
-    runner = make_runner(docker)
+def test_network_preflight_passes_with_the_direct_egress_probe(docker, sandbox_net):
+    settings = net_settings(sandbox_net)
+    runner = make_runner(docker, net=sandbox_net)
     report = asyncio.run(preflight.check_network(docker, settings, runner))
     assert report.ok, report.reasons()
     assert any(c.name == "direct_egress_blocked" and c.ok for c in report.checks)

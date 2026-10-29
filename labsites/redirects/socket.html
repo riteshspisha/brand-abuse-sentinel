@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Lumina Foundation - Live support</title></head>
+<body><h1>Lumina Foundation</h1>
+<!-- A page that tries to talk back on its own, outside plain GET: WebSockets (the
+     default port, port 443, wss, and from a worker), WebRTC through a TURN relay,
+     a beacon and a keepalive POST. A lab test runs a WebSocket server beside
+     lab-web and checks that nothing reaches it (R39). Each outcome is written into
+     the page, so the rendered text shows what the page saw. -->
+<ul id="log"></ul>
+<script>
+function note(what) {
+  var li = document.createElement("li");
+  li.textContent = what;
+  document.getElementById("log").appendChild(li);
+}
+function socket(label, url, Ctor) {
+  try {
+    var ws = new (Ctor || WebSocket)(url);
+    ws.onopen = function () { note(label + ": open"); ws.send("lumina-socket-message " + label); };
+    ws.onmessage = function (e) { note(label + ": reply " + e.data); };
+    ws.onerror = function () { note(label + ": error"); };
+    ws.onclose = function (e) { note(label + ": closed " + e.code); };
+  } catch (e) { note(label + ": refused " + e.name); }
+}
+socket("ws80", "ws://go-luminafoundation.test/socket?via=ws80");
+socket("ws443", "ws://go-luminafoundation.test:443/socket?via=ws443");
+socket("wss", "wss://go-luminafoundation.test/socket?via=wss");
+var frame = document.createElement("iframe");
+document.body.appendChild(frame);
+socket("frame", "ws://go-luminafoundation.test:443/socket?via=frame", frame.contentWindow.WebSocket);
+try {
+  var src = "var ws = new WebSocket('ws://go-luminafoundation.test:443/socket?via=worker');" +
+    "ws.onopen = function () { ws.send('lumina-socket-message worker'); postMessage('open'); };" +
+    "ws.onerror = function () { postMessage('error'); };";
+  var w = new Worker(URL.createObjectURL(new Blob([src], {type: "text/javascript"})));
+  w.onmessage = function (e) { note("worker: " + e.data); };
+} catch (e) { note("worker: refused " + e.name); }
+try {
+  var pc = new (window.RTCPeerConnection || frame.contentWindow.RTCPeerConnection)({iceServers: [
+    {urls: "turn:go-luminafoundation.test:443?transport=tcp", username: "u", credential: "p"},
+    {urls: "turns:go-luminafoundation.test:443?transport=tcp", username: "u", credential: "p"}
+  ], iceTransportPolicy: "relay"});
+  pc.createDataChannel("lumina");
+  pc.onicecandidate = function (e) { note("webrtc: candidate " + (e.candidate ? e.candidate.type : "done")); };
+  pc.createOffer().then(function (o) { return pc.setLocalDescription(o); })
+    .catch(function (e) { note("webrtc: " + e.name); });
+} catch (e) { note("webrtc: refused " + e.name); }
+try { note("beacon: " + navigator.sendBeacon("/collect?via=beacon", "lumina-beacon")); }
+catch (e) { note("beacon: refused " + e.name); }
+fetch("/collect?via=keepalive", {method: "POST", body: "lumina-keepalive", keepalive: true})
+  .then(function (r) { note("keepalive: " + r.status); })
+  .catch(function (e) { note("keepalive: " + e.name); });
+</script></body></html>

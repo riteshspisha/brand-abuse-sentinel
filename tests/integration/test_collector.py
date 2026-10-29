@@ -314,3 +314,79 @@ def test_the_same_image_on_two_pages_is_two_entries(env):
     collect(h, store, reg, assets)
     assert len([r for r in corpus_rows(store) if r[0] == "logo" and r[5]]) == 1
     del h.recorder.pages["home2"]
+
+
+# --- reference page screenshots (M7, U19) ------------------------------------------
+
+
+class ScriptedBrowser:
+    def __init__(self, make):
+        self.make, self.calls = make, []
+
+    async def render(self, url, *, job, attempt=0, selftest=None, verify_tls=False):
+        self.calls.append((url, verify_tls))
+        return self.make(url, verify_tls)
+
+
+def rendered(final=None, *, navigations=None, verify=True, status="ok", shot=None):
+    from brandsentinel.sandbox.browser_client import Render
+
+    def make(url, verify_tls):
+        f = final or url
+        doc = {
+            "final_url": f,
+            "main_status": 200,
+            "redirect_chain": [{"url": url, "status": 200}],
+            "navigations": navigations if navigations is not None else [f],
+            "verify_tls": verify and verify_tls,
+        }
+        return Render(status, url, None if status == "ok" else "sandbox_timeout", doc=doc,
+                      screenshot=shot or M.payment_screenshot())  # fmt: skip
+
+    return make
+
+
+def collect_with(h, store, registry, assets, browser):
+    collector = Collector(
+        store.conn, registry, harness_fetcher(h),
+        MediaClient(M.InProcessRunner(), MediaSettings()), MediaSettings(), assets,
+        browser=browser,
+    )  # fmt: skip
+    return asyncio.run(collector.collect())
+
+
+def test_a_confirmed_page_rendered_with_verified_tls_adds_a_screenshot_entry(env):
+    h, store, assets = env
+    url = secure(h, "/mutable?k=home")
+    reg = make_registry(h, pages=[page(url)])
+    browser = ScriptedBrowser(rendered())
+    report = collect_with(h, store, reg, assets, browser)
+    assert browser.calls == [(url, True)]  # rendered only with verified TLS
+    assert report.pages[0]["images"] == 4
+    shots = [tuple(r) for r in corpus_rows(store) if r[0] == "screenshot"]
+    assert shots == [("screenshot", "collected", url, "verified", 1, 1)]
+    corpus = load_corpus(store.conn, reg)
+    assert "screenshot" in {e.kind for e in corpus.entries} and not corpus.rejected
+
+
+@pytest.mark.parametrize(
+    ("make", "why"),
+    [
+        (rendered(verify=False), "verified TLS"),
+        (rendered(status="failed"), "render failed"),
+        (rendered("https://elsewhere.example/landing"), "off the official https site"),
+        (rendered(navigations=["http://secure.harness.test/"]), "off the official https site"),
+    ],
+)
+def test_a_screenshot_that_cannot_be_a_reference_is_refused_and_keeps_old_entries(env, make, why):
+    h, store, assets = env
+    url = secure(h, "/mutable?k=home")
+    reg = make_registry(h, pages=[page(url)])
+    collect_with(h, store, reg, assets, ScriptedBrowser(rendered()))
+    before = corpus_rows(store)
+    report = collect_with(h, store, reg, assets, ScriptedBrowser(make))
+    refused = [i for i in report.images if i["kind"] == "screenshot"]
+    assert refused and refused[0]["result"] == "refused" and why in refused[0]["why"]
+    # The page was not examined completely: its earlier entries, the screenshot
+    # included, stay active.
+    assert corpus_rows(store) == before

@@ -28,7 +28,7 @@ from tests.docker_support import (
 
 from brandsentinel.config import SandboxLimits, SandboxSettings
 from brandsentinel.pipeline.orchestrator import Orchestrator
-from brandsentinel.sandbox.runner import SandboxRunner, SandboxSpec
+from brandsentinel.sandbox.runner import DockerCli, SandboxRunner, SandboxSpec
 
 pytestmark = [pytest.mark.docker, pytest.mark.security]
 
@@ -204,3 +204,31 @@ def test_retry_removes_the_earlier_attempts_container_first(docker):
         assert first not in labelled(docker)  # only one container per job, ever
     finally:
         docker.call_sync("rm", "--force", first)
+
+
+def test_a_shutdown_during_removal_still_removes_the_container(docker):
+    # A service shutting down cancels a job that is already removing its finished
+    # container: the cancellation must not leave the container behind (it once
+    # killed the `docker rm` it interrupted).
+    entered = asyncio.Event()
+
+    class SlowRemove(DockerCli):
+        async def call(self, *args, timeout=None):
+            if args[0] == "rm" and not entered.is_set():
+                entered.set()
+                await asyncio.sleep(0.5)  # the cancellation lands here
+            return await super().call(*args, timeout=timeout)
+
+    runner = SandboxRunner(
+        SandboxSettings(instance=INSTANCE, limits=SandboxLimits(wall_seconds=30)), SlowRemove()
+    )
+
+    async def main() -> None:
+        task = asyncio.create_task(runner.run(py("print('{}')"), job=job_id("rmcx"), attempt=0))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert labelled(docker) == []

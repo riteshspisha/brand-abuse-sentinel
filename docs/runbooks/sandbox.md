@@ -25,6 +25,9 @@ not protect against.
  │                                                                                 │
  │  lab project:  bs_lab (internal, 172.31.250.0/24)    bs_lab_edge                │
  │  bs-lab-web .250.10 ◄── bs-lab-proxy (lab_only) ──► 127.0.0.1:3129 on the host  │
+ │             ▲                                                                   │
+ │             └── bs-lab-sandbox-proxy (lab_only) .250.3 / .254.2:3128 ◄── lab    │
+ │                 bs_lab_sandbox (internal, inhibit_ipv4, 172.31.254.0/24)   jobs │
  └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -54,7 +57,7 @@ not protect against.
 | Container escape via configuration | fixed args: no mounts/devices/caps, `--read-only`, noexec tmpfs, `no-new-privileges`, default seccomp, non-root user, private IPC | runner | `test_runner_security.py`, `test_runner.py::test_container_runs_unprivileged_...` |
 | Kernel escape | rootless Docker: container root maps to an unprivileged subordinate UID; no rootful socket for the app | host | preflight `rootless`, `no_rootful_docker` |
 | Orphans after a crash | named + labelled containers; startup sweep before lease recovery; retry refuses while an earlier container exists | runner + orchestrator | `test_runner.py::test_restart_removes_the_orphaned_container_before_jobs_are_recovered` (AE18) |
-| Lab exceptions leaking into production | lab only via `net.lab` (pinned subnet, hostname map), separate proxy instance (`lab_only`), separate data dir; production proxy has no lab hosts | config + proxy | `test_lab_transport.py`, `tests/lab/test_lab_sites_up.py` |
+| Lab exceptions leaking into production | lab only via `net.lab` (pinned subnet, hostname map), separate proxy instances (`lab_only`), separate data dir; production proxy has no lab hosts; lab sandboxes pinned to `bs_lab_sandbox` and refused elsewhere (M7) | config + proxy | `test_lab_transport.py`, `test_netguard.py`, `tests/lab/test_lab_sites_up.py` |
 
 A browser's proxy setting is not part of the boundary: the network has no route
 out, so a page that ignores the proxy simply fails.
@@ -243,10 +246,12 @@ Sandbox image `brandsentinel-sandbox:local`, 3.97 GB.
   response. The lab-only proxy refuses other names before any DNS query.
 - One client address may hold at most `proxy.max_connections_per_client` slots.
 - Lab mode refuses to use `bs_sandbox` for sandboxes (its proxy reaches the
-  Internet, not the lab). Since M6, `config/lab.yaml` enables sandboxes for
-  network-less media jobs only, with `network: bs_lab_sandbox`, which does not
-  exist until M7 adds a lab sandbox network (a networked job fails to start).
-  The media gate is described in `docs/runbooks/media.md`.
+  Internet, not the lab). Since M7, lab-mode networked sandboxes (the browser)
+  join only `bs_lab_sandbox`, built like `bs_sandbox`, whose only other member
+  is the lab-only `bs-lab-sandbox-proxy` (no route out, no published port);
+  config validation pins the network, proxy URL and container in lab mode and
+  refuses them outside it. Design and proof: `docs/runbooks/browser.md`. The
+  isolation suites run for both sandbox networks.
 
 ## Residual risks
 
@@ -274,8 +279,18 @@ Sandbox image `brandsentinel-sandbox:local`, 3.97 GB.
   stay on for the proxy). SP1 bounds this to one untrusted container per
   network with the runner's network lease (`docs/runbooks/service-account.md`),
   instead of relying on `stages.render: 1`.
-- CONNECT to port 80 is an opaque tunnel (KTD10): the destination is validated,
-  the bytes inside are not (as for 443).
+- Tunnels go only to port 443 and their first six bytes must look like a TLS
+  ClientHello (M7 review, 2026-10-29): a plain tunnel would carry a page's
+  `ws://` WebSocket or a TURN relay past the GET/HEAD rule. Inside the tunnel
+  the bytes are opaque (KTD10): the destination is validated, the content is not.
+  This is a TLS-prefix filter, not TLS enforcement: only the first six bytes are
+  checked, so a client that writes raw tunnel bytes can forge them and send
+  plaintext after them (`test_proxy.py::test_the_tls_check_is_a_prefix_filter_...`).
+  Chromium writes its own first bytes (a real ClientHello, `GET` for `ws://`, a
+  STUN header for TURN), which a page cannot choose; forging them takes code
+  execution in the container or a compromised renderer, and such code can already
+  speak real TLS to an attacker's server on 443. Accepted residual (PR #12
+  follow-up, low).
 - A tunnel whose client half-closed stays open until the idle timeout (30 s);
   its decision is logged when it ends.
 - In lab mode a lab site could forge the refusal header on a forwarded response;

@@ -7,16 +7,23 @@ the proxy connects only to the address netguard validated, so DNS rebinding
 between check and connect is impossible.
 
 Accepted:
-- `CONNECT host:port` to an allowed port (80 and 443 by default), for TLS and
-  plain tunnels. A `Host` header, if sent, must name the same authority.
+- `CONNECT host:443` whose first bytes look like a TLS ClientHello record header;
+  otherwise the tunnel is closed before anything reaches the destination. A
+  `Host` header, if sent, must name the same authority. Tunnels to any other
+  port are refused. A browser needs neither a plain tunnel nor port 80 for
+  HTTP(S), and they would carry what absolute-form forwarding refuses, such as a
+  page's `ws://` WebSocket or a TURN relay over TCP, past the method rule.
+  This is a prefix filter, not TLS enforcement: a client that writes raw bytes
+  can forge the six checked bytes and send anything after them. Chromium always
+  writes its own first bytes, which a page cannot choose.
 - absolute-form `GET` or `HEAD` `http://host/...` to port 80, without a body.
   `Host` must name the URL's authority. Hop-by-hop headers (and those listed in
   `Connection`) are stripped, the request goes upstream with `Connection: close`
   and the response is relayed as is.
 
 Everything else is refused: origin-form requests (no use as a reverse proxy),
-other methods, request bodies, `https://` absolute-form, obsolete header folding,
-oversized headers, and any destination netguard refuses (private, loopback,
+other methods, request bodies, plain or non-443 tunnels, `https://` absolute-form,
+obsolete header folding, oversized headers, and any destination netguard refuses (private, loopback,
 link-local and metadata addresses, NAT64/6to4/mapped forms of them, mixed public
 and private answers, other ports). In lab mode netguard also allows the pinned
 lab subnet for lab hostnames; a lab proxy (`lab_only`) refuses everything else.
@@ -162,15 +169,20 @@ class EgressProxy:
         *,
         connector: Connector | None = None,
         forward_ports: Sequence[int] = (80,),
+        tunnel_ports: Sequence[int] = (443,),
+        plain_tunnels: bool = False,
     ) -> None:
-        """`connector` and `forward_ports` (the ports absolute-form requests may
-        reach) are for tests; configuration cannot set them."""
+        """`connector`, `forward_ports` and `tunnel_ports` (the ports absolute-form
+        requests and tunnels may reach) and `plain_tunnels` (skip the TLS check)
+        are for tests; configuration cannot set them."""
         if settings.lab_only and not guard.lab_mode:
             raise ValueError("a lab-only proxy needs a lab-mode netguard")
         self.settings = settings
         self.guard = guard
         self._connect = connector or _open
         self._forward_ports = frozenset(forward_ports)
+        self._tunnel_ports = frozenset(tunnel_ports)
+        self._plain_tunnels = plain_tunnels
         self._active = 0
         self._per_client: dict[str, int] = {}
 
@@ -280,14 +292,39 @@ class EgressProxy:
         url = f"{scheme}://{req.target}/"
         self._check_host_header(req, self._parse(url), required=False)
         target = await self._authorize(url, rec)
+        if target.port not in self._tunnel_ports:
+            raise Refused(403, "port_not_allowed", {"port": target.port})
         up_reader, up_writer = await self._dial(target, rec)
         try:
             rec.decision, rec.status, rec.reason = "allow", 200, "connect"
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await writer.drain()
-            await self._relay(reader, writer, up_reader, up_writer, rec)
+            first = b""
+            if not self._plain_tunnels:
+                first = await self._client_hello(reader)
+                if first is None:
+                    # Closed with nothing sent on: the destination saw a connection
+                    # and no byte of it. No HTTP refusal either: inside a tunnel it
+                    # would read as the destination's answer.
+                    rec.decision, rec.reason = "deny", "tunnel_not_tls"
+                    return
+            await self._relay(reader, writer, up_reader, up_writer, rec, first)
         finally:
             await _close(up_writer)
+
+    async def _client_hello(self, reader) -> bytes | None:
+        """The tunnel's first six bytes if they look like the start of a TLS
+        ClientHello record (content type 22, version 3.x, handshake type 1), else
+        None (also when the client sends too little within the header timeout).
+        A prefix check only: nothing after these bytes is inspected."""
+        try:
+            async with asyncio.timeout(self.settings.header_timeout_seconds):
+                first = await reader.readexactly(6)
+        except (TimeoutError, asyncio.IncompleteReadError):
+            return None
+        if first[0] == 0x16 and first[1] == 0x03 and first[2] <= 0x04 and first[5] == 0x01:
+            return first
+        return None
 
     async def _forward(self, req: Request, writer, rec: Decision) -> None:
         if req.method not in ("GET", "HEAD"):
@@ -373,12 +410,18 @@ class EgressProxy:
             return r, w
         raise Refused(502, "connect_failed", {"error": last})
 
-    async def _relay(self, reader, writer, up_reader, up_writer, rec: Decision) -> None:
-        counter = [0, time.monotonic()]  # bytes both ways, last activity either way
+    async def _relay(
+        self, reader, writer, up_reader, up_writer, rec: Decision, first: bytes = b""
+    ) -> None:
+        """`first`: client bytes already read (the ClientHello's start), sent first."""
+        counter = [len(first), time.monotonic()]  # bytes both ways, last activity
         capped = False
+        if first:
+            up_writer.write(first)
+            await up_writer.drain()
 
         async def up() -> None:
-            rec.bytes_up = await self._pipe(reader, up_writer, counter)
+            rec.bytes_up = len(first) + await self._pipe(reader, up_writer, counter)
 
         async def down() -> None:
             rec.bytes_down = await self._pipe(up_reader, writer, counter)

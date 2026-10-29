@@ -14,7 +14,14 @@ import pytest
 import yaml
 
 from brandsentinel.cli import _overlay
-from brandsentinel.config import LAB_SUBNET, Config, load_config
+from brandsentinel.config import (
+    LAB_SANDBOX_PROXY,
+    LAB_SANDBOX_PROXY_URL,
+    LAB_SANDBOX_SUBNET,
+    LAB_SUBNET,
+    Config,
+    load_config,
+)
 from brandsentinel.matching.normalize import registrable_domain
 from brandsentinel.registry.loader import RegistryError, load_registry
 
@@ -78,7 +85,9 @@ def test_lab_pages_load_nothing_from_the_internet_except_the_marked_fixture():
         for _ in external.finditer(page.read_text()):
             offenders.append(page.relative_to(LAB).as_posix())
     # The yoga studio's Stripe tag is a static indicator; the offline lab never loads it.
-    assert offenders == ["unrelated-yoga/index.html"]
+    # The escape page (M7) tries metadata and loopback on purpose: the browser
+    # tests prove the proxy refuses them.
+    assert sorted(set(offenders)) == ["redirects/escape.html", "unrelated-yoga/index.html"]
 
 
 def test_lab_config_is_offline_and_lab_only():
@@ -122,6 +131,7 @@ HARDENING = {"read_only": True, "cap_drop": ["ALL"], "security_opt": ["no-new-pr
     [
         ("compose.yaml", "egress-proxy"),
         ("lab.compose.yaml", "lab-proxy"),
+        ("lab.compose.yaml", "lab-sandbox-proxy"),
         ("lab.compose.yaml", "lab-web"),
     ],
 )
@@ -156,3 +166,31 @@ def test_lab_proxy_reads_only_the_lab_config():
     assert proxy["volumes"] == ["../config/lab.yaml:/etc/brandsentinel/lab.yaml:ro"]
     assert "/etc/brandsentinel/lab.yaml" in proxy["command"]
     assert "bs_sandbox" not in proxy["networks"] and "bs_egress" not in proxy["networks"]
+
+
+def test_lab_sandbox_network_is_built_like_the_sandbox_network():
+    lab = compose("lab.compose.yaml")["networks"]["bs_lab_sandbox"]
+    prod = compose("compose.yaml")["networks"]["bs_sandbox"]
+    assert lab["internal"] is True and lab["enable_ipv6"] is False
+    assert lab["driver_opts"] == prod["driver_opts"]
+    assert lab["ipam"]["config"] == [{"subnet": LAB_SANDBOX_SUBNET, "gateway": "172.31.254.1"}]
+
+
+def test_lab_sandbox_proxy_reaches_only_the_lab_and_listens_only_on_its_sandbox_address():
+    proxy = compose("lab.compose.yaml")["services"]["lab-sandbox-proxy"]
+    assert set(proxy["networks"]) == {"bs_lab_sandbox", "bs_lab"}  # no edge, no egress
+    assert "ports" not in proxy
+    assert proxy["volumes"] == ["../config/lab.yaml:/etc/brandsentinel/lab.yaml:ro"]
+    assert "/etc/brandsentinel/lab.yaml" in proxy["command"]
+    listen = proxy["command"][proxy["command"].index("--listen") + 1]
+    assert listen == f"{proxy['networks']['bs_lab_sandbox']['ipv4_address']}:3128"
+    assert f"http://{listen}" == LAB_SANDBOX_PROXY_URL
+    assert proxy["container_name"] == LAB_SANDBOX_PROXY
+    lab = load_config(REPO / "config" / "lab.yaml")
+    assert lab.proxy.lab_only and lab.sandbox.proxy_url == LAB_SANDBOX_PROXY_URL
+
+
+def test_every_lab_network_member_has_a_pinned_address():
+    services = compose("lab.compose.yaml")["services"]
+    addresses = [svc["networks"]["bs_lab"]["ipv4_address"] for svc in services.values()]
+    assert len(addresses) == len(set(addresses)) == len(services)

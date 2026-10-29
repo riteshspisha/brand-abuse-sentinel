@@ -63,6 +63,9 @@ class Orchestrator:
     # register only when it is set.
     sandbox: object | None = None
     sandbox_disabled: list[str] = field(default_factory=list)
+    # Why the browser stage (M7) is not registered although sandboxes run: the
+    # network check, with its direct-egress probe, did not pass at startup.
+    browser_disabled: list[str] = field(default_factory=list)
     _domain_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     _domain_users: dict[str, int] = field(default_factory=dict)
 
@@ -279,6 +282,26 @@ async def _prepare_sandbox(orch: Orchestrator, config) -> None:
     orch.sandbox = runner
 
 
+async def _register_render(orch: Orchestrator, analysis, config, browser_client, media_client):
+    """Register the browser stage only after the sandbox network check, with its
+    direct-egress probe, passes (R41, R43). Otherwise render jobs wait (cases show
+    `render pending`) and run once a restart finds the network sound."""
+    from brandsentinel.pipeline.render import RenderStage
+    from brandsentinel.sandbox.browser_client import build_browser_client
+    from brandsentinel.sandbox.media_client import MediaClient
+
+    if browser_client is None:
+        browser_client, failed = await build_browser_client(orch.sandbox, config)
+        if browser_client is None:
+            orch.browser_disabled = failed
+            log.warning("browser stage disabled", extra={"fields": {"reasons": failed}})
+            return
+    media = None
+    if config.media.enabled:
+        media = media_client or MediaClient(orch.sandbox, config.media)
+    RenderStage(analysis, browser_client, media).register(orch)
+
+
 async def run_service(
     store: Store,
     registry: Registry,
@@ -291,13 +314,14 @@ async def run_service(
     sandbox_enabled: bool | None = None,
     analysis=None,
     media_client=None,
+    browser_client=None,
     clock: Callable[[], float] | None = None,
 ) -> Orchestrator:
     """Wire discovery sources, analysis stages, deferred-work promotion and
     maintenance into an orchestrator and run it until `stop` is set. Replays the
     discovery log before any source starts. `analysis` (an AnalysisStages)
-    replaces the default network wiring and `media_client` the sandboxed media
-    client, for tests."""
+    replaces the default network wiring, and `media_client` and `browser_client`
+    the sandboxed clients, for tests."""
     from brandsentinel.pipeline import scheduling
     from brandsentinel.pipeline.stages import AnalysisStages, build_network
 
@@ -339,6 +363,9 @@ async def run_service(
             MediaStage(analysis, media_client or MediaClient(orch.sandbox, config.media)).register(
                 orch
             )
+        analysis.render_enabled = sandbox_on and config.browser.enabled
+        if fetch_on and analysis.render_enabled and orch.sandbox is not None:
+            await _register_render(orch, analysis, config, browser_client, media_client)
 
     async def promote() -> None:
         interval = config.scheduling.promote_interval_seconds

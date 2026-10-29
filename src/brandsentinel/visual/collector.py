@@ -8,7 +8,11 @@ Builds the trusted reference corpus from two sources, and only these:
 - confirmed reference pages: fetched with verified TLS through the hardened
   fetcher (`purpose="reference"`), with every hop restricted to https on a
   confirmed official domain of the page's brand. From each page the favicon,
-  logo candidates and og:image are collected under the same restrictions.
+  logo candidates and og:image are collected under the same restrictions. With
+  a browser client (M7), the page is also rendered in the browser sandbox with
+  verified TLS, and its screenshot becomes a `screenshot` entry when every
+  navigation and redirect stayed on https on a confirmed official domain of
+  the brand.
 
 Every image is hashed by the media sandbox, never in this process. Third-party
 domains, payment destinations and images hosted elsewhere that appear on
@@ -88,9 +92,11 @@ class Collector:
         assets_dir: Path,
         *,
         providers=None,
+        browser=None,  # a BrowserClient: reference page screenshots (M7)
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.conn = conn
+        self.browser = browser
         self.registry = registry
         self.fetcher = fetcher
         self.media = media
@@ -243,6 +249,12 @@ class Collector:
                     reference_page=page.url,
                 )
             )
+        if self.browser is not None:
+            shot = await self._screenshot(page, report)
+            if shot is None:
+                complete = False
+            else:
+                sources.append(shot)
         own = set(self.registry.confirmed_official_domains(page.brand))
         for d in results.get("page_content", {}).get("links", {}).get("external_domains", []):
             if not any(d == o or d.endswith("." + o) for o in own):
@@ -254,6 +266,57 @@ class Collector:
                 self._observe(report, page.brand, page.url, "payment_destination", value, detail)
         report.pages.append({**entry, "result": "collected", "images": len(sources)})
         return sources, complete
+
+    async def _screenshot(self, page: ReferencePage, report: CollectReport) -> Source | None:
+        """The reference page's screenshot, rendered with verified TLS, or None
+        (reported) when it cannot serve as a reference."""
+        job = f"ref-{secrets.token_hex(6)}"
+        try:
+            r = await self.browser.render(page.url, job=job, verify_tls=True)
+        except SandboxError as e:
+            r = None
+            why = f"browser sandbox unavailable: {e}"[:200]
+        else:
+            why = self._render_unusable(page, r)
+        if why:
+            report.images.append(
+                {"url": page.url, "kind": "screenshot", "result": "refused", "why": why}
+            )
+            return None
+        summary = {
+            k: r.doc.get(k)
+            for k in ("final_url", "main_status", "redirect_chain", "navigations", "verify_tls")
+        }
+        return Source(
+            page.brand,
+            "screenshot",
+            "collected",
+            r.doc["final_url"],
+            r.screenshot,
+            "verified",
+            True,
+            {"render": summary, "runs": r.runs},
+            reference_page=page.url,
+        )
+
+    def _render_unusable(self, page: ReferencePage, r) -> str | None:
+        if r.status != "ok":
+            return f"render {r.status}: {r.reason or ''}".strip()[:200]
+        if not r.doc.get("verify_tls"):
+            return "not rendered with verified TLS"
+        if r.doc.get("navigation_error") or not r.screenshot:
+            return f"no page: {r.doc.get('navigation_error') or 'no screenshot'}"[:200]
+        if len(r.screenshot) > self.settings.max_image_bytes:
+            return "screenshot over media.max_image_bytes"
+        urls = [r.doc.get("final_url") or "", *(r.doc.get("navigations") or [])]
+        urls += [h.get("url") or "" for h in r.doc.get("redirect_chain") or []]
+        for url in urls:
+            if not (
+                url.startswith("https://")
+                and self.registry.on_confirmed_official_domain(page.brand, host_of(url))
+            ):
+                return f"navigated off the official https site: {url[:200]}"
+        return None
 
     # --- hashing and writing ------------------------------------------------------------
 

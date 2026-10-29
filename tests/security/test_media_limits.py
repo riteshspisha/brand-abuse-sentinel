@@ -29,6 +29,7 @@ APPLICATION_MODULES = (
     "brandsentinel.analysis.media_text",
     "brandsentinel.sandbox.media_client",
     "brandsentinel.sandbox.media_selftest",
+    "brandsentinel.sandbox.browser_client",
     "brandsentinel.visual.collector",
     "brandsentinel.visual.corpus",
     "brandsentinel.visual.compare",
