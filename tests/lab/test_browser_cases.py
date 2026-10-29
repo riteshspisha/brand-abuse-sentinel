@@ -209,7 +209,7 @@ def test_no_lab_render_clicked_typed_submitted_or_downloaded(demo):
         fact = render_fact(store, case_id)
         assert fact["status"] == "ok", (site, fact.get("reason"))
         assert fact["attempt_counts"] == {
-            "blocked_requests": 0, "dialogs": 0, "popups": 0, "downloads": 0,
+            "blocked_requests": 0, "dialogs": 0, "popups": 0, "downloads": 0, "websockets": 0,
         }, site  # fmt: skip
         assert {q["method"] for q in fact["requests"]} <= {"GET"}, site
 

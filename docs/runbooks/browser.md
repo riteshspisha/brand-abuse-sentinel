@@ -63,6 +63,7 @@ directly, and `bs_lab` has a gateway in the rootless namespace); reusing
 | Container escape via configuration | runner-fixed arguments; Chromium profile = Docker default + `clone`, `unshare`, `chroot`; never `--privileged` or an added capability | runner, client | `test_browser_limits.py` (arguments, profile contents), `test_browser_client.py::test_js_login_renders_in_chromiums_own_sandbox...` (CapEff 0, NoNewPrivs 1, Seccomp 2, uid 1001) |
 | Renderer exploit reaching the container | Chromium's own namespace sandbox stays on (`chromium_sandbox=True`, never `--no-sandbox`) | worker | live: renderers in their own user namespace, `sandbox selftest browser` |
 | Page acting on its own (R39) | worker calls no interaction API; non-GET requests stopped in the browser (a blocked navigation answered locally with 204); downloads refused; service workers blocked; dialogs dismissed; popups closed; no permission granted | worker | `test_browser_limits.py::test_the_worker_never_interacts_with_a_page` (AST, with positive control); `test_browser_client.py::test_page_initiated_actions_are_contained...` (nothing but GET reaches the proxy); lab demo: no action in any lab render |
+| Page-opened sockets: WebSocket, WebRTC through a TURN relay, a worker's sockets (outside the HTTP method gate) | proxy: tunnels only to 443 and only TLS (first bytes a ClientHello), so plain `ws://` and TURN go nowhere; worker: every WebSocket answered inside the browser and recorded (`websockets`), `RTCPeerConnection`, `Worker`, `SharedWorker` removed from every frame | proxy, worker | `test_browser_sockets.py` (a WebSocket server beside lab-web; raw tunnels from a sandbox and a real render; positive controls; fails on the M7 image); `test_proxy.py` tunnel-policy cases; `test_docker_isolation.py` (`tunnel plain 443` cut, `tunnel tls 443` answered) |
 | A page denying rendering by inflating output (control characters) | C0 controls stripped, UTF-8 JSON, worst-case output budget | worker, config | `test_browser_limits.py::test_control_characters_...` |
 | A page sending the browser to an error page or the proxy's refusal | no usable page: network log kept, scored on the static view | render stage | `test_render_pipeline.py::test_a_render_without_a_usable_page_...` |
 | Brand shown only to the fetcher | the rendered view keeps the static page's brands and claims | bundle | `test_render_pipeline.py::test_a_brand_hidden_from_the_browser_...` |
@@ -112,7 +113,9 @@ self-test.
 - `policy/5`: `cloaking_suspected` (abuse, 30 points, needs a brand on the page
   or in the domain) and the `cloaking_suspected` label.
 - Reports show the render as text; the screenshot is never embedded (as with
-  page images since M6).
+  page images since M6). This deviates from KTD20 (size-capped data URIs) by the
+  owner's decision of 2026-10-29: no sandbox-produced image reaches an analyst's
+  browser in M7.
 
 ## Operating
 
@@ -148,6 +151,7 @@ built from this branch (Playwright 1.63.0, Chromium headless shell 1243).
 | Code review | nine reviewers; findings fixed with regression tests or accepted: `docs/residual-review-findings/feat-m7-isolated-browser.md` |
 | Lab demo | JS login `credential_phishing` P1 (rendered form); JS payment card fields, the gateway script in the network log, the UPI QR read from the screenshot; image-only, copied-assets and redirects reach their `expected.yaml`; cloaking `donation_fraud` with `cloaking_suspected`; no lab render took any page action |
 | AE18 | application SIGKILLed mid-render: the container outlived it, was removed before lease recovery, and the job ran exactly once more |
+| Page sockets (2026-10-29, PR review) | before: `ws://` reached the destination through `CONNECT :80`; `ws://host:443` from the page and from a worker exchanged a message and a reply; `wss://` and WebRTC TURN sent TLS and TURN Allocate bytes through `CONNECT :443`; none appeared in the network log. After: the server sees nothing from the page (four WebSockets recorded, worker and WebRTC absent, beacon and keepalive POST blocked; only GET at the proxy); raw plain tunnels are cut, a real ClientHello is relayed. See `docs/solutions/2026-10-29-page-sockets-bypass-the-http-method-gate.md` |
 
 The service-account validation and promotion are separate, gated operations
 (see the handoff).
@@ -157,10 +161,18 @@ The service-account validation and promotion are separate, gated operations
 - Chromium is a large native attack surface; its own sandbox and the container
   (rootless, no capabilities, seccomp, limits, no route out) bound an exploit,
   and the kernel is shared (VM isolation deferred).
-- The proxy cannot see inside CONNECT tunnels: a page's HTTPS traffic to an
-  allowed destination is opaque (as for every sandbox since M4); non-GET
-  requests are stopped in the browser, which a compromised renderer could
-  bypass, still only towards destinations the proxy allows.
+- **BrandSentinel does not interact with a page; the page is not prevented from
+  every remote side effect.** The worker never clicks, types, submits or
+  downloads, and stops what it can see: non-GET HTTP, WebSockets, WebRTC and
+  workers. What is enforced without the browser is the proxy's: destinations
+  validated by netguard, plain HTTP only as GET or HEAD, tunnels only TLS to
+  443. A page's scripts can still send GET requests, with whatever they encode
+  in the URL, to any destination the proxy allows, and TLS tunnels are opaque:
+  a page's HTTPS POST, a `wss://` WebSocket or a `turns:` relay is stopped only
+  by the browser-side layer. A compromised renderer or a page API this layer
+  misses could bypass it, still only towards destinations the proxy allows.
+  WebSocket-only page content is not rendered (the page sees a socket that
+  never answers); the attempted URLs are recorded.
 - Rendering is attributable to the host's egress address and loads the page's
   third-party resources through the proxy (pixels, analytics); a page can tell
   it was visited by a headless Chromium.
@@ -169,7 +181,9 @@ The service-account validation and promotion are separate, gated operations
 - Reference screenshots include third-party content shown on official pages.
 - The lab has no `https` reference pages (reference pages are `https`-only with
   verified TLS), so screenshot similarity against a reference screenshot is
-  proven with a scripted browser, not end to end in the lab.
+  proven with a scripted browser, not end to end in the lab. Accepted by the
+  owner (2026-10-29) as a documented test limitation; TLS verification for
+  reference pages stays on.
 - In evidence mode certificate errors are ignored, not recorded per error
   (Playwright does not report them when ignoring them); the static fetcher
   still records `tls_verification_failed`.

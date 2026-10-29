@@ -9,14 +9,19 @@ short timeout. Result values:
 - resolve:     "resolved:<addresses>" or the error class name
 - http:        "status:<code>" (a direct or proxied HTTP request) or error
 - connect:     "status:<code>" for a CONNECT through a proxy, or error
+- tunnel:      a CONNECT, then `payload_hex` (or, with `client_hello`, a real TLS
+               ClientHello for that name) sent through it: "status:<code>" and
+               then "closed" (the tunnel ended before any reply), "reply" or "silent"
 - read/write/exec/proc: filesystem and process facts for isolation checks
 - scan:        list of TCP ports in [start, end] that accepted a connection
 - ipv6:        this container's IPv6 addresses as (interface, address) pairs
 """
 
+import contextlib
 import json
 import os
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -134,6 +139,42 @@ def connect(proxy_host, proxy_port, authority):
         s.close()
 
 
+def client_hello(name):
+    """The first flight of a real TLS handshake for `name`, without a socket."""
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = ssl.create_default_context().wrap_bio(incoming, outgoing, server_hostname=name)
+    with contextlib.suppress(ssl.SSLWantReadError):
+        tls.do_handshake()
+    return outgoing.read()
+
+
+def tunnel(proxy_host, proxy_port, authority, payload):
+    try:
+        s = socket.create_connection((proxy_host, proxy_port), timeout=TIMEOUT * 3)
+    except OSError as e:
+        return type(e).__name__
+    try:
+        s.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n".encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = s.recv(1)
+            if not chunk:
+                return "no_status"
+            head += chunk
+        status = f"status:{int(head.split(b' ', 2)[1])}"
+        if not status.endswith("200"):
+            return status
+        s.sendall(payload)
+        try:
+            return f"{status} {'reply' if s.recv(4096) else 'closed'}"
+        except TimeoutError:
+            return f"{status} silent"
+    except OSError as e:
+        return type(e).__name__
+    finally:
+        s.close()
+
+
 def facts():
     status = {}
     with open("/proc/self/status") as f:
@@ -230,6 +271,12 @@ def run(check):
         )
     if kind == "connect":
         return connect(check["proxy_host"], check["proxy_port"], check["authority"])
+    if kind == "tunnel":
+        if check.get("client_hello"):
+            payload = client_hello(check["client_hello"])
+        else:
+            payload = bytes.fromhex(check["payload_hex"])
+        return tunnel(check["proxy_host"], check["proxy_port"], check["authority"], payload)
     if kind == "facts":
         return facts()
     return f"unknown kind {kind}"

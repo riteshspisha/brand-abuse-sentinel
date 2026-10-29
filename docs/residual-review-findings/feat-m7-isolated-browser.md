@@ -48,11 +48,25 @@ code (`1ff9cf5`).
   (it reaches its network's one peer); the proxy-log check requires `GET` and is
   scoped to its test.
 
+## PR #12 review (2026-10-29)
+
+- **Page-opened sockets bypassed the HTTP method gate** (owner's security
+  review). `context.route` sees HTTP only: a page's WebSocket (also from a
+  worker) exchanged messages through a proxy tunnel, and WebRTC sent TURN
+  traffic through one. Fixed in the proxy (tunnels only TLS to 443) and the
+  worker (WebSockets refused and recorded; WebRTC and workers removed).
+  Test: `tests/lab/test_browser_sockets.py` (fails on the M7 image).
+  Residual: GET requests and TLS-tunnelled traffic a page itself sends towards
+  allowed destinations (`docs/runbooks/browser.md`).
+- **KTD20 screenshot embedding**: not implemented, recorded as a deviation.
+- **Lab reference screenshots**: accepted as a documented test limitation.
+
 ## Accepted residuals
 
 - **Reference screenshots are not demonstrated in the lab** (testing, P2):
   reference pages are https-only with verified TLS and the lab is plain HTTP.
   Covered by `tests/integration/test_collector.py` with a scripted browser.
+  Accepted by the owner as a test limitation (2026-10-29).
 - **`bundle.py` grew past 1300 lines** (maintainability, P2): splitting the
   render and visual blocks into their own module is a follow-up, as for `cli.py`.
 - **Cloaking explanation text built in both the rule and the label**

@@ -71,7 +71,7 @@ def test_js_login_renders_in_chromiums_own_sandbox_in_an_unprivileged_container(
     hosts = {q["host"] for q in r.doc["requests"]}
     assert hosts == {"login-luminafoundation.test"}
     assert r.doc["attempt_counts"] == {
-        "blocked_requests": 0, "dialogs": 0, "popups": 0, "downloads": 0,
+        "blocked_requests": 0, "dialogs": 0, "popups": 0, "downloads": 0, "websockets": 0,
     }  # fmt: skip
 
 

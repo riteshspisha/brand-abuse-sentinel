@@ -29,6 +29,8 @@ paths:
   status: 200
 - path: /pushy.html
   status: 200
+- path: /socket.html
+  status: 200
 - path: /stall.html
   status: 200
 - path: /to-metadata

@@ -39,15 +39,25 @@ promotion is a separate, gated operation (see "M7 promotion").
   container removal left the container behind; removal now finishes first.
 - Details, controls and the verification record: `docs/runbooks/browser.md`.
 
-### M7 decisions and deviations to review
+### M7 decisions and deviations
 
-- **Screenshots are not embedded in reports** (KTD20 says size-capped data
-  URIs). Kept M6's stance that no sandbox-produced image reaches the analyst's
-  browser; the screenshot's hashes, OCR and QR results are shown as text.
-  Embedding is a one-template change if accepted as a risk.
-- **Reference screenshots are not demonstrated in the lab**: reference pages
-  are `https`-only with verified TLS and the lab is plain HTTP. Proven with a
-  scripted browser (`tests/integration/test_collector.py`).
+- **Screenshots are not embedded in reports: a recorded KTD20 deviation**
+  (owner decision, PR #12 review, 2026-10-29). KTD20 says size-capped data
+  URIs; M7 keeps M6's stance that no sandbox-produced image reaches the
+  analyst's browser, and shows the screenshot's hashes, OCR and QR results as
+  text. Embedding is not implemented; revisiting it is a separate decision.
+- **Reference screenshots are not demonstrated in the lab: an accepted test
+  limitation** (owner decision, 2026-10-29). Reference pages are `https`-only
+  with verified TLS and the lab is plain HTTP; TLS verification is not relaxed.
+  Proven with a scripted browser (`tests/integration/test_collector.py`).
+- **Page-opened sockets (PR #12 review finding).** WebSockets and WebRTC were
+  outside the browser's GET-only gate and passed through proxy tunnels. Now the
+  proxy tunnels only TLS to 443 (this also changes the production egress proxy
+  at promotion: `CONNECT` to port 80 and plain tunnels are refused), and the
+  worker refuses WebSockets and removes WebRTC and workers. BrandSentinel does
+  not interact with pages; a page's own GET requests and TLS traffic remain
+  possible towards allowed destinations (`docs/runbooks/browser.md`, residual
+  risks).
 - **Seccomp profile** shipped in the package (`src/brandsentinel/sandbox/
   chromium-seccomp.json`) rather than `docker/seccomp/chromium.json`, so wheel
   installs carry it; derived from the vendored Docker default, not Playwright's
@@ -240,7 +250,6 @@ Proposed follow-ups:
 - Who confirms the production reference assets and pages (residual issue 4).
 - The proxy's Compose ownership and lab-container retirement (residual issues 1 and 2), and cleanup of staging, the
   superseded `/opt` trees and the Gate 4 store copy.
-- Whether reports should embed screenshots (KTD20) or keep showing them as text (M7 default).
 - When the first supervised `brandsentinel run` happens (live collection; not authorized).
 
 ### Next: M8 (U20 providers, U21 evaluation)

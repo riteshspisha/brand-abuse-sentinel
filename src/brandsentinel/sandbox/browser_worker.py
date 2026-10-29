@@ -14,15 +14,28 @@ capability.
 The page is only observed. The worker loads the URL, waits for the load event and
 then for network idle within its budget, and reads the result: it never clicks,
 types, fills, presses, hovers, submits, uploads, downloads or grants a
-permission. What the page tries on its own is contained and recorded:
+permission. What the page's own scripts try is contained and recorded:
 
-- every request other than GET or HEAD is stopped in the browser (a form that
-  submits itself, a beacon, a script POST), so no data leaves even through a
-  CONNECT tunnel; a blocked navigation is answered locally with 204 No Content,
-  which keeps the page in place;
+- every HTTP request other than GET or HEAD is stopped in the browser (a form
+  that submits itself, a beacon, a script POST); a blocked navigation is answered
+  locally with 204 No Content, which keeps the page in place;
+- no WebSocket connects, `ws://` and `wss://` alike: each is answered inside the
+  browser, what the page sends is dropped, and its URL is recorded;
+- an init script removes WebRTC (`RTCPeerConnection`) and dedicated and shared
+  workers from every frame before the page's scripts run: a worker's sockets are
+  out of reach of the WebSocket rule, and WebRTC can relay through a TURN server
+  over the proxy;
 - downloads are refused, service workers blocked, dialogs dismissed, popups
   closed, no permission is granted;
-- QUIC is off and WebRTC may use only proxied TCP.
+- QUIC is off and WebRTC, were it reachable, could use only proxied TCP.
+
+These are browser-side and not the boundary. The proxy enforces its part without
+the browser: plain-HTTP requests other than GET or HEAD are refused, and tunnels
+carry only TLS to port 443, so a plain `ws://` socket or TURN relay goes nowhere.
+What is not claimed: the page's scripts can still send GET requests, with
+whatever they put in the URL, to any destination the proxy allows, and what a TLS
+tunnel carries is opaque to the proxy. BrandSentinel does not interact with the
+page; the page itself is not prevented from every remote side effect.
 
 The document holds the final URL, the redirect chain and later main-frame
 navigations, the rendered HTML and visible text (capped), the network requests
@@ -35,6 +48,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import sys
 import time
 from urllib.parse import urlsplit
@@ -51,6 +65,21 @@ TEXT_TIMEOUT_MS = 5000
 SCREENSHOT_TIMEOUT_MS = 10000
 POST_SETTLE_SECONDS = 30  # text + screenshot + reading the page + launch and close
 ALLOWED_METHODS = frozenset({"GET", "HEAD"})
+EVERY_URL = re.compile(r".*")
+# Runs in every frame (and popup) before the page's own scripts. Interface objects
+# are configurable, so deleting them leaves nothing for a page to reach.
+REMOVED_APIS = (
+    "RTCPeerConnection",
+    "webkitRTCPeerConnection",
+    "RTCDataChannel",
+    "RTCIceTransport",
+    "Worker",
+    "SharedWorker",
+)
+INIT_SCRIPT = (
+    f"for (const n of {json.dumps(list(REMOVED_APIS))}) {{ try {{ delete globalThis[n]; }}"
+    " catch (e) {} }"
+)
 # Chromium flags beside Playwright's own. None of them is a boundary (the network
 # is); they keep the browser from wandering. Never --no-sandbox.
 CHROMIUM_ARGS = (
@@ -146,6 +175,7 @@ class Recorder:
             "dialogs": [],
             "popups": [],
             "downloads": [],
+            "websockets": [],
         }
         self.counts = dict.fromkeys(self.attempts, 0)
 
@@ -300,6 +330,13 @@ def render(job: dict) -> dict:
                 else:
                     route.abort("blockedbyclient")
 
+            def socket(ws) -> None:
+                # Never connect_to_server(): Playwright answers the socket inside the
+                # browser and drops what the page sends, so nothing leaves. (Closing
+                # it from this handler deadlocks the sync API, so the page sees an
+                # open socket that never replies.)
+                rec.attempt("websockets", {"url": cap(ws.url, MAX_URL_CHARS)})
+
             def popup(page) -> None:
                 rec.attempt("popups", {"url": cap(page.url, MAX_URL_CHARS)})
                 page.close()
@@ -308,7 +345,9 @@ def render(job: dict) -> dict:
                 rec.attempt("dialogs", {"type": cap(d.type, 20), "message": cap(d.message, 200)})
                 d.dismiss()
 
+            context.add_init_script(INIT_SCRIPT)
             context.route("**/*", gate)
+            context.route_web_socket(EVERY_URL, socket)
             context.on("request", rec.on_request)
             context.on("response", rec.on_response)
             context.on("requestfailed", rec.on_failed)

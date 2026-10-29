@@ -102,6 +102,7 @@ class AttemptsOut(_Out):
     dialogs: list[DialogOut] = Field(default_factory=list, max_length=MAX_ATTEMPTS)
     popups: list[UrlOut] = Field(default_factory=list, max_length=MAX_ATTEMPTS)
     downloads: list[UrlOut] = Field(default_factory=list, max_length=MAX_ATTEMPTS)
+    websockets: list[UrlOut] = Field(default_factory=list, max_length=MAX_ATTEMPTS)
 
 
 class AttemptCounts(_Out):
@@ -109,6 +110,7 @@ class AttemptCounts(_Out):
     dialogs: int = Field(0, ge=0)
     popups: int = Field(0, ge=0)
     downloads: int = Field(0, ge=0)
+    websockets: int = Field(0, ge=0)
 
 
 class SandboxFacts(_Out):

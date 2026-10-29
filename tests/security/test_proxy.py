@@ -115,7 +115,18 @@ def redirecting_connector(host: str, port: int, calls: list, *, fake_peer: bool 
     return connect
 
 
-def with_proxy(guard, scenario, settings: ProxySettings | None = None, **proxy_kw):
+# The harness's servers listen on random ports and speak plain HTTP, so most tests
+# here tunnel to any port without the TLS check; `real_tunnels` keeps the proxy's
+# own policy (TLS to 443 only), which the tunnel-policy tests below exercise.
+HARNESS_TUNNELS = {"tunnel_ports": range(1, 65536), "plain_tunnels": True}
+
+
+def with_proxy(
+    guard, scenario, settings: ProxySettings | None = None, *, real_tunnels=False, **proxy_kw
+):
+    if not real_tunnels:
+        proxy_kw = {**HARNESS_TUNNELS, **proxy_kw}
+
     async def main():
         proxy = EgressProxy(settings or ProxySettings(), guard, **proxy_kw)
         servers = await proxy.start([("127.0.0.1", 0)])
@@ -194,21 +205,115 @@ def test_connect_tunnel_carries_tls_end_to_end(harness):
     assert b"200 OK" in with_proxy(harness_guard(harness), scenario)
 
 
-@pytest.mark.parametrize("port", [443, 80])
-def test_connect_to_a_public_host_on_443_and_80_dials_the_validated_ip(harness, decisions, port):
+def test_connect_to_a_public_host_on_443_dials_the_validated_ip(harness, decisions):
     guard = NetGuard(NetSettings(), StaticResolver({"public.example": [PUBLIC_IP]}))
     calls: list = []
     connector = redirecting_connector("127.77.0.1", harness.http.port, calls)
 
     async def scenario(proxy_port):
-        _r, w, head = await open_tunnel(proxy_port, f"public.example:{port}")
+        _r, w, head = await open_tunnel(proxy_port, "public.example:443")
         w.close()
         return head
 
-    head = with_proxy(guard, scenario, connector=connector)
+    head = with_proxy(guard, scenario, connector=connector, real_tunnels=True)
     assert head.startswith(b"HTTP/1.1 200")
-    assert calls == [(PUBLIC_IP, port)]
+    assert calls == [(PUBLIC_IP, 443)]
     assert decisions.last()["address"] == PUBLIC_IP
+
+
+# --- tunnel policy: TLS to port 443 only ---------------------------------------------
+
+WS_HANDSHAKE = (
+    b"GET /socket HTTP/1.1\r\nHost: public.example:443\r\nUpgrade: websocket\r\n"
+    b"Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+    b"Sec-WebSocket-Version: 13\r\n\r\n\x81\x85\0\0\0\0hello"
+)
+
+
+def recording_upstream(received: list):
+    """A connector to an in-process server that records every byte it is sent."""
+
+    async def connect(address: str, port: int):
+        async def serve(r, w):
+            received.append(await r.read())
+            w.close()
+
+        server = await asyncio.start_server(serve, "127.0.0.1", 0)
+        r, w = await asyncio.open_connection("127.0.0.1", server.sockets[0].getsockname()[1])
+        return r, _Peer(w, address)
+
+    return connect
+
+
+def test_a_tunnel_to_port_80_is_refused_and_never_dialled(decisions):
+    # Chromium tunnels a page's ws:// WebSocket through CONNECT host:80; plain
+    # HTTP itself never needs a tunnel (it is forwarded, GET and HEAD only).
+    guard = NetGuard(NetSettings(), StaticResolver({"public.example": [PUBLIC_IP]}))
+    calls: list = []
+    response = ask(
+        guard,
+        b"CONNECT public.example:80 HTTP/1.1\r\n\r\n",
+        connector=redirecting_connector("127.0.0.1", 9, calls),
+        real_tunnels=True,
+    )
+    assert status_of(response) == 403 and b"port_not_allowed" in response and calls == []
+    assert decisions.last()["reason"] == "port_not_allowed"
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        WS_HANDSHAKE,  # a ws:// WebSocket aimed at port 443
+        bytes.fromhex("000300082112a442") + b"\0" * 12,  # a TURN Allocate over TCP
+        b"\x16\x03\x01\x00\x05\x02\0\0\0\0",  # a TLS record, but not a ClientHello
+        b"\x16\x03",  # too short, then silence
+        b"",  # nothing at all
+    ],
+    ids=["websocket", "turn", "server_hello", "short", "silent"],
+)
+def test_a_tunnel_that_does_not_open_with_a_tls_client_hello_carries_nothing(decisions, first):
+    guard = NetGuard(NetSettings(), StaticResolver({"public.example": [PUBLIC_IP]}))
+    received: list = []
+
+    async def scenario(port):
+        r, w, head = await open_tunnel(port, "public.example:443")
+        w.write(first)
+        await w.drain()
+        data = await asyncio.wait_for(r.read(), 10)  # the proxy closes the tunnel
+        w.close()
+        await asyncio.sleep(0.1)
+        return head, data
+
+    settings = ProxySettings(header_timeout_seconds=0.5)
+    head, data = with_proxy(
+        guard, scenario, settings=settings, connector=recording_upstream(received),
+        real_tunnels=True,
+    )  # fmt: skip
+    assert head.startswith(b"HTTP/1.1 200") and data == b""
+    assert received in ([], [b""])  # the destination got a connection, never a byte
+    rec = decisions.last()
+    assert (rec["decision"], rec["reason"], rec["bytes_up"]) == ("deny", "tunnel_not_tls", 0)
+
+
+def test_a_tunnel_that_opens_with_a_tls_client_hello_is_relayed_whole(harness, decisions):
+    authority = f"secure.harness.test:{harness.secure.port}"
+
+    async def scenario(port):
+        r, w, head = await open_tunnel(port, authority)
+        assert head.startswith(b"HTTP/1.1 200")
+        await w.start_tls(harness_context(harness), server_hostname="secure.harness.test")
+        w.write(b"GET /ok HTTP/1.1\r\nHost: secure.harness.test\r\nConnection: close\r\n\r\n")
+        await w.drain()
+        data = await asyncio.wait_for(r.read(), 10)
+        w.close()
+        return data
+
+    proxy_kw = {"tunnel_ports": [harness.secure.port], "real_tunnels": True}
+    # The handshake completing shows the ClientHello's first bytes, read for the
+    # check, were sent on ahead of the rest.
+    assert b"200 OK" in with_proxy(harness_guard(harness), scenario, **proxy_kw)
+    rec = decisions.last()
+    assert rec["decision"] == "allow" and rec["reason"] == "connect"
 
 
 def test_absolute_form_get_is_forwarded_without_hop_by_hop_headers(upstream):

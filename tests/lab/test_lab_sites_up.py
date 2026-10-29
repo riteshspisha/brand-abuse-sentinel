@@ -145,8 +145,11 @@ def test_lab_proxy_serves_only_lab_hostnames(docker):
         writer.close()
         return head
 
-    assert asyncio.run(connect("donate-luminafoundation.test:80")).startswith(b"HTTP/1.1 200")
+    # A lab hostname is served: allowed and dialled (502: lab-web has nothing on 443).
+    # Tunnels go to 443 only; plain-HTTP lab pages are forwarded, not tunnelled.
+    assert asyncio.run(connect("donate-luminafoundation.test:443")).startswith(b"HTTP/1.1 502")
     for authority in (
+        "donate-luminafoundation.test:80",
         "example.com:443",
         "127.0.0.1:3128",
         "169.254.169.254:80",
@@ -193,12 +196,14 @@ def test_lab_sandboxes_reach_lab_hostnames_only_through_their_proxy(docker):
         "connect public name": "example.com:443",
         "connect public ip": "1.1.1.1:443",
         "connect lab host port 22": "donate-luminafoundation.test:22",
+        "connect lab host port 80": "donate-luminafoundation.test:80",  # tunnels: 443 only
     }
     checks = [{"id": k, "kind": "connect", "authority": a, **via} for k, a in refused.items()]
     checks += [
-        # Positive controls: the lab is reachable through the proxy, by name.
+        # Positive controls: the lab is reachable through the proxy, by name (a
+        # tunnel to 443 is allowed and dialled; lab-web has nothing there: 502).
         {"id": "connect lab host", "kind": "connect",
-         "authority": "donate-luminafoundation.test:80", **via},
+         "authority": "donate-luminafoundation.test:443", **via},
         _via_lab_sandbox_proxy("get lab page", "http://donate-luminafoundation.test/",
                                "donate-luminafoundation.test"),
         # A redirect is just a response; the next hop is a new request, validated again.
@@ -223,7 +228,7 @@ def test_lab_sandboxes_reach_lab_hostnames_only_through_their_proxy(docker):
     results = probe(make_runner(docker, net=LAB_SANDBOX_NET), LAB_SANDBOX_NET.name, checks)
     for k in refused:
         assert results[k] == "status:403", (k, results)
-    assert results["connect lab host"] == "status:200", results
+    assert results["connect lab host"] == "status:502", results
     assert results["get lab page"] == "status:200", results
     assert results["get redirect to metadata"] == "status:302", results
     for k in ("get metadata", "get loopback", "get lab-web literal ip"):

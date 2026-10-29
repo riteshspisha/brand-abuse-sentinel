@@ -127,6 +127,20 @@ def proxy_checks() -> list[dict]:
         {"id": "connect public 443", "kind": "connect", "authority": "example.com:443", **via},
         {"id": "connect public 80", "kind": "connect", "authority": "example.com:80", **via},
         {
+            "id": "tunnel plain 443",
+            "kind": "tunnel",
+            "authority": "example.com:443",
+            "payload_hex": b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".hex(),
+            **via,
+        },
+        {
+            "id": "tunnel tls 443",
+            "kind": "tunnel",
+            "authority": "example.com:443",
+            "client_hello": "example.com",
+            **via,
+        },
+        {
             "id": "get metadata",
             "kind": "http",
             "host": PROXY_IP,
@@ -163,12 +177,16 @@ def test_proxy_refuses_blocked_destinations_and_allows_public_ones(docker):
         "connect v6 loopback",
         "connect mapped",
         "connect port 22",
+        "connect public 80",  # tunnels go to 443 only (a ws:// WebSocket would use 80)
         "get metadata",
     ):
         assert results[refused] == "status:403", (refused, results)
     assert results["get host mismatch"] == "status:400"
     assert results["connect public 443"] == "status:200", results
-    assert results["connect public 80"] == "status:200", results
+    # A tunnel carries TLS only: plain HTTP (or a WebSocket, or TURN) is cut before
+    # the server can answer, while a real ClientHello gets the server's reply.
+    assert results["tunnel plain 443"] == "status:200 closed", results
+    assert results["tunnel tls 443"] == "status:200 reply", results
     assert results["get public"].startswith("status:"), results
 
 

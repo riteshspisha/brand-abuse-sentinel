@@ -279,8 +279,10 @@ Sandbox image `brandsentinel-sandbox:local`, 3.97 GB.
   stay on for the proxy). SP1 bounds this to one untrusted container per
   network with the runner's network lease (`docs/runbooks/service-account.md`),
   instead of relying on `stages.render: 1`.
-- CONNECT to port 80 is an opaque tunnel (KTD10): the destination is validated,
-  the bytes inside are not (as for 443).
+- Tunnels go only to port 443 and must open with a TLS ClientHello (M7 review,
+  2026-10-29): a plain tunnel would carry a page's `ws://` WebSocket or a TURN
+  relay past the GET/HEAD rule. Inside TLS the bytes are opaque (KTD10): the
+  destination is validated, the content is not.
 - A tunnel whose client half-closed stays open until the idle timeout (30 s);
   its decision is logged when it ends.
 - In lab mode a lab site could forge the refusal header on a forwarded response;

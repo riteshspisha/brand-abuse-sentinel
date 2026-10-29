@@ -42,8 +42,15 @@ def _called_attributes(tree: ast.AST) -> set[str]:
 
 
 def test_the_worker_never_interacts_with_a_page():
-    called = _called_attributes(ast.parse(WORKER.read_text()))
-    assert called & INTERACTIONS == set(), called & INTERACTIONS
+    tree = ast.parse(WORKER.read_text())
+    called = _called_attributes(tree)
+    # The one script the worker puts in a page only removes APIs (below).
+    assert called & INTERACTIONS == {"add_init_script"}, called & INTERACTIONS
+    scripts = [
+        n.args for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "add_init_script"
+    ]  # fmt: skip
+    assert [[getattr(a, "id", None) for a in args] for args in scripts] == [["INIT_SCRIPT"]]
     # Positive control: the check sees the calls the worker does make.
     assert {"goto", "content", "screenshot", "dismiss", "continue_"} <= called
 
@@ -62,6 +69,13 @@ def test_chromium_keeps_its_own_sandbox():
     )  # fmt: skip
     keys = {k.value: v for k, v in zip(launch.value.keys, launch.value.values, strict=True)}
     assert isinstance(keys["chromium_sandbox"], ast.Constant) and keys["chromium_sandbox"].value
+
+
+def test_the_init_script_only_deletes_webrtc_and_workers():
+    names = json.dumps(list(W.REMOVED_APIS))
+    expected = f"for (const n of {names}) {{ try {{ delete globalThis[n]; }} catch (e) {{}} }}"
+    assert expected == W.INIT_SCRIPT
+    assert set(W.REMOVED_APIS) >= {"RTCPeerConnection", "Worker", "SharedWorker"}
 
 
 def test_quic_and_direct_webrtc_are_off():
