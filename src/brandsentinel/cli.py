@@ -288,21 +288,44 @@ def run(
         store.close()
 
 
+def _render_request_line(req, now: float) -> str:
+    if req.status == "refused":
+        return f"  render not requested: {req.reason}"
+    if req.due is not None and req.due > now:
+        when = "due " + datetime.fromtimestamp(req.due, UTC).isoformat(timespec="seconds")
+    else:
+        when = "now" if req.round == 0 else "under way"
+    already = " (already requested)" if req.status == "already_requested" else ""
+    return f"  render requested for round {req.round} ({when}){already}"
+
+
 @app.command()
 def submit(
     ctx: typer.Context,
     targets: Annotated[list[str], typer.Argument(help="URLs or domain names.")],
+    render: Annotated[
+        bool,
+        typer.Option(
+            "--render",
+            help="Request a browser render for the case's next undecided analysis round"
+            " (budget: browser.analyst_renders_per_day; never bypasses the static-fetch"
+            " and official-domain checks).",
+        ),
+    ] = False,
 ) -> None:
     """Submit URLs or domains for analysis (never suppressed)."""
+    from brandsentinel.policy.scorer import CaseScorer
+
     config = _load(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     matcher = Matcher(registry)
+    scorer_policy = _check_analysis_config(config)[0] if render else None
     store = open_store(config)
     failed = False
     try:
         for target in targets:
             try:
-                r = submit_name(store, matcher, target)
+                r = submit_name(store, matcher, target, render=render)
             except OSError as e:
                 typer.echo(f"error: cannot write discovery log: {e}", err=True)
                 raise typer.Exit(1) from e
@@ -314,6 +337,17 @@ def submit(
                 continue
             state = "new case" if r.new_case else "existing case"
             typer.echo(f"{escape_terminal(r.host)}: {state} #{r.case_id}")
+            if r.render_request is None:
+                continue
+            typer.echo(_render_request_line(r.render_request, time.time()))
+            if r.render_request.status == "refused":
+                failed = True
+            elif not r.new_case:
+                # So `cases show` says a render is requested before the round runs.
+                try:
+                    CaseScorer(store.conn, registry, scorer_policy).score(r.case_id)
+                except Exception as e:  # the request stands; the next score shows it
+                    typer.echo(f"  (case not re-scored: {type(e).__name__})", err=True)
     finally:
         store.close()
     if failed:

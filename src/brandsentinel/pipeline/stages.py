@@ -531,9 +531,29 @@ class AnalysisStages:
 
     # --- render decision (M7) ---------------------------------------------------------
 
+    def analyst_renders(self, now: float) -> int:
+        """Renders the analyst budget paid for in the 24 hours before `now`.
+        Requests are written only by `submit`, which escalates the case in the
+        same transaction, so only escalated cases are searched (this keeps the
+        count on the facts index instead of a scan of every fact)."""
+        return self.store.conn.execute(
+            "SELECT COUNT(*) FROM cases c JOIN facts f ON f.case_id = c.id"
+            " WHERE c.escalated = 1 AND f.name = 'render_decision' AND f.observed_at > ?"
+            " AND json_extract(f.value_json, '$.analyst_budget_spent')",
+            (now - 86400,),
+        ).fetchone()[0]
+
     def decide_render(self, case: CaseRow, rnd: int) -> None:
         """Record once per round whether the case is rendered in the browser and
-        why (`render_decision` fact), and queue the render job when it is."""
+        why (`render_decision` fact), and queue the render job when it is.
+
+        An analyst's `render_request` for this round, the budget count and the
+        decision are read and written in one BEGIN IMMEDIATE transaction. Writers
+        (fetch workers, other processes, `submit --render`) serialize on it, so a
+        request is seen by exactly the decision of its round (or `submit` sees
+        the decision and binds the request to the next round), and concurrent
+        decisions cannot overspend the budget. A crash before the commit leaves
+        neither the decision nor the render job; the redelivered fetch decides."""
         from brandsentinel.sandbox import triggers
 
         if self._round_fact(case.case_id, "render_decision", rnd) is not None:
@@ -552,17 +572,25 @@ class AnalysisStages:
         if bundle is None:
             return
         b = self.config.browser
-        decision = triggers.decide(
-            bundle,
-            self._images_feature(case.case_id, final[0]),
-            strength=case.match_strength,
-            sample_rate=b.sample_rate,
-            little_text_chars=b.little_text_chars,
-            enabled=self.render_enabled,
-        )
+        images = self._images_feature(case.case_id, final[0])
         with transaction(self.store.conn):
             if self._round_fact(case.case_id, "render_decision", rnd) is not None:
                 return
+            requested = self._round_fact(case.case_id, "render_request", rnd) is not None
+            budget_left = (
+                requested and self.analyst_renders(self.clock()) < b.analyst_renders_per_day
+            )
+            decision = triggers.decide(
+                bundle,
+                images,
+                strength=case.match_strength,
+                sample_rate=b.sample_rate,
+                little_text_chars=b.little_text_chars,
+                enabled=self.render_enabled,
+                analyst_request=requested,
+                budget_left=budget_left,
+                analyst_renders_per_day=b.analyst_renders_per_day,
+            )
             self._fact(case.case_id, "pipeline", "render_decision", decision, triggers.VERSION, rnd)
             if decision["triggered"] and decision["browser_enabled"]:
                 self._schedule(case, RENDER, rnd)

@@ -46,8 +46,9 @@ from brandsentinel.textsafe import sanitize_fact
 # original label; every block they lack has a default.
 # bundle/4 (M7): the `render` block, `render_reason` and `cloaking`, content
 # blocks from the rendered page, and screenshot evidence in `visual`.
-SCHEMA_VERSION = "bundle/4"
-SCHEMA_VERSIONS = ("bundle/1", "bundle/2", "bundle/3", "bundle/4")
+# bundle/5 (M8): `render.requested_round` and `render.analyst_budget`.
+SCHEMA_VERSION = "bundle/5"
+SCHEMA_VERSIONS = ("bundle/1", "bundle/2", "bundle/3", "bundle/4", "bundle/5")
 MAX_SNIPPETS = 20
 MAX_SNIPPET_CHARS = 300
 MAX_EXCERPT_CHARS = 1000
@@ -351,6 +352,10 @@ class RenderBlock(_Block):
     sampled: bool = False
     skipped: str | None = None  # why it was not
     reason: str | None = None  # why it failed
+    # A render an analyst requested for a later round, not decided yet (M8).
+    requested_round: int | None = None
+    # browser.analyst_renders_per_day when this round decided a request (M8).
+    analyst_budget: int | None = None
     requested_url: str | None = None
     final_url: str | None = None
     final_host: str | None = None
@@ -927,15 +932,25 @@ def _render(
 ) -> tuple[RenderBlock, FactRecord | None, dict | None]:
     """The render block for the round of the final static fetch, the completed
     `browser_render` fact (None unless the render completed) and the comparison."""
+    decided = {f.round for f in facts if f.name == "render_decision"}
+    pending = sorted(
+        f.round
+        for f in facts
+        if f.name == "render_request" and isinstance(f.round, int) and f.round not in decided
+    )
+    requested_round = pending[0] if pending and (rnd is None or pending[0] > rnd) else None
     decision = _round_fact(facts, "render_decision", rnd) if rnd is not None else None
     if decision is None:
-        return RenderBlock(), None, None
+        return RenderBlock(requested_round=requested_round), None, None
     dv = decision.value
+    budget = dv.get("analyst_renders_per_day") if dv.get("analyst_request") else None
     base = {
         "analysis_round": rnd,
         "reasons": _s(list(dv.get("reasons") or [])[:MAX_LIST], 100),
         "sampled": bool(dv.get("sampled")),
         "skipped": _s(dv.get("skipped"), 100),
+        "requested_round": requested_round,
+        "analyst_budget": budget if isinstance(budget, int) else None,
         "requested_url": _s(dv.get("url"), 2048),
     }
     refs = [f"fact:{decision.id}"]

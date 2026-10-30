@@ -103,3 +103,59 @@ def test_sampling_is_stable_and_follows_the_rate(rate):
     assert abs(sum(picks) / len(picks) - rate) < 0.04
     assert all(picks) if rate == 1.0 else True
     assert not any(picks) if rate == 0.0 else True
+
+
+# --- analyst requests (M8) ------------------------------------------------------------
+
+YOGA = "http://sunrise-yoga-studio.test/"
+
+
+def requested(html, url, *, budget_left=True, **kw):
+    b = bundle_for_html(html, url, status=kw.pop("status", 200), outcome=kw.pop("outcome", "ok"))
+    imgs = {"images": [{"url": "/a.png"}]}
+    return triggers.decide(b, imgs, strength=kw.pop("strength", "strong"),
+                           sample_rate=kw.pop("rate", 0.0), little_text_chars=200,
+                           enabled=kw.pop("enabled", True), analyst_request=True,
+                           budget_left=budget_left, analyst_renders_per_day=5)  # fmt: skip
+
+
+def test_without_a_request_the_decision_carries_no_analyst_keys():
+    d = decide(SHELL, YOGA)
+    assert not ({"analyst_request", "analyst_budget_spent", "analyst_renders_per_day"} & set(d))
+
+
+def test_a_request_alone_triggers_a_non_brand_js_shell_and_spends_the_budget():
+    d = requested(SHELL, YOGA)
+    assert d["triggered"] and d["reasons"] == ["analyst_request"] and d["analyst_budget_spent"]
+    assert d["analyst_renders_per_day"] == 5 and d["url"] == YOGA
+
+
+def test_a_request_with_the_budget_used_up_is_recorded_and_skipped():
+    d = requested(SHELL, YOGA, budget_left=False)
+    assert not d["triggered"] and d["skipped"] == "analyst_budget_exhausted"
+    assert d["analyst_request"] and not d["analyst_budget_spent"] and d["reasons"] == []
+
+
+def test_a_request_never_bypasses_the_official_or_static_response_skips():
+    _, html = lab_site("js-login")
+    official = requested(html, "http://luminafoundation.test/")
+    assert official["skipped"] == "official_domain" and not official["analyst_budget_spent"]
+    for outcome in ("blocked", "blocked_redirect", "timeout", "connect_error"):
+        d = requested(SHELL, YOGA, outcome=outcome)
+        assert d["skipped"] == "no_static_response" and not d["triggered"], outcome
+
+
+def test_a_request_beside_another_reason_is_recorded_without_spending():
+    _, html = lab_site("js-login")
+    d = requested(html, "http://login-luminafoundation.test/", budget_left=False)
+    assert d["triggered"] and "js_shell" in d["reasons"] and d["reasons"][-1] == "analyst_request"
+    assert not d["analyst_budget_spent"]
+    sampled = requested(FULL, YOGA, rate=1.0, budget_left=False)
+    assert (
+        sampled["reasons"] == ["sample", "analyst_request"] and not sampled["analyst_budget_spent"]
+    )
+
+
+def test_a_request_with_the_browser_disabled_spends_nothing():
+    d = requested(SHELL, YOGA, enabled=False, budget_left=False)
+    assert d["triggered"] and not d["browser_enabled"] and not d["analyst_budget_spent"]

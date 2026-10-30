@@ -55,6 +55,11 @@ sandbox:
   proxy_container: bs-lab-sandbox-proxy
   lab_proxy_url: http://127.0.0.1:3129
 
+# Analyst render requests (`submit --render`, M8): a small budget for the lab
+# demo. Production keeps the default of 0 until enabling it is decided.
+browser:
+  analyst_renders_per_day: 5
+
 # Read by the lab proxy only.
 proxy:
   lab_only: true

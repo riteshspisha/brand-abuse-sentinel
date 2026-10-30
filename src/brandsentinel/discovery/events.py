@@ -139,6 +139,7 @@ class IngestResult:
     new_candidate: bool = False
     new_case: bool = False
     job_id: int | None = None
+    render_request: Any = None  # with `submit --render`: a discovery.submit.RenderRequest
 
 
 def _decide(event: CandidateEvent, m: MatchResult) -> tuple[str, str | None]:
