@@ -144,12 +144,15 @@ service logs `browser stage disabled` with the failed checks
 brandsentinel submit --render https://example.test/login   # prints the round and when it is due
 ```
 
-- The request is a `render_request` fact for one analysis round: the case's
-  first round without a `render_decision`. A new case: round 0. A case already
-  decided (for example a non-brand JS shell that was not rendered): the next
-  scheduled recheck, whose time does not move; the case renders only then
-  (about a day later by default). No round is created. If every round is
-  decided the request is refused (exit 1). A second request for the same round
+- The request is a `render_request` fact for one analysis round: the next
+  round, after every decided one, that can still decide (its work is queued:
+  a deferred row, or a pending or running enrich or fetch job). A new case:
+  round 0. A case already decided (for example a non-brand JS shell that was
+  not rendered): the next scheduled recheck, whose time does not move; the
+  case renders only then (about a day later by default). A round that can no
+  longer decide (its fetch recorded without a decision, as for a case analyzed
+  before M7, or its jobs failed for good) is skipped. No round is created. If
+  no round is left the request is refused (exit 1). A second request for the same round
   is reported as `already requested` and changes nothing.
 - That round's decision consumes it. The request, the budget count and the
   decision are written in one `BEGIN IMMEDIATE` transaction, so a request is

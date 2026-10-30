@@ -241,32 +241,34 @@ def test_a_request_never_renders_an_official_domain(env, harness, registry_data,
 
 @pytest.mark.security
 @pytest.mark.parametrize(
-    "target",
+    "target, stopped_at",
     [
-        "http://private.harness.test/",  # RFC 1918 answer
-        "http://metadata.harness.test/",  # 169.254.169.254
-        "http://loopback6.harness.test/",  # ::1
-        "http://mapped.harness.test/",  # ::ffff:127.0.0.1
-        "http://127.0.0.1/",
-        "http://[::1]/",
-        "http://169.254.169.254/latest/meta-data/",
-        "http://site.harness.test:8080/",  # a port outside net.allowed_ports
-        "REDIRECT:http://169.254.169.254/latest/meta-data/",
-        "REDIRECT:http://10.0.0.5/",
-        "REDIRECT:http://127.0.0.1:8080/",
+        ("http://private.harness.test/", "fetch"),  # RFC 1918 answer
+        ("http://metadata.harness.test/", "fetch"),  # 169.254.169.254
+        ("http://loopback6.harness.test/", "fetch"),  # ::1
+        ("http://mapped.harness.test/", "fetch"),  # ::ffff:127.0.0.1
+        ("http://127.0.0.1/", "submit"),  # IP literals are no domain names
+        ("http://[::1]/", "submit"),
+        ("http://169.254.169.254/latest/meta-data/", "submit"),
+        ("http://site.harness.test:8080/", "fetch"),  # a port outside net.allowed_ports
+        ("REDIRECT:http://169.254.169.254/latest/meta-data/", "fetch"),
+        ("REDIRECT:http://10.0.0.5/", "fetch"),
+        ("REDIRECT:http://127.0.0.1:8080/", "fetch"),
     ],
 )
-def test_a_request_never_renders_what_the_static_fetch_refused(env, harness, target):
+def test_a_request_never_renders_what_the_static_fetch_refused(env, harness, target, stopped_at):
     """The browser renders only a URL the hardened fetcher reached through
     netguard: a request for a private, loopback, metadata or off-port target, or
     one that redirects there, gets no render job (positive control above)."""
     store, stages, matcher, _ = env
     if target.startswith("REDIRECT:"):
         target = f"http://site.harness.test:{harness.http.port}/redirect?to={target[9:]}"
-    try:
-        r = submit(store, matcher, target, render=True)
-    except SubmissionError:
-        return  # refused at submission: nothing was even queued
+    if stopped_at == "submit":
+        with pytest.raises(SubmissionError):
+            submit(store, matcher, target, render=True)
+        assert not store.conn.execute("SELECT 1 FROM cases").fetchone()
+        return
+    r = submit(store, matcher, target, render=True)
     run_until(store, stages, lambda: runs(store, "fetch"))
     d = decisions(store, r.case_id)[0]
     assert d["skipped"] == "no_static_response" and not d["triggered"], d
@@ -419,3 +421,62 @@ def test_a_requested_render_completes_with_reason_analyst_request(tmp_path):
         assert [u for u, _ in browser.calls] == [url]  # the URL the static fetch reached, once
     finally:
         store.close()
+
+
+# --- rounds that can no longer decide (review follow-up) ---------------------------
+
+
+def test_a_round_fetched_without_a_decision_is_skipped_not_stranded(env, harness):
+    """A case analyzed before M7 has a recorded round-0 fetch and no render
+    decision: the request goes to the next recheck, which will decide."""
+    store, stages, matcher, _ = env
+    url = shell_url(harness)
+    first = submit(store, matcher, url)
+    run_until(store, stages, lambda: runs(store, "fetch"))
+    store.conn.execute("DELETE FROM facts WHERE name = 'render_decision'")  # as before M7
+    req = submit(store, matcher, url, render=True).render_request
+    assert req.status == "requested" and req.round == 1 and req.due == rechecks(store)[0][1]
+    stages.score(first.case_id)
+    assert load_case(store.conn, first.case_id).bundle.render.requested_round == 1
+
+
+def test_rounds_whose_jobs_failed_for_good_are_refused_explicitly(env, harness):
+    store, _, matcher, _ = env
+    url = shell_url(harness)
+    first = submit(store, matcher, url)
+    # Round 0's enrichment failed for good, so no recheck was ever scheduled.
+    store.conn.execute("UPDATE jobs SET status = 'failed' WHERE stage = 'enrich'")
+    req = submit(store, matcher, url, render=True).render_request
+    assert req.status == "refused" and "no remaining analysis round" in req.reason
+    n = store.conn.execute("SELECT COUNT(*) FROM facts WHERE name = 'render_request'")
+    assert n.fetchone()[0] == 0
+    with transaction(store.conn):  # a case that does not exist has nothing scheduled
+        missing = request_render(store, first.case_id + 99, rounds=2, now=time.time())
+    assert missing.status == "refused"
+
+
+def test_a_stale_request_for_a_dead_round_does_not_hide_a_later_one(env, harness):
+    store, stages, matcher, _ = env
+    url = shell_url(harness)
+    first = submit(store, matcher, url)
+    run_until(store, stages, lambda: runs(store, "fetch"))
+    store.conn.execute("DELETE FROM facts WHERE name = 'render_decision'")
+    with transaction(store.conn):  # a request left on round 0 by an older binding
+        from brandsentinel.store.records import add_fact
+
+        add_fact(store.conn, first.case_id, source="analyst", name="render_request",
+                 value={"round": 0, "analysis_round": 0}, collector_version="t")  # fmt: skip
+    assert submit(store, matcher, url, render=True).render_request.round == 1
+    stages.score(first.case_id)
+    assert load_case(store.conn, first.case_id).bundle.render.requested_round == 1
+
+
+def test_the_render_stage_stays_at_one_browser_at_a_time(env):
+    from brandsentinel.pipeline.orchestrator import Orchestrator
+    from brandsentinel.pipeline.render import RenderStage
+
+    store, stages, _, _ = env
+    assert stages.config.stages.render == 1  # analyst requests add no browser concurrency
+    orch = Orchestrator(store)
+    RenderStage(stages, ScriptedBrowser({}), None).register(orch)
+    assert orch.stages["render"].concurrency == 1

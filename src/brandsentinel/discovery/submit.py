@@ -6,9 +6,9 @@ result records `suppressed_by`, so the case shows it is official. Resubmitting
 the same host reuses the open case.
 
 `render=True` (`submit --render`, M8) also records a `render_request` fact for
-one analysis round: the case's first round without a render decision. That is
-round 0 for a new case, and for a case already decided the next scheduled
-recheck, whose time is unchanged; no round is created. The request is read by
+one analysis round: the next round that can still decide (`request_render`).
+That is round 0 for a new case, and for a case already decided the next
+scheduled recheck, whose time is unchanged; no round is created. The request is read by
 that round's render decision only (`AnalysisStages.decide_render`), which
 applies the skips and the analyst budget. Ingest and request commit together.
 """
@@ -123,8 +123,13 @@ def submit(
 
 
 def request_render(store: Store, case_id: int, *, rounds: int, now: float) -> RenderRequest:
-    """Record a render request for the case's first round (0..`rounds`) without a
-    render decision. Idempotent per round. Call inside a transaction."""
+    """Record a render request for the case's next round (0..`rounds`) that can
+    still decide: above every decided round, and with its work queued (a
+    deferred row, or a pending or running enrich or fetch job; once its static
+    fetch is recorded, only its fetch job counts). A round that can no longer
+    decide (its fetch recorded without a decision, as for a case analyzed before
+    M7, or its jobs failed for good) is skipped, so no request is stranded on it.
+    Idempotent per round. Call inside a transaction."""
     conn = store.conn
     decided = {
         r[0]
@@ -134,18 +139,37 @@ def request_render(store: Store, case_id: int, *, rounds: int, now: float) -> Re
             (case_id,),
         )
     }
-    target = next((r for r in range(rounds + 1) if r not in decided), None)
+    fetched = {
+        r[0]
+        for r in conn.execute(
+            "SELECT round FROM stage_runs WHERE case_id = ? AND stage = 'fetch'", (case_id,)
+        )
+    }
+    first = max((r for r in decided if isinstance(r, int)), default=-1) + 1
+    target = due = None
+    for rnd in range(first, rounds + 1):
+        keys = [f"{stage}:case:{case_id}:r{rnd}" for stage in (ENRICH_STAGE, "fetch")]
+        if rnd in fetched:
+            # Recorded: it decides only if its fetch job is still running (the
+            # handler decides next, or its redelivery does).
+            keys = [keys[1], keys[1]]
+        deferred = conn.execute(
+            "SELECT MIN(not_before) FROM deferred_jobs WHERE dedupe_key IN (?, ?)", keys
+        ).fetchone()[0]
+        live = conn.execute(
+            "SELECT 1 FROM jobs WHERE dedupe_key IN (?, ?) AND status IN ('pending', 'running')",
+            keys,
+        ).fetchone()
+        if deferred is not None or live:
+            target, due = rnd, deferred
+            break
     if target is None:
-        return RenderRequest("refused", reason="every analysis round already has a render decision")
-    due = None
-    if target > 0:
-        key = f"{ENRICH_STAGE}:case:{case_id}:r{target}"
-        row = conn.execute("SELECT not_before FROM deferred_jobs WHERE dedupe_key = ?", (key,))
-        row = row.fetchone()
-        if row is not None:
-            due = row[0]
-        elif conn.execute("SELECT 1 FROM jobs WHERE dedupe_key = ?", (key,)).fetchone() is None:
-            return RenderRequest("refused", target, reason=f"round {target} is not scheduled")
+        why = (
+            "every analysis round already has a render decision"
+            if first > rounds
+            else "no remaining analysis round is scheduled"
+        )
+        return RenderRequest("refused", reason=why)
     if conn.execute(
         "SELECT 1 FROM facts WHERE case_id = ? AND name = 'render_request'"
         " AND json_extract(value_json, '$.analysis_round') = ?",

@@ -9,11 +9,11 @@ Every claimed job logs one INFO `job started` and one INFO `job finished`
 |---|---|
 | `job`, `stage`, `attempt` | the job row, its stage and this attempt (1-based) |
 | `case_id`, `round` | from the payload, only when they are integers |
-| `domain` | the registrable domain (the job's group key), only when it looks like a domain name |
+| `domain` | the job's group key: the registrable domain, or the host when it has none (a public suffix); only when it looks like a domain name |
 | `outcome` (finished) | `completed`, `retry`, `failed` (out of attempts), `lease_lost`, `cancelled` (shutdown), `unrecorded` (the failure could not be stored), `error` (the store failed on completion) |
 | `duration_ms` (finished) | wall time from claim to finish |
 
-Never logged: the host name, the subject URL (path, query, fragment), the
+Never logged: the host name (beyond that group key), the subject URL (path, query, fragment), the
 lease token, page content, or any exception message.
 
 ## Errors

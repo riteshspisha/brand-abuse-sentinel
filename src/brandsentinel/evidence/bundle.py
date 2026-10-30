@@ -933,12 +933,17 @@ def _render(
     """The render block for the round of the final static fetch, the completed
     `browser_render` fact (None unless the render completed) and the comparison."""
     decided = {f.round for f in facts if f.name == "render_decision"}
+    # The next request still to decide after this round (one for an earlier,
+    # dead round is ignored, never hiding a later one).
     pending = sorted(
         f.round
         for f in facts
-        if f.name == "render_request" and isinstance(f.round, int) and f.round not in decided
+        if f.name == "render_request"
+        and isinstance(f.round, int)
+        and f.round not in decided
+        and (rnd is None or f.round > rnd)
     )
-    requested_round = pending[0] if pending and (rnd is None or pending[0] > rnd) else None
+    requested_round = pending[0] if pending else None
     decision = _round_fact(facts, "render_decision", rnd) if rnd is not None else None
     if decision is None:
         return RenderBlock(requested_round=requested_round), None, None
