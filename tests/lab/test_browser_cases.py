@@ -139,7 +139,7 @@ def requested(docker, tmp_path_factory):
         store = open_store(config)
         store.registry = registry
         matcher = Matcher(registry)
-        url = lab_site("unrelated-tourism")[0]["url"]
+        url = lab_site("unrelated-yoga")[0]["url"]  # no brand match, no other trigger
         r = submit(store, matcher, url, render=True)
         assert r.render_request.status == "requested" and r.render_request.round == 0
         settle(store)
@@ -157,8 +157,12 @@ def test_a_requested_render_of_a_non_brand_lab_site_completes(requested):
     assert b.render.status == "complete" and b.render.reasons == ["analyst_request"]
     fact = render_fact(store, case_id)
     assert fact["status"] == "ok" and fact["attempt_counts"]["downloads"] == 0
-    assert set(b.render.request_hosts) == {"lumina-valley-tourism.test"}
-    want = expected("unrelated-tourism")  # rendering does not change the outcome
+    assert "sunrise-yoga-studio.test" in b.render.request_hosts
+    # The page's https://js.stripe.com/v3/ is no lab host: the lab sandbox proxy
+    # refuses the tunnel, so the request fails without a response.
+    outside = [q for q in fact["requests"] if q["host"] != "sunrise-yoga-studio.test"]
+    assert all(q["failure"] and q["status"] is None for q in outside), outside
+    want = expected("unrelated-yoga")  # rendering does not change the outcome
     assert r.result.category == want["category"] and r.result.priority in want["priority"]
 
 
