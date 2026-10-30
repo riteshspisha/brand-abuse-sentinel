@@ -321,6 +321,41 @@ def maintenance(store: Store, now: float) -> None:
     store.conn.execute("DELETE FROM job_groups WHERE last_claimed_at < ?", (now - 30 * 86400,))
 
 
+async def _stop_when_idle(orch: Orchestrator, stop: asyncio.Event, clock) -> None:
+    """Set `stop` once the run is idle twice in a row, a settle interval apart.
+
+    It starts with the other tasks, after startup (lease recovery; the discovery
+    log was replayed before). A handler queues its successor before its own job
+    completes and promotion moves deferred work atomically, so a case with work
+    left always shows a pending or running job; the second look covers what
+    that argument might miss. The settle interval is the promotion interval
+    plus two of the slowest worker polls. Workers are idle when `stop` is set,
+    so no job is cancelled, and future rechecks stay where they are."""
+    from brandsentinel.pipeline import scheduling
+
+    store = orch.store
+    poll = max((s.poll_seconds for s in orch.stages.values()), default=1.0)
+    settle = store.config.scheduling.promote_interval_seconds + 2 * poll
+    while True:
+        await asyncio.sleep(poll)
+        if not scheduling.idle_snapshot(store.conn, orch.stages, clock()).idle:
+            continue
+        await asyncio.sleep(settle)
+        snap = scheduling.idle_snapshot(store.conn, orch.stages, clock())
+        if snap.idle:
+            log.info(
+                "run idle; stopping",
+                extra={
+                    "fields": {
+                        "deferred_not_due": snap.not_due_deferred,
+                        "unserved_jobs": snap.unserved,
+                    }
+                },
+            )
+            stop.set()
+            return
+
+
 async def _prepare_sandbox(orch: Orchestrator, config) -> None:
     """Run the runtime preflight and the orphan sweep, before any stage exists and
     before any job lease is recovered (KTD2, AE18).
@@ -391,15 +426,22 @@ async def run_service(
     media_client=None,
     browser_client=None,
     clock: Callable[[], float] | None = None,
+    until_idle: bool = False,
 ) -> Orchestrator:
     """Wire discovery sources, analysis stages, deferred-work promotion and
     maintenance into an orchestrator and run it until `stop` is set. Replays the
     discovery log before any source starts. `analysis` (an AnalysisStages)
     replaces the default network wiring, and `media_client` and `browser_client`
-    the sandboxed clients, for tests."""
+    the sandboxed clients, for tests.
+
+    `until_idle` (M8) also sets `stop` once the run has no work left
+    (`scheduling.idle_snapshot`), seen twice a settle interval apart. Refused
+    with discovery on: CertStream and dnstwist never go idle."""
     from brandsentinel.pipeline import scheduling
     from brandsentinel.pipeline.stages import AnalysisStages, build_network
 
+    if until_idle and (certstream_enabled or dnstwist_enabled):
+        raise ValueError("until_idle needs CertStream and dnstwist off")
     clock = clock or time.time
     config = store.config
     matcher = Matcher(registry)
@@ -458,6 +500,8 @@ async def run_service(
             await asyncio.sleep(MAINTENANCE_SECONDS)
 
     orch.add_task("maintenance", maintain)
+    if until_idle:
+        orch.add_task("idle", lambda: _stop_when_idle(orch, stop, clock))
     try:
         await orch.run(stop)
     finally:

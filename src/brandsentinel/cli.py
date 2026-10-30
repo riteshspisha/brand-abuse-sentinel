@@ -245,12 +245,29 @@ def run(
     duration: Annotated[
         float | None, typer.Option(help="Stop after this many seconds (default: run forever).")
     ] = None,
+    until_idle: Annotated[
+        bool,
+        typer.Option(
+            "--until-idle",
+            help="Also stop once no work is left (rechecks not yet due stay queued)."
+            " Needs CertStream and dnstwist off; --duration still bounds the run.",
+        ),
+    ] = False,
     log_level: Annotated[str, typer.Option(help="Log level.")] = "INFO",
 ) -> None:
     """Run discovery (CertStream, dnstwist) and the pipeline until interrupted."""
     from brandsentinel.sandbox.preflight import check_account
 
     config = _load(ctx)
+    certstream_on = config.discovery.certstream.enabled if certstream is None else certstream
+    dnstwist_on = config.discovery.dnstwist.enabled if dnstwist is None else dnstwist
+    if until_idle and (certstream_on or dnstwist_on):
+        typer.echo(
+            "refusing --until-idle: CertStream and dnstwist never go idle;"
+            " run with --no-certstream --no-dnstwist",
+            err=True,
+        )
+        raise typer.Exit(2)
     account = check_account(config)
     for c in account.failures:
         typer.echo(f"refusing to start: {c.name}: {escape_terminal(c.detail)}", err=True)
@@ -273,13 +290,12 @@ def run(
         await run_service(
             store,
             registry,
-            certstream_enabled=config.discovery.certstream.enabled
-            if certstream is None
-            else certstream,
-            dnstwist_enabled=config.discovery.dnstwist.enabled if dnstwist is None else dnstwist,
+            certstream_enabled=certstream_on,
+            dnstwist_enabled=dnstwist_on,
             enrich_enabled=enrich,
             fetch_enabled=fetch,
             stop=stop,
+            until_idle=until_idle,
         )
 
     try:

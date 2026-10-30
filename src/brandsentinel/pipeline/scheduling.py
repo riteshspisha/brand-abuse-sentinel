@@ -16,10 +16,18 @@ pipeline:
 
 Rechecks are deferred rows with a future `not_before`, so they obey the same
 limits when they come due. Everything lives in SQLite; restarts lose nothing.
+
+`idle_snapshot` (M8, `run --until-idle`) says whether a run has work left: a
+pending or running job of a stage this run serves (a retry waiting for its
+`available_at` included), or deferred work already due. Work that is not due
+yet (rechecks) is left as it is, and jobs of stages this run does not serve
+(for example media while the sandbox is unavailable) are reported, not waited
+for.
 """
 
 import json
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -192,6 +200,36 @@ def promote(
                 if moved >= settings.promote_batch:
                     return moved
     return moved
+
+
+@dataclass(frozen=True)
+class IdleSnapshot:
+    outstanding: int  # pending or running jobs of served stages
+    due_deferred: int  # deferred work of served stages that is due
+    not_due_deferred: int  # deferred work not due yet (rechecks), any stage
+    unserved: dict[str, int]  # pending or running jobs of stages not served
+
+    @property
+    def idle(self) -> bool:
+        return not self.outstanding and not self.due_deferred
+
+
+def idle_snapshot(conn: sqlite3.Connection, stages: Iterable[str], now: float) -> IdleSnapshot:
+    """Outstanding work for `stages`, read in one statement (one snapshot)."""
+    served = json.dumps(sorted(stages))
+    row = conn.execute(
+        "SELECT"
+        " (SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'running')"
+        "  AND stage IN (SELECT value FROM json_each(:served))),"
+        " (SELECT COUNT(*) FROM deferred_jobs WHERE not_before <= :now"
+        "  AND stage IN (SELECT value FROM json_each(:served))),"
+        " (SELECT COUNT(*) FROM deferred_jobs WHERE not_before > :now),"
+        " (SELECT json_group_object(stage, n) FROM (SELECT stage, COUNT(*) AS n FROM jobs"
+        "  WHERE status IN ('pending', 'running')"
+        "  AND stage NOT IN (SELECT value FROM json_each(:served)) GROUP BY stage))",
+        {"served": served, "now": now},
+    ).fetchone()
+    return IdleSnapshot(row[0], row[1], row[2], json.loads(row[3] or "{}"))
 
 
 def deferred_summary(conn: sqlite3.Connection, now: float, limit: int = 5) -> dict:
