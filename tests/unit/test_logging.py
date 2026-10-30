@@ -35,3 +35,21 @@ def test_untrusted_control_and_bidi_characters_are_escaped():
     assert "\x1b" not in out and "\u202e" not in out
     assert out.isascii()
     assert json.loads(out)["msg"] == "title: \x1b]0;pwned\x07 \u202eevil"
+
+
+def test_exception_fields_carry_the_class_and_code_locations_never_the_message():
+    from brandsentinel.logging import exception_fields
+
+    def inner():
+        raise ValueError("https://x.test/p?session=SECRET123 password=hunter2")
+
+    try:
+        try:
+            inner()
+        except ValueError as e:
+            raise RuntimeError("wrapped https://x.test/?token=SECRET123") from e
+    except RuntimeError as e:
+        fields = exception_fields(e)
+    assert fields["error_type"] == "RuntimeError"
+    assert fields["error_at"] and all(":" in f and "/" not in f for f in fields["error_at"])
+    assert "SECRET123" not in json.dumps(fields) and "hunter2" not in json.dumps(fields)

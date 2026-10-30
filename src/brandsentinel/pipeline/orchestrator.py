@@ -12,12 +12,20 @@ Startup runs registered hooks (for example abandoned-sweep recovery), then
 returns expired leases to pending, then starts background tasks and workers.
 Everything runs on one asyncio thread, which is also the only user of the
 SQLite connection.
+
+Job telemetry (M8): `run_job` logs one INFO `job started` and one INFO `job
+finished` per claimed job, from a fixed allowlist (`job_fields`): job id,
+stage, case id, round, attempt and the registrable domain (the group key), plus
+the outcome and duration at the end. Never the host name, URL, lease token or
+error text. A failed attempt logs `job failed` with the exception class only;
+the message stays in `jobs.last_error`.
 """
 
 import asyncio
 import contextlib
 import logging
 import os
+import re
 import socket
 import sqlite3
 import time
@@ -27,6 +35,7 @@ from dataclasses import dataclass, field
 from brandsentinel.discovery.certstream import CertStreamConsumer
 from brandsentinel.discovery.dnstwist_runner import DnstwistRunner
 from brandsentinel.discovery.events import DISCOVERY_LOG, checkpoint, replay_since_marker
+from brandsentinel.logging import exception_fields
 from brandsentinel.matching.matcher import Matcher
 from brandsentinel.registry.model import Registry
 from brandsentinel.store import FIREHOSE_SOURCE, Store
@@ -36,6 +45,37 @@ from brandsentinel.store.retention import prune_discovery_events, prune_rawlog
 log = logging.getLogger(__name__)
 
 Handler = Callable[[Job], Awaitable[None]]
+
+# A domain is logged only when it looks like one: lowercase, LDH and dots.
+_DOMAIN_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?")
+# An exception's `outcome` (a fetch outcome such as `timeout`) is logged only
+# when it is a short identifier, never free text.
+_OUTCOME_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
+
+
+def _int(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def job_fields(stage: str, job: Job) -> dict:
+    """The allowlisted, privacy-safe fields of a job's lifecycle records."""
+    fields: dict = {"job": job.id, "stage": stage, "attempt": job.attempts}
+    for key in ("case_id", "round"):
+        if (value := _int(job.payload.get(key))) is not None:
+            fields[key] = value
+    domain = job.payload.get("registrable_domain") or job.group_key
+    if isinstance(domain, str) and _DOMAIN_RE.fullmatch(domain):
+        fields["domain"] = domain
+    return fields
+
+
+def error_fields(error: BaseException) -> dict:
+    """`exception_fields`, plus a fetch outcome the exception carries."""
+    fields = exception_fields(error)
+    outcome = getattr(error, "outcome", None)
+    if isinstance(outcome, str) and _OUTCOME_RE.fullmatch(outcome):
+        fields["fetch_outcome"] = outcome
+    return fields
 
 
 @dataclass
@@ -111,9 +151,10 @@ class Orchestrator:
                 return
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                log.exception(
-                    "background task crashed; restarting", extra={"fields": {"task": name}}
+            except Exception as e:
+                log.error(
+                    "background task crashed; restarting",
+                    extra={"fields": {"task": name, **exception_fields(e)}},
                 )
                 await asyncio.sleep(30)
 
@@ -134,15 +175,40 @@ class Orchestrator:
                 errors = 0
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as e:
                 errors += 1
-                log.exception("stage worker error", extra={"fields": {"stage": stage.name}})
+                log.error(
+                    "stage worker error",
+                    extra={"fields": {"stage": stage.name, **exception_fields(e)}},
+                )
                 await asyncio.sleep(min(60.0, stage.poll_seconds * 2**errors))
                 continue
             if job is None:
                 await asyncio.sleep(stage.poll_seconds)
 
     async def run_job(self, stage: Stage, job: Job) -> None:
+        """Run one claimed job, between a `job started` and a `job finished`
+        record. Outcomes: completed, retry (failed, will be retried), failed (out
+        of attempts), lease_lost, unrecorded (the failure could not be stored;
+        the lease expires and the queue decides), cancelled (shutdown) and error
+        (the store failed on completion)."""
+        fields = job_fields(stage.name, job)
+        log.info("job started", extra={"fields": fields})
+        start = time.monotonic()
+        outcome = "error"
+        try:
+            outcome = await self._run_job(stage, job)
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            elapsed = int((time.monotonic() - start) * 1000)
+            log.info(
+                "job finished",
+                extra={"fields": {**fields, "outcome": outcome, "duration_ms": elapsed}},
+            )
+
+    async def _run_job(self, stage: Stage, job: Job) -> str:
         # The lease is renewed from claim onwards, including while the job waits
         # for its registrable domain's lock.
         domain = (
@@ -156,10 +222,9 @@ class Orchestrator:
             if not renewer.done():  # we were cancelled, not the lease
                 raise
             log.warning("lease lost; handler cancelled", extra={"fields": {"job": job.id}})
-            return
+            return "lease_lost"
         except Exception as e:
-            self._fail(stage, job, e)
-            return
+            return self._fail(stage, job, e)
         finally:
             renewer.cancel()
             # Wait for the renewer without suppressing CancelledError: a shutdown
@@ -170,20 +235,27 @@ class Orchestrator:
             self.store.jobs.complete(job)
         except LeaseLost:
             log.warning("lease lost before completion", extra={"fields": {"job": job.id}})
+            return "lease_lost"
+        return "completed"
 
     async def _locked(self, stage: Stage, job: Job, domain: str | None) -> None:
         async with self._domain_lock(domain):
             await stage.handler(job)
 
-    def _fail(self, stage: Stage, job: Job, error: Exception) -> None:
+    def _fail(self, stage: Stage, job: Job, error: Exception) -> str:
+        """Record a failed attempt; the message goes to the store only."""
         try:
             status = self.store.jobs.fail(
                 job, f"{type(error).__name__}: {error}", retry_delay=stage.retry_delay_seconds
             )
-        except (LeaseLost, sqlite3.Error):
+        except (LeaseLost, sqlite3.Error) as e:
             # The lease expires and the job is retried; nothing else to do here.
-            log.exception("could not record job failure", extra={"fields": {"job": job.id}})
-            return
+            # Not log.exception: the traceback would chain the handler's error.
+            log.error(
+                "could not record job failure",
+                extra={"fields": {"job": job.id, "stage": stage.name, **exception_fields(e)}},
+            )
+            return "lease_lost" if isinstance(e, LeaseLost) else "unrecorded"
         log.error(
             "job failed",
             extra={
@@ -192,10 +264,11 @@ class Orchestrator:
                     "stage": stage.name,
                     "status": status,
                     "attempt": job.attempts,
-                    "error": str(error)[:500],
+                    **error_fields(error),
                 }
             },
         )
+        return "failed" if status == "failed" else "retry"
 
     async def _renew(self, stage: Stage, job: Job, work: asyncio.Task) -> None:
         while True:
@@ -205,8 +278,10 @@ class Orchestrator:
             except LeaseLost:
                 work.cancel()
                 return
-            except sqlite3.Error:  # transient; the lease still has time left
-                log.exception("lease renewal failed", extra={"fields": {"job": job.id}})
+            except sqlite3.Error as e:  # transient; the lease still has time left
+                log.error(
+                    "lease renewal failed", extra={"fields": {"job": job.id, **exception_fields(e)}}
+                )
 
     @contextlib.asynccontextmanager
     async def _domain_lock(self, domain: str | None):

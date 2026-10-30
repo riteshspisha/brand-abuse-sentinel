@@ -37,6 +37,7 @@ from brandsentinel.analysis.payment import ProviderCatalog
 from brandsentinel.config import Config
 from brandsentinel.enrich import Cache, EnrichContext, Observation, run_sources
 from brandsentinel.enrich.rdap import RdapClient
+from brandsentinel.logging import exception_fields
 from brandsentinel.matching.normalize import InvalidName, canonical_host
 from brandsentinel.net.fetcher import COLLECTOR_VERSION as FETCH_VERSION
 from brandsentinel.net.fetcher import Fetcher, FetchResult
@@ -66,7 +67,13 @@ OFFLINE_SOURCES = ["similarity"]
 
 
 class TransientFetchFailure(Exception):
-    """Raised to let the job queue retry a fetch that may succeed later."""
+    """Raised to let the job queue retry a fetch that may succeed later. The
+    message (which can hold the URL) is stored with the job; logs get only the
+    class and `outcome`, the fetcher's outcome name."""
+
+    def __init__(self, outcome: str, error: str | None) -> None:
+        super().__init__(f"{outcome}: {error}")
+        self.outcome = outcome
 
 
 @dataclass
@@ -423,7 +430,7 @@ class AnalysisStages:
                         FETCH_VERSION,
                         rnd,
                     )
-            raise TransientFetchFailure(f"{final.outcome}: {final.error}")
+            raise TransientFetchFailure(final.outcome, final.error)
 
         # Parsing hostile HTML is CPU-bound: run the (pure) extractors in a worker
         # thread so CertStream pings and lease renewal keep running.
@@ -498,8 +505,11 @@ class AnalysisStages:
         if decision is None:
             try:
                 bundle = self.scorer.bundle(case.case_id)
-            except Exception:
-                log.exception("media decision failed", extra={"fields": {"case_id": case.case_id}})
+            except Exception as e:
+                log.error(
+                    "media decision failed",
+                    extra={"fields": {"case_id": case.case_id, **exception_fields(e)}},
+                )
                 return
             if bundle is None:
                 return
@@ -533,8 +543,11 @@ class AnalysisStages:
             return
         try:
             bundle = self.scorer.bundle(case.case_id)
-        except Exception:
-            log.exception("render decision failed", extra={"fields": {"case_id": case.case_id}})
+        except Exception as e:
+            log.error(
+                "render decision failed",
+                extra={"fields": {"case_id": case.case_id, **exception_fields(e)}},
+            )
             return
         if bundle is None:
             return
@@ -585,8 +598,10 @@ class AnalysisStages:
         to the fetch already recorded; `brandsentinel cases rescore` repeats it."""
         try:
             out = self.scorer.score(case_id)
-        except Exception:
-            log.exception("scoring failed", extra={"fields": {"case_id": case_id}})
+        except Exception as e:
+            log.error(
+                "scoring failed", extra={"fields": {"case_id": case_id, **exception_fields(e)}}
+            )
             return
         if out is not None and out.changed:
             log.info(
