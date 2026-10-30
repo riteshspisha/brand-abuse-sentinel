@@ -4,6 +4,21 @@ The state a new session needs before it touches code or the installation. It is
 updated at each milestone close. Facts below were checked on the development
 host at the date given; re-check anything marked *reported*.
 
+## M8 development branch (2026-10-30): NOT merged, NOT deployed
+
+Branch `feat/m8-analyst-render` adds `submit --render` with
+`browser.analyst_renders_per_day` (default 0), the `render_not_scheduled`
+explanation, job lifecycle telemetry without error text, and
+`run --until-idle` (see `docs/runbooks/browser.md` and
+`docs/runbooks/telemetry.md`). It changes the wheel and therefore the sandbox
+image, so deploying it is a separate, gated M8 promotion. Production stays on
+M7 `d3adbe9`, promoted and accepted on 2026-10-30. Trial classifiers that
+match `job failed` by `error` must switch to `error_type`.
+
+Verification on the developer daemon only: `-m "docker or security"` 517
+passed, 0 skipped; the T2a-dev scenarios re-run with `--until-idle` pass all
+28 criteria of the pinned checker.
+
 ## Current: M7 merged (2026-10-29), NOT deployed; M6 is the installation
 
 M7 (U19, isolated browser) is merged to `main`: PR #12, merge commit `d3949a7`,
