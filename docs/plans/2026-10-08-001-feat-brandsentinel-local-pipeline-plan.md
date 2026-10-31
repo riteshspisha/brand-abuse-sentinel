@@ -450,6 +450,8 @@ flowchart TB
 
 U20 can start once M5 completes, in parallel with M6 and M7, as long as it does not delay them.
 
+> **Roadmap note (2026-10-31).** The release shipped as "M8 v0.2.0" (analyst-requested rendering, render explanations, job telemetry, `--until-idle`) is not this table's M8. **U20 and U21 are not implemented**, and their requirements and acceptance criteria above are unchanged. The owner's decision of 2026-10-31 puts SP2 and M9 before U20/U21 and lets the first M9 soak run rules-only. That amends M9's dependency on U21 for that soak only, and it is recorded, with its consequences, in `2026-10-31-001-roadmap-alignment.md`.
+
 ### Security Gates by Operation
 
 | Operation | Gate (must pass first) | Owned by | First consumer |
