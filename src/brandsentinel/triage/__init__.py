@@ -154,6 +154,8 @@ class CaseReport:
     result: PolicyResult | None
     analyst_labels: dict[str, dict]
     history: list[dict]
+    # Rounds with an analyst render request not decided yet (M8), from facts.
+    render_requests: list[int] = field(default_factory=list)
 
 
 def load_case(conn: sqlite3.Connection, case_id: int) -> CaseReport | None:
@@ -170,7 +172,30 @@ def load_case(conn: sqlite3.Connection, case_id: int) -> CaseReport | None:
             (case_id,),
         )
     ]
-    return CaseReport(rows[0], bundle, result, case_labels(conn, case_id), history)
+    # The scored round's decision is made before it is scored, so an undecided
+    # request for it or an earlier round never decides; it is not shown.
+    current = bundle.http.analysis_round if bundle else None
+    requests = [
+        r for r in pending_render_requests(conn, case_id) if current is None or r > current
+    ]
+    return CaseReport(rows[0], bundle, result, case_labels(conn, case_id), history, requests)
+
+
+def pending_render_requests(conn: sqlite3.Connection, case_id: int) -> list[int]:
+    """Rounds an analyst asked to render (`submit --render`) that no render
+    decision has taken up yet."""
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT json_extract(q.value_json, '$.analysis_round') AS rnd FROM facts q"
+            " WHERE q.case_id = ? AND q.name = 'render_request' AND NOT EXISTS ("
+            "  SELECT 1 FROM facts d WHERE d.case_id = q.case_id AND d.name = 'render_decision'"
+            "  AND json_extract(d.value_json, '$.analysis_round')"
+            "   = json_extract(q.value_json, '$.analysis_round')) ORDER BY rnd",
+            (case_id,),
+        )
+        if isinstance(r[0], int)
+    ]
 
 
 # --- analyst labels ---------------------------------------------------------------

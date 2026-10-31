@@ -31,6 +31,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from brandsentinel.config import MediaSettings
+from brandsentinel.logging import exception_fields
 from brandsentinel.sandbox.runner import SandboxResult, SandboxRunner, SandboxSpec
 
 log = logging.getLogger(__name__)
@@ -299,7 +300,8 @@ class MediaClient:
         try:
             return result, validate_output(result.output, items, self.settings), None
         except MediaOutputError as e:
-            log.warning("invalid media worker output", extra={"fields": {"error": str(e)[:300]}})
+            # Not the message: validation errors quote the image-influenced output.
+            log.warning("invalid media worker output", extra={"fields": exception_fields(e)})
             result.status = "invalid_output"
             return result, None, f"invalid_output: {e}"[:300]
 

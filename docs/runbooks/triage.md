@@ -38,8 +38,10 @@ entries, and add `--reextract` after an extractor change.
   `payment_gateway_present`, `parked`, ...) describe the page and never change the
   score. Article markup, bylines, parody labels and disclaimers are written by the
   page and can be written by an attacker, so they never lower a score.
-- **Flags**: `manual_review` (with reasons), `needs_render` (script-built page;
-  browser rendering is M7), `needs_media` (media analysis is pending, failed,
+- **Flags**: `manual_review` (with reasons), `needs_render` (script-built page
+  not rendered), `render_not_scheduled` (M8: no render is coming for this
+  round; the unknowns say why, and whether `submit --render` can help),
+  `needs_media` (media analysis is pending, failed,
   partial or disabled, so images, QR codes and visual matches are unknown),
   `model_suggests_review` (M8).
 - **Images and visual matches** (M6): which images were examined and why, what

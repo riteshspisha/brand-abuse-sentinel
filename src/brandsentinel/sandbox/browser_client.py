@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from brandsentinel.config import BrowserSettings, SandboxSettings
+from brandsentinel.logging import exception_fields
 from brandsentinel.sandbox.browser_worker import MAX_ATTEMPTS, MAX_URL_CHARS, png_size
 from brandsentinel.sandbox.runner import SandboxResult, SandboxRunner, SandboxSpec
 
@@ -335,7 +336,8 @@ class BrowserClient:
         try:
             out = validate_output(result.output, url, self.settings)
         except BrowserOutputError as e:
-            log.warning("invalid browser worker output", extra={"fields": {"error": str(e)}})
+            # Not the message: validation errors quote the page-influenced output.
+            log.warning("invalid browser worker output", extra={"fields": exception_fields(e)})
             return Render("render_rejected", url, f"invalid_output: {e}"[:300], runs=runs)
         if out.status == "error":
             return Render("failed", url, f"worker_error: {out.error}"[:300], runs=runs)

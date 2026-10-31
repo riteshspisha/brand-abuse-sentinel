@@ -18,7 +18,13 @@ or why not (`render_decision` fact). It reads only the static EvidenceBundle:
   `browser.little_text_chars`;
 - `no_static_images`: a brand-related page with no image to compare;
 - `sample`: otherwise, a deterministic share (`browser.sample_rate`) of
-  strong-strength cases, chosen by hashing case and round.
+  strong-strength cases, chosen by hashing case and round;
+- `analyst_request` (M8): an analyst asked for this round to be rendered
+  (`submit --render`). It never bypasses the skips above: the browser renders
+  only a URL the hardened static fetcher reached through netguard. When no
+  other reason applies the request spends the analyst budget
+  (`browser.analyst_renders_per_day`), and with the budget used up the case is
+  skipped as `analyst_budget_exhausted`; the request is never silently dropped.
 
 Every reason found is recorded, so the case explains why it was rendered.
 """
@@ -28,7 +34,9 @@ import hashlib
 from brandsentinel.evidence.bundle import EvidenceBundle
 from brandsentinel.policy.rules import donation_cues, presented_brands
 
-VERSION = "render_decision/1"
+# render_decision/2 (M8): analyst_request, analyst_budget_spent and
+# analyst_renders_per_day.
+VERSION = "render_decision/2"
 
 
 def sampled(case_id: int, rnd: int, rate: float) -> bool:
@@ -47,13 +55,24 @@ def decide(
     sample_rate: float,
     little_text_chars: int,
     enabled: bool,
+    analyst_request: bool = False,
+    budget_left: bool = False,
+    analyst_renders_per_day: int | None = None,
 ) -> dict:
+    """`budget_left`: whether the analyst budget has a render left in the past 24
+    hours (the caller counts it in the transaction that records the decision)."""
     base = {
         "analysis_round": b.http.analysis_round,
         "browser_enabled": enabled,
         "url": b.http.requested_url,
         "sampled": False,
     }
+    if analyst_request:  # without a request the decision is as before M8
+        base |= {
+            "analyst_request": True,
+            "analyst_budget_spent": False,
+            "analyst_renders_per_day": analyst_renders_per_day,
+        }
     if b.registry.official_domain:
         return {**base, "triggered": False, "skipped": "official_domain", "reasons": []}
     if not (b.http.fetched and b.http.outcome == "ok" and b.http.requested_url):
@@ -85,6 +104,15 @@ def decide(
                                           sample_rate):  # fmt: skip
         reasons.append("sample")
         base["sampled"] = True
+    if analyst_request:
+        # The budget pays only for a render the request alone causes; with
+        # another reason, or no browser at all, nothing is spent.
+        alone = not reasons and enabled
+        if alone and not budget_left:
+            return {**base, "triggered": False, "skipped": "analyst_budget_exhausted",
+                    "reasons": []}  # fmt: skip
+        base["analyst_budget_spent"] = alone
+        reasons.append("analyst_request")
     if not reasons:
         return {**base, "triggered": False, "skipped": "no_trigger", "reasons": []}
     return {**base, "triggered": True, "skipped": None, "reasons": reasons}

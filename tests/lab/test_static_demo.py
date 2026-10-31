@@ -131,3 +131,51 @@ def test_donation_fraud_demo_report_and_csv_row(demo):
         "rivers.relief.fund@quickpaybank=claims_brand_unconfirmed"
         " | 000123456789=claims_brand_unconfirmed"
     )
+
+
+def test_a_bounded_cli_run_ends_on_idle_well_before_its_duration(demo, tmp_path):
+    """M8: `run --until-idle` over the static lab sites, as an operator runs it.
+    It stops once the work is done (rechecks stay queued), not at --duration,
+    and every claimed job has one start and one finish record."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import yaml
+
+    config = load_config(REPO / "config" / "lab.yaml")
+    data = json.loads(config.model_dump_json())
+    data["data_dir"] = str(tmp_path / "data")
+    data["sandbox"]["enabled"] = False  # static only: no hostile-content runtime needed
+    data["runtime"]["allow_developer_account"] = True  # the developer owns this tree
+    cfg = tmp_path / "lab.yaml"
+    cfg.write_text(yaml.safe_dump(data))
+    bs = [str(Path(sys.executable).parent / "brandsentinel"), "-c", str(cfg)]
+    sites = ["donation-fraud", "unrelated-yoga", "news-critical"]
+    urls = [lab_site(s)[0]["url"] for s in sites]
+    sub = subprocess.run([*bs, "submit", *urls], capture_output=True, text=True, cwd=REPO)  # noqa: S603
+    assert sub.returncode == 0, sub.stderr
+    start = time.monotonic()
+    run = subprocess.run(  # noqa: S603 - fixed argv
+        [*bs, "run", "--no-certstream", "--no-dnstwist", "--until-idle", "--duration", "300"],
+        capture_output=True, text=True, cwd=REPO, timeout=360,
+    )  # fmt: skip
+    elapsed = time.monotonic() - start
+    assert run.returncode == 0, run.stderr[-2000:]
+    assert elapsed < 120, elapsed
+    recs = [json.loads(x) for x in run.stderr.splitlines() if x.startswith("{")]
+    (idle,) = [r for r in recs if r["msg"] == "run idle; stopping"]
+    assert idle["deferred_not_due"] == 2 * len(sites)  # both rechecks of every case kept
+    started = sorted(r["job"] for r in recs if r["msg"] == "job started")
+    finished = sorted(r["job"] for r in recs if r["msg"] == "job finished")
+    assert started and started == finished
+    assert {r["outcome"] for r in recs if r["msg"] == "job finished"} == {"completed"}
+    store = open_store(load_config(cfg))
+    try:
+        unscored = store.conn.execute("SELECT COUNT(*) FROM cases WHERE score_id IS NULL")
+        assert unscored.fetchone()[0] == 0
+        live = "SELECT COUNT(*) FROM jobs WHERE status IN ('pending', 'running')"
+        assert store.conn.execute(live).fetchone()[0] == 0
+    finally:
+        store.close()

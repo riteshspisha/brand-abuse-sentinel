@@ -439,6 +439,10 @@ class BrowserSettings(_Section):
     sample_rate: float = Field(0.1, ge=0.0, le=1.0)
     # A brand-matching page with less visible static text than this renders.
     little_text_chars: int = Field(200, ge=0, le=100_000)
+    # Renders an analyst may request (`submit --render`) in any 24 hours, counted
+    # only when the request alone triggers the render. 0: requests are recorded
+    # and refused (`analyst_budget_exhausted`); enabling them is a config decision.
+    analyst_renders_per_day: int = Field(0, ge=0, le=1000)
     viewport_width: int = Field(1280, ge=320, le=1920)
     viewport_height: int = Field(800, ge=240, le=1920)
     navigation_timeout_seconds: float = Field(15.0, gt=0, le=600)

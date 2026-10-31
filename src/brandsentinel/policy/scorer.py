@@ -262,6 +262,26 @@ def _reject_reasons(v) -> str:
     return ", ".join(sorted({str(r.get("reason")) for r in v.rejected}))
 
 
+def _render_not_scheduled(render) -> str:
+    """Why no render is coming for this round, and what an analyst can do."""
+    if render.status == "disabled":
+        why = "the browser is disabled (browser.enabled, sandbox.enabled)"
+    elif render.skipped == "no_trigger":
+        why = (
+            "js_shell renders automatically only on brand-matching domains and the case"
+            " was not in the sample; request a render with `submit --render`"
+        )
+    elif render.skipped == "analyst_budget_exhausted":
+        why = "the analyst render budget (browser.analyst_renders_per_day per 24 h) is used up"
+    elif render.skipped == "no_static_response":
+        why = "the static fetch got no response, and only a page it reached is rendered"
+    elif render.skipped == "official_domain":
+        why = "the domain is a confirmed official domain"
+    else:
+        why = render.skipped or "no trigger"
+    return f"no render is scheduled for round {render.analysis_round}: {why}"
+
+
 def _media_unknown(b: EvidenceBundle) -> str | None:
     """What media analysis left unknown, in words, or None."""
     v = b.visual
@@ -368,6 +388,10 @@ def evaluate(b: EvidenceBundle, policy: Policy, judgments: Iterable[dict] = ()) 
             "page builds its content with script and was not rendered"
             + (f" (render {b.render.status})" if b.render.status != "not_run" else "")
         )
+        if b.render.status in ("not_triggered", "disabled"):
+            # Explanation only (M8): no score or priority depends on it.
+            flags.append("render_not_scheduled")
+            unknowns.append(_render_not_scheduled(b.render))
     if b.render.status == "complete" and b.render.reason:
         manual.append(
             f"The browser reached {b.render.reason}; the case is scored on the static page,"

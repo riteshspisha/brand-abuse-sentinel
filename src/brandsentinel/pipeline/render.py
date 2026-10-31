@@ -33,6 +33,7 @@ from urllib.parse import urlsplit
 from brandsentinel.analysis import run_extractors
 from brandsentinel.analysis.media_text import VERSION as MEDIA_TEXT_VERSION
 from brandsentinel.analysis.media_text import media_text
+from brandsentinel.logging import exception_fields
 from brandsentinel.pipeline.orchestrator import Orchestrator, Stage
 from brandsentinel.pipeline.stages import RENDER, write_features
 from brandsentinel.sandbox import cloaking
@@ -141,7 +142,10 @@ class RenderStage:
             if not last:
                 raise
             # The last attempt records what happened instead of leaving no outcome.
-            log.exception("render processing failed", extra={"fields": {"case_id": case_id}})
+            log.error(
+                "render processing failed",
+                extra={"fields": {"case_id": case_id, **exception_fields(e)}},
+            )
             render = Render("failed", url, f"processing_error: {type(e).__name__}: {e}"[:300],
                             runs=render.runs)  # fmt: skip
             extracted, shot, unusable = [], None, None

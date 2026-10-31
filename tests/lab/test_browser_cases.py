@@ -123,6 +123,58 @@ def demo(docker, tmp_path_factory):
     store.close()
 
 
+@pytest.fixture(scope="module")
+def requested(docker, tmp_path_factory):
+    """M8: renders an analyst asked for, with no sample, on two lab stores: the
+    lab budget (config/lab.yaml) and a copy with budget 0."""
+    out = {}
+    for budget in (None, 0):
+        config = lab_config(tmp_path_factory.mktemp(f"requested-{budget}"), sample_rate=0.0)
+        if budget is not None:
+            config = config.model_copy(
+                update={"browser": config.browser.model_copy(
+                    update={"analyst_renders_per_day": budget})}
+            )  # fmt: skip
+        registry, _ = load_registry(config.registry_path, config.net.lab.registry_overlay)
+        store = open_store(config)
+        store.registry = registry
+        matcher = Matcher(registry)
+        url = lab_site("unrelated-yoga")[0]["url"]  # no brand match, no other trigger
+        r = submit(store, matcher, url, render=True)
+        assert r.render_request.status == "requested" and r.render_request.round == 0
+        settle(store)
+        out[budget] = (store, r.case_id)
+    yield out
+    for store, _ in out.values():
+        store.close()
+
+
+def test_a_requested_render_of_a_non_brand_lab_site_completes(requested):
+    store, case_id = requested[None]
+    assert store.config.browser.analyst_renders_per_day == 5  # from config/lab.yaml
+    r = load_case(store.conn, case_id)
+    b = r.bundle
+    assert b.render.status == "complete" and b.render.reasons == ["analyst_request"]
+    fact = render_fact(store, case_id)
+    assert fact["status"] == "ok" and fact["attempt_counts"]["downloads"] == 0
+    assert "sunrise-yoga-studio.test" in b.render.request_hosts
+    # The page's https://js.stripe.com/v3/ is no lab host: the lab sandbox proxy
+    # refuses the tunnel, so the request fails without a response.
+    outside = [q for q in fact["requests"] if q["host"] != "sunrise-yoga-studio.test"]
+    assert all(q["failure"] and q["status"] is None for q in outside), outside
+    want = expected("unrelated-yoga")  # rendering does not change the outcome
+    assert r.result.category == want["category"] and r.result.priority in want["priority"]
+
+
+def test_with_budget_zero_the_request_is_refused_and_nothing_renders(requested):
+    store, case_id = requested[0]
+    b = load_case(store.conn, case_id).bundle
+    assert b.render.status == "not_triggered"
+    assert b.render.skipped == "analyst_budget_exhausted"
+    jobs = store.conn.execute("SELECT COUNT(*) FROM jobs WHERE stage = 'render'").fetchone()[0]
+    assert jobs == 0
+
+
 def render_fact(store, case_id) -> dict:
     row = store.conn.execute(
         "SELECT value_json FROM facts WHERE case_id = ? AND name = 'browser_render'"

@@ -245,12 +245,29 @@ def run(
     duration: Annotated[
         float | None, typer.Option(help="Stop after this many seconds (default: run forever).")
     ] = None,
+    until_idle: Annotated[
+        bool,
+        typer.Option(
+            "--until-idle",
+            help="Also stop once no work is left (rechecks not yet due stay queued)."
+            " Needs CertStream and dnstwist off; --duration still bounds the run.",
+        ),
+    ] = False,
     log_level: Annotated[str, typer.Option(help="Log level.")] = "INFO",
 ) -> None:
     """Run discovery (CertStream, dnstwist) and the pipeline until interrupted."""
     from brandsentinel.sandbox.preflight import check_account
 
     config = _load(ctx)
+    certstream_on = config.discovery.certstream.enabled if certstream is None else certstream
+    dnstwist_on = config.discovery.dnstwist.enabled if dnstwist is None else dnstwist
+    if until_idle and (certstream_on or dnstwist_on):
+        typer.echo(
+            "refusing --until-idle: CertStream and dnstwist never go idle;"
+            " run with --no-certstream --no-dnstwist",
+            err=True,
+        )
+        raise typer.Exit(2)
     account = check_account(config)
     for c in account.failures:
         typer.echo(f"refusing to start: {c.name}: {escape_terminal(c.detail)}", err=True)
@@ -273,13 +290,12 @@ def run(
         await run_service(
             store,
             registry,
-            certstream_enabled=config.discovery.certstream.enabled
-            if certstream is None
-            else certstream,
-            dnstwist_enabled=config.discovery.dnstwist.enabled if dnstwist is None else dnstwist,
+            certstream_enabled=certstream_on,
+            dnstwist_enabled=dnstwist_on,
             enrich_enabled=enrich,
             fetch_enabled=fetch,
             stop=stop,
+            until_idle=until_idle,
         )
 
     try:
@@ -288,10 +304,30 @@ def run(
         store.close()
 
 
+def _render_request_line(req, now: float) -> str:
+    if req.status == "refused":
+        return f"  render not requested: {req.reason}"
+    if req.due is not None and req.due > now:
+        when = "due " + datetime.fromtimestamp(req.due, UTC).isoformat(timespec="seconds")
+    else:
+        when = "now" if req.round == 0 else "under way"
+    already = " (already requested)" if req.status == "already_requested" else ""
+    return f"  render requested for round {req.round} ({when}){already}"
+
+
 @app.command()
 def submit(
     ctx: typer.Context,
     targets: Annotated[list[str], typer.Argument(help="URLs or domain names.")],
+    render: Annotated[
+        bool,
+        typer.Option(
+            "--render",
+            help="Request a browser render for the case's next undecided analysis round"
+            " (budget: browser.analyst_renders_per_day; never bypasses the static-fetch"
+            " and official-domain checks).",
+        ),
+    ] = False,
 ) -> None:
     """Submit URLs or domains for analysis (never suppressed)."""
     config = _load(ctx)
@@ -302,7 +338,7 @@ def submit(
     try:
         for target in targets:
             try:
-                r = submit_name(store, matcher, target)
+                r = submit_name(store, matcher, target, render=render)
             except OSError as e:
                 typer.echo(f"error: cannot write discovery log: {e}", err=True)
                 raise typer.Exit(1) from e
@@ -314,6 +350,11 @@ def submit(
                 continue
             state = "new case" if r.new_case else "existing case"
             typer.echo(f"{escape_terminal(r.host)}: {state} #{r.case_id}")
+            if r.render_request is None:
+                continue
+            typer.echo(_render_request_line(r.render_request, time.time()))
+            if r.render_request.status == "refused":
+                failed = True
     finally:
         store.close()
     if failed:
@@ -675,6 +716,7 @@ def cases_show(
             "bundle": report.bundle.model_dump(mode="json") if report.bundle else None,
             "policy_result": report.result.model_dump(mode="json") if report.result else None,
             "analyst_labels": report.analyst_labels,
+            "render_requests": report.render_requests,
         }
         text = json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=True)
     else:

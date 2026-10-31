@@ -46,6 +46,9 @@ from brandsentinel.textsafe import sanitize_fact
 # original label; every block they lack has a default.
 # bundle/4 (M7): the `render` block, `render_reason` and `cloaking`, content
 # blocks from the rendered page, and screenshot evidence in `visual`.
+# M8 adds no bundle field: M7 (bundle/4 only) must keep reading every score M8
+# writes, so a code rollback leaves stored cases readable. Analyst render
+# requests are shown by the triage layer from facts (triage.load_case).
 SCHEMA_VERSION = "bundle/4"
 SCHEMA_VERSIONS = ("bundle/1", "bundle/2", "bundle/3", "bundle/4")
 MAX_SNIPPETS = 20

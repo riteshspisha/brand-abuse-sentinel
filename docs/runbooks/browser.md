@@ -94,20 +94,21 @@ self-test.
 
 ## Rendering decisions and evidence
 
-- Triggers (`sandbox/triggers.py`, `render_decision/1`): `js_shell` on a
+- Triggers (`sandbox/triggers.py`, `render_decision/2` since M8): `js_shell` on a
   brand-matching domain (AE10); for strong-strength domains `static_error`,
   `decoy_page` (parked, placeholder or empty without brand content) and
   `script_redirect`; on brand-related pages `form_hints_without_forms` and
   `no_static_images`; `little_text` on brand-matching domains; otherwise a
   stable `sample` of strong-strength cases (`browser.sample_rate`, default
   10%). Never on official domains or without a static response.
+- `analyst_request` (M8): see [Analyst-requested renders](#analyst-requested-renders-m8).
 - `browser_render` fact: the validated document (requests capped at 300, URLs at
   500 characters), the stored rendered HTML (`rendered_page`) and screenshot
   (`screenshot`) as inert blobs, and the screenshot's media result.
 - Rendered extractor features reference the render fact; `cloaking/1`
   compares the views (brands, credential fields, payment, final site, status).
   A script shell completing in the browser is an expected difference.
-- `bundle/4`: the `render` block; content blocks from the rendered page unless
+- `bundle/4` (unchanged by M8, so M7 reads every score M8 writes): the `render` block; content blocks from the rendered page unless
   only the static page showed abuse indicators; screenshot matches, text and
   QR payees in `visual` and `payment` with role `screenshot`.
 - `policy/5`: `cloaking_suspected` (abuse, 30 points, needs a brand on the page
@@ -135,6 +136,51 @@ the orphan sweep and the network check with its probe passed; otherwise the
 service logs `browser stage disabled` with the failed checks
 (`Orchestrator.browser_disabled`), render jobs wait, and cases show
 `render_pending`.
+
+## Analyst-requested renders (M8)
+
+```sh
+brandsentinel submit --render https://example.test/login   # prints the round and when it is due
+```
+
+- The request is a `render_request` fact for one analysis round: the next
+  round, after every decided one, that can still decide (its work is queued:
+  a deferred row, or a pending or running enrich or fetch job). A new case:
+  round 0. A case already decided (for example a non-brand JS shell that was
+  not rendered): the next scheduled recheck, whose time does not move; the
+  case renders only then (about a day later by default). A round that can no
+  longer decide (its fetch recorded without a decision, as for a case analyzed
+  before M7, or its jobs failed for good) is skipped. No round is created. If
+  no round is left the request is refused (exit 1). A second request for the same round
+  is reported as `already requested` and changes nothing.
+- That round's decision consumes it. The request, the budget count and the
+  decision are written in one `BEGIN IMMEDIATE` transaction, so a request is
+  seen by exactly one decision (`submit` takes the same lock, so it either
+  lands before the decision or binds to the next round), a crash leaves
+  neither the decision nor the render job, and concurrent deciders (workers or
+  processes) cannot overspend. Later rounds do not inherit it.
+- **No bypass.** The official-domain and no-static-response skips come first:
+  the browser renders only a URL the hardened static fetcher reached through
+  netguard. A request for a private, loopback, metadata or off-port target,
+  or one redirecting there, gets `no_static_response` and no render job. IP
+  literals and URLs with credentials are rejected by `submit`.
+- **Budget:** `browser.analyst_renders_per_day`, **default 0** (requests are
+  recorded and refused as `analyst_budget_exhausted`). `config/lab.yaml` sets 5.
+  Enabling it in production is an explicit configuration decision. It counts
+  decisions of the last 24 hours with `analyst_budget_spent`, which is set only
+  when the request alone triggers a render with the browser enabled; a request
+  beside another reason (for example `js_shell`) is recorded in `reasons` and
+  costs nothing. The budget is spent at decision time: a render that later
+  fails or is retried does not refund or re-spend it.
+- Cases explain a missing render: a `js_shell` case whose round has no render
+  (`not_triggered` or `disabled`) gets the `render_not_scheduled` flag and an
+  unknown with the reason (`no_trigger`: request one with `submit --render`;
+  `analyst_budget_exhausted`: the budget is used up; `no_static_response`;
+  `official_domain`; browser disabled). Explanation only: scores and
+  priorities do not change (`policy/5`).
+- `cases show` lists a request not decided yet as `render requested: round N`
+  (`--json`: `render_requests`), read from facts, so it shows at once and
+  needs no rescore.
 
 ## Verification record (2026-10-28, development host, developer rootless runtime)
 

@@ -354,3 +354,17 @@ def test_sandbox_check_strict_turns_warnings_into_failures(monkeypatch, tmp_path
     assert strict.exit_code == 1 and "warnings are failures" in strict.output
     monkeypatch.setattr(preflight, "check_account", lambda config: clean)
     assert runner.invoke(app, ["sandbox", "check", "--no-network", "--strict"]).exit_code == 0
+
+
+def test_submit_render_reports_the_round_and_refuses_explicitly(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", str(tmp_path / "data"))
+    result = runner.invoke(app, ["submit", "--render", "sadhguru-render.example.com"])
+    assert result.exit_code == 0, result.output
+    assert "new case #1" in result.output
+    assert "render requested for round 0 (now)" in result.output
+    again = runner.invoke(app, ["submit", "--render", "sadhguru-render.example.com"])
+    assert again.exit_code == 0 and "round 0 (now) (already requested)" in again.output
+    plain = runner.invoke(app, ["submit", "sadhguru-render.example.com"])
+    assert "render requested" not in plain.output
+    bad = runner.invoke(app, ["submit", "--render", "https://u:p@sadhguru-render.example.com/"])
+    assert bad.exit_code == 1 and "credentials" in bad.output
