@@ -170,7 +170,7 @@ def test_with_budget_zero_the_request_is_refused_and_nothing_renders(requested):
     store, case_id = requested[0]
     b = load_case(store.conn, case_id).bundle
     assert b.render.status == "not_triggered"
-    assert b.render.skipped == "analyst_budget_exhausted" and b.render.analyst_budget == 0
+    assert b.render.skipped == "analyst_budget_exhausted"
     jobs = store.conn.execute("SELECT COUNT(*) FROM jobs WHERE stage = 'render'").fetchone()[0]
     assert jobs == 0
 

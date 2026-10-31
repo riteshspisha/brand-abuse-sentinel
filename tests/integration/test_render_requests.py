@@ -25,6 +25,7 @@ from brandsentinel.sandbox import triggers
 from brandsentinel.store import open_store
 from brandsentinel.store.db import transaction
 from brandsentinel.triage import load_case
+from brandsentinel.triage.report import render_case_text
 
 SHELL = (
     b'<html><head><title>Loading</title></head><body><div id="app"></div>'
@@ -123,7 +124,7 @@ def test_budget_zero_records_the_refusal_and_schedules_nothing(
         assert not render_jobs(store)
         res = load_case(store.conn, r.case_id).result
         assert "render_not_scheduled" in res.flags
-        assert any("budget is used up (0 per 24 h" in u for u in res.unknowns)
+        assert any("analyst render budget" in u and "used up" in u for u in res.unknowns)
     finally:
         store.close()
 
@@ -170,11 +171,13 @@ def test_a_pending_request_for_a_later_round_is_shown_on_the_case(env, harness):
     url = shell_url(harness)
     first = submit(store, matcher, url)
     run_until(store, stages, lambda: runs(store, "fetch"))
+    before = store.conn.execute("SELECT COUNT(*) FROM scores").fetchone()[0]
     submit(store, matcher, url, render=True)
-    stages.score(first.case_id)
     case = load_case(store.conn, first.case_id)
-    assert case.bundle.render.requested_round == 1
-    assert "an analyst render is requested for round 1" in case.result.unknowns
+    assert case.render_requests == [1]  # read from facts: shown without a rescore
+    assert store.conn.execute("SELECT COUNT(*) FROM scores").fetchone()[0] == before
+    text = "\n".join(render_case_text(case))
+    assert "render requested" in text and "round 1 (analyst request, not decided yet)" in text
 
 
 def test_a_request_racing_the_decision_binds_to_exactly_one_round(env, harness):
@@ -436,8 +439,7 @@ def test_a_round_fetched_without_a_decision_is_skipped_not_stranded(env, harness
     store.conn.execute("DELETE FROM facts WHERE name = 'render_decision'")  # as before M7
     req = submit(store, matcher, url, render=True).render_request
     assert req.status == "requested" and req.round == 1 and req.due == rechecks(store)[0][1]
-    stages.score(first.case_id)
-    assert load_case(store.conn, first.case_id).bundle.render.requested_round == 1
+    assert load_case(store.conn, first.case_id).render_requests == [1]
 
 
 def test_rounds_whose_jobs_failed_for_good_are_refused_explicitly(env, harness):
@@ -467,8 +469,7 @@ def test_a_stale_request_for_a_dead_round_does_not_hide_a_later_one(env, harness
         add_fact(store.conn, first.case_id, source="analyst", name="render_request",
                  value={"round": 0, "analysis_round": 0}, collector_version="t")  # fmt: skip
     assert submit(store, matcher, url, render=True).render_request.round == 1
-    stages.score(first.case_id)
-    assert load_case(store.conn, first.case_id).bundle.render.requested_round == 1
+    assert load_case(store.conn, first.case_id).render_requests == [1]  # round 0 is past
 
 
 def test_the_render_stage_stays_at_one_browser_at_a_time(env):
@@ -480,3 +481,78 @@ def test_the_render_stage_stays_at_one_browser_at_a_time(env):
     orch = Orchestrator(store)
     RenderStage(stages, ScriptedBrowser({}), None).register(orch)
     assert orch.stages["render"].concurrency == 1
+
+
+# --- failures after the decision, and the window boundary (pre-merge review) --------
+
+
+def test_a_failing_requested_render_is_charged_once_and_never_redecided(tmp_path):
+    """The browser fails on every attempt: the render is recorded as failed,
+    the budget stays spent once (no refund, no re-spend on retries), and the
+    next request is still refused by the 1-per-day budget."""
+    from brandsentinel.sandbox.runner import SandboxError
+
+    config = Config(data_dir=tmp_path / "data", media={"ocr": False}, jobs={"max_attempts": 2},
+                    browser={"sample_rate": 0.0, "analyst_renders_per_day": 1})  # fmt: skip
+    store = open_store(config)
+    try:
+        guard, fetcher = build_network(config)
+        stages = AnalysisStages(store, lab_registry(), guard=guard, fetcher=fetcher)
+        a, b = seed_requested(store, 2, now=time.time())
+        stages.decide_render(stages._case(a), 0)
+        fetch = store.conn.execute("SELECT value_json FROM facts WHERE name = 'http_fetch'")
+        url = json.loads(fetch.fetchone()[0])["final_url"]
+        browser = ScriptedBrowser({url: SandboxError("no container could start")})
+        run_render(store, stages, browser, lambda: store.conn.execute(
+            "SELECT 1 FROM stage_runs WHERE stage = 'render'").fetchone())  # fmt: skip
+        assert len(browser.calls) == 2  # retried once, then recorded
+        assert load_case(store.conn, a).bundle.render.status == "failed"
+        assert stages.analyst_renders(time.time()) == 1
+        stages.decide_render(stages._case(a), 0)  # a redelivery decides nothing new
+        assert len(decisions(store, a)) == 1
+        stages.decide_render(stages._case(b), 0)
+        assert decisions(store, b)[0]["skipped"] == "analyst_budget_exhausted"
+    finally:
+        store.close()
+
+
+def test_a_crash_after_the_fetch_is_recorded_is_decided_by_the_redelivery(env, harness):
+    """The process dies between the recorded fetch and the render decision: the
+    redelivered fetch job decides the round, once, with the request."""
+    store, stages, matcher, _ = env
+    r = submit(store, matcher, shell_url(harness), render=True)
+    real = stages.decide_render
+    crashed = []
+
+    def crash_once(case, rnd):
+        if not crashed:
+            crashed.append(rnd)
+            raise RuntimeError("process killed")
+        real(case, rnd)
+
+    stages.decide_render = crash_once
+    run_until(store, stages, lambda: render_jobs(store))
+    assert crashed == [0] and ("fetch", 0, "ok") in runs(store)
+    d = decisions(store, r.case_id)
+    assert list(d) == [0] and d[0]["reasons"] == ["analyst_request"]
+    assert stages.analyst_renders(stages.clock()) == 1 and len(render_jobs(store)) == 1
+
+
+def test_the_budget_frees_exactly_24_hours_after_the_spend(tmp_path, clock):
+    config = Config(data_dir=tmp_path / "data",
+                    browser={"sample_rate": 0.0, "analyst_renders_per_day": 1})  # fmt: skip
+    store = open_store(config)
+    try:
+        guard, fetcher = build_network(config)
+        stages = AnalysisStages(store, lab_registry(), guard=guard, fetcher=fetcher, clock=clock)
+        a, b, c = seed_requested(store, 3, now=clock())
+        stages.decide_render(stages._case(a), 0)
+        clock.advance(86400 - 1)
+        stages.decide_render(stages._case(b), 0)
+        clock.advance(1)  # exactly 24 h after a's render was charged
+        stages.decide_render(stages._case(c), 0)
+        d = decisions(store)
+        assert d[b]["skipped"] == "analyst_budget_exhausted"
+        assert d[c]["analyst_budget_spent"]
+    finally:
+        store.close()

@@ -330,12 +330,9 @@ def submit(
     ] = False,
 ) -> None:
     """Submit URLs or domains for analysis (never suppressed)."""
-    from brandsentinel.policy.scorer import CaseScorer
-
     config = _load(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     matcher = Matcher(registry)
-    scorer_policy = _check_analysis_config(config)[0] if render else None
     store = open_store(config)
     failed = False
     try:
@@ -358,12 +355,6 @@ def submit(
             typer.echo(_render_request_line(r.render_request, time.time()))
             if r.render_request.status == "refused":
                 failed = True
-            elif not r.new_case:
-                # So `cases show` says a render is requested before the round runs.
-                try:
-                    CaseScorer(store.conn, registry, scorer_policy).score(r.case_id)
-                except Exception as e:  # the request stands; the next score shows it
-                    typer.echo(f"  (case not re-scored: {type(e).__name__})", err=True)
     finally:
         store.close()
     if failed:
@@ -725,6 +716,7 @@ def cases_show(
             "bundle": report.bundle.model_dump(mode="json") if report.bundle else None,
             "policy_result": report.result.model_dump(mode="json") if report.result else None,
             "analyst_labels": report.analyst_labels,
+            "render_requests": report.render_requests,
         }
         text = json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=True)
     else:

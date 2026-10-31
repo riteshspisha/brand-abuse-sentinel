@@ -84,6 +84,13 @@ def _kv(label: str, value) -> str:
     return f"  {label + ':':<22} {'' if value is None else value}"
 
 
+def _render_request_lines(report: CaseReport) -> list[str]:
+    return [
+        _kv("render requested", f"round {rnd} (analyst request, not decided yet)")
+        for rnd in report.render_requests
+    ]
+
+
 def render_case_text(report: CaseReport) -> list[str]:
     s, b, p = report.summary, report.bundle, report.result
     lines = [
@@ -97,7 +104,7 @@ def render_case_text(report: CaseReport) -> list[str]:
             _kv("priority", "not scored yet (no static analysis result)"),
             _kv("discovered by", ", ".join(s.sources)),
         ]
-        return lines
+        return lines + _render_request_lines(report)
     lines += [
         _kv(
             "priority",
@@ -212,6 +219,7 @@ def render_case_text(report: CaseReport) -> list[str]:
             lines.append(_kv("rendered final URL", rd.final_url))
         for q in rd.refused_requests[:5]:
             lines.append(_kv("refused by proxy", f"{q.get('reason')}: {q.get('url')}"))
+    lines += _render_request_lines(report)
     if (b.cloaking or {}).get("suspected"):
         fields = ", ".join(d.get("field") for d in b.cloaking.get("differences") or [])
         lines.append(_kv("cloaking suspected", fields))

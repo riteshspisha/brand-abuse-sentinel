@@ -152,7 +152,7 @@ def test_ae10_js_login_is_rendered_and_scored_on_the_rendered_form(env):
     run(store, stages, browser, rendered(store, case_id))
     r = load_case(store.conn, case_id)
     b = r.bundle
-    assert b.schema_version == "bundle/5" and b.render.status == "complete"
+    assert b.schema_version == "bundle/4" and b.render.status == "complete"
     assert b.render.content_source == "rendered" and b.render_reason == "js_shell"
     assert b.credential.password_fields == 1 and not b.page.js_shell
     assert r.result.category == "credential_phishing" and r.result.priority == "P1"

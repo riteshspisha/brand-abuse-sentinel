@@ -108,8 +108,7 @@ self-test.
 - Rendered extractor features reference the render fact; `cloaking/1`
   compares the views (brands, credential fields, payment, final site, status).
   A script shell completing in the browser is an expected difference.
-- `bundle/4` (`bundle/5` since M8 adds `render.requested_round` and
-  `render.analyst_budget`): the `render` block; content blocks from the rendered page unless
+- `bundle/4` (unchanged by M8, so M7 reads every score M8 writes): the `render` block; content blocks from the rendered page unless
   only the static page showed abuse indicators; screenshot matches, text and
   QR payees in `visual` and `payment` with role `screenshot`.
 - `policy/5`: `cloaking_suspected` (abuse, 30 points, needs a brand on the page
@@ -176,10 +175,12 @@ brandsentinel submit --render https://example.test/login   # prints the round an
 - Cases explain a missing render: a `js_shell` case whose round has no render
   (`not_triggered` or `disabled`) gets the `render_not_scheduled` flag and an
   unknown with the reason (`no_trigger`: request one with `submit --render`;
-  `analyst_budget_exhausted`: the budget and its value; `no_static_response`;
-  `official_domain`; browser disabled). A pending request for a later round is
-  listed as `an analyst render is requested for round N`. Explanation only:
-  scores and priorities do not change (`policy/5`).
+  `analyst_budget_exhausted`: the budget is used up; `no_static_response`;
+  `official_domain`; browser disabled). Explanation only: scores and
+  priorities do not change (`policy/5`).
+- `cases show` lists a request not decided yet as `render requested: round N`
+  (`--json`: `render_requests`), read from facts, so it shows at once and
+  needs no rescore.
 
 ## Verification record (2026-10-28, development host, developer rootless runtime)
 

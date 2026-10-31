@@ -19,9 +19,13 @@ nothing in the diff.
 - **Budget count.** It uses an `analyst_budget_spent` flag on the decision,
   not `json_each` over `reasons`. Searching only escalated cases keeps it on
   the facts index.
-- **`bundle/5`.** The plan did not mention a bundle bump. It is needed to show
-  a pending request and the budget value; M7 code cannot read `bundle/5`
-  scores, because blocks forbid extra fields.
+- **No bundle bump (pre-merge review).** An earlier revision bumped to
+  `bundle/5` for two display fields. M7 could then read no case M8 had scored
+  (schema-version `ValidationError`) until an M7 rescore. The fields were
+  removed: pending requests are shown by the triage layer from facts, and the
+  budget explanation names the setting, not its value. Verified across
+  versions: the M7 code at `d3adbe9` reads and rescores M8-written stores with
+  identical results, and M8 reads M7-written stores.
 - **Browser disabled.** With a request and the browser disabled, the decision
   is recorded as triggered and `disabled`, and spends no budget. It is not
   `analyst_budget_exhausted`.
@@ -74,3 +78,25 @@ nothing in the diff.
    (0.03 to 0.6 s) and could flake on a heavily loaded host.
 9. **No automated T2a checker.** The pinned T2a checker is not part of the
    test suite; it is run by hand against the T2a-dev evidence.
+
+## Pre-merge review (2026-10-31)
+
+- **Rollback boundary.**
+  - No migration: the database stays schema v5 (the store migration number,
+    not the bundle version).
+  - M8 writes only rows M7 reads: `render_decision/2` facts (extra keys, read
+    with `.get`), `render_request` facts (ignored by M7), and score rows with
+    the extra `render_not_scheduled` flag (a list of strings).
+  - A code-only rollback leaves the store readable. An M7 rescore drops the
+    flag.
+  - Requests pending at rollback are inert under M7, and render jobs already
+    queued by an analyst decision still run under M7.
+  - The one rollback requirement is config: M7 refuses a config containing
+    `browser.analyst_renders_per_day` (extra keys are forbidden), so remove
+    that key before or with the rollback.
+- **Classifiers.** `tools/t1-trial.sh` and `tools/t2a-lab.sh`, in the
+  promotion work dir, accept an expected fetch `job failed` by reading
+  `r["fields"]["error"]`. `JsonFormatter` merges fields into the top level,
+  so that rule never matched, even on M7: any `job failed` is a STOP. That is
+  fail-closed, so safe. Under M8 it stays fail-closed. A revision for M8 must
+  read the top-level `stage` and `error_type == "TransientFetchFailure"`.

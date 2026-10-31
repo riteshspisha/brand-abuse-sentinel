@@ -272,10 +272,7 @@ def _render_not_scheduled(render) -> str:
             " was not in the sample; request a render with `submit --render`"
         )
     elif render.skipped == "analyst_budget_exhausted":
-        n = render.analyst_budget
-        why = "the analyst render budget is used up" + (
-            f" ({n} per 24 h, browser.analyst_renders_per_day)" if n is not None else ""
-        )
+        why = "the analyst render budget (browser.analyst_renders_per_day per 24 h) is used up"
     elif render.skipped == "no_static_response":
         why = "the static fetch got no response, and only a page it reached is rendered"
     elif render.skipped == "official_domain":
@@ -395,8 +392,6 @@ def evaluate(b: EvidenceBundle, policy: Policy, judgments: Iterable[dict] = ()) 
             # Explanation only (M8): no score or priority depends on it.
             flags.append("render_not_scheduled")
             unknowns.append(_render_not_scheduled(b.render))
-    if b.render.requested_round is not None:
-        unknowns.append(f"an analyst render is requested for round {b.render.requested_round}")
     if b.render.status == "complete" and b.render.reason:
         manual.append(
             f"The browser reached {b.render.reason}; the case is scored on the static page,"

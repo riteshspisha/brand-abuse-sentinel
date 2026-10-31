@@ -139,7 +139,7 @@ def test_copied_logo_is_matched_with_provenance_and_corroborated(env):
 
     r = load_case(store.conn, case_id)
     v = r.bundle.visual
-    assert r.bundle.schema_version == "bundle/5" and v.status in ("complete", "partial")
+    assert r.bundle.schema_version == "bundle/4" and v.status in ("complete", "partial")
     (m,) = v.matches
     assert m.method == "perceptual" and m.role == "logo"
     assert m.reference["asset_id"] == "lumina-logo" and m.reference["origin"] == "registry_asset"
@@ -485,7 +485,7 @@ def test_populated_bundle3_round_trips_through_stored_scores(env):
     case_id = submit(store, matcher, url).case_id
     run(store, stages, media_done(store, case_id))
     stored, _, _ = latest_score(store.conn, case_id)
-    assert stored.schema_version == "bundle/5" and stored.visual.matches and stored.visual.images
+    assert stored.schema_version == "bundle/4" and stored.visual.matches and stored.visual.images
     assert bundle_json(stored) == bundle_json(stages.scorer.bundle(case_id))
 
 
