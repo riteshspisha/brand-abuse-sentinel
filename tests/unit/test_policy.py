@@ -895,3 +895,34 @@ def test_redirect_to_official_is_explained_but_gives_no_points():
     b = bundle(registry=RegistryContext(final_url_official_domain="luminafoundation.test"))
     reason = next(x for x in evaluate(b, policy()).reasons if x.rule == "redirects_to_official")
     assert reason.points == 0
+
+
+M7_BUNDLE_FIELDS_SHA256 = "a410f154d0bd317e2f1713895f41251e03dbeda9d3c0f36b317052f1dbdeac52"
+
+
+def _bundle_field_paths(model, prefix=""):
+    import typing
+
+    from pydantic import BaseModel
+
+    out = []
+    for name, f in model.model_fields.items():
+        out.append(prefix + name)
+        for t in (f.annotation, *typing.get_args(f.annotation)):
+            if isinstance(t, type) and issubclass(t, BaseModel):
+                out += _bundle_field_paths(t, prefix + name + ".")
+    return out
+
+
+def test_m8_keeps_the_m7_bundle_schema_so_a_code_rollback_can_read_every_score():
+    """M7 accepts bundle/1..4 only and forbids extra fields: a new bundle field
+    or version makes every case M8 scores unreadable after a rollback to M7
+    (pre-merge review of M8). The digest is of every field path of the M7
+    (d3adbe9) EvidenceBundle; a change here needs a promotion-level data plan."""
+    import hashlib
+
+    from brandsentinel.evidence.bundle import SCHEMA_VERSION, SCHEMA_VERSIONS, EvidenceBundle
+
+    assert SCHEMA_VERSION == "bundle/4" and SCHEMA_VERSIONS[-1] == "bundle/4"
+    paths = sorted(set(_bundle_field_paths(EvidenceBundle)))
+    assert hashlib.sha256("\n".join(paths).encode()).hexdigest() == M7_BUNDLE_FIELDS_SHA256
