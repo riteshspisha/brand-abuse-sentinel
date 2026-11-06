@@ -223,6 +223,10 @@ browser:
   enabled: true
   sample_rate: 0.1                # share of other strong-strength cases rendered
   little_text_chars: 200          # brand-matching page with less static text renders
+  # Renders an analyst may request with `submit --render` in any 24 hours (M8),
+  # counted only when the request alone triggers the render. 0: requests are
+  # recorded and refused (analyst_budget_exhausted).
+  analyst_renders_per_day: 0
   viewport_width: 1280            # also the screenshot size
   viewport_height: 800
   navigation_timeout_seconds: 15

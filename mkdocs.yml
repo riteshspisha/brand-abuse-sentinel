@@ -1,0 +1,135 @@
+# BrandSentinel documentation site. Sources are the Markdown files under docs/;
+# nothing here is duplicated HTML. Build (no project install needed):
+#   uv run --no-project --with-requirements docs/requirements.txt mkdocs build --strict
+# Preview: same command with `serve` instead of `build --strict`.
+# See docs/development/documentation.md for the checks and the maintenance rule.
+site_name: BrandSentinel
+site_description: Local-first brand-abuse detection and triage, with isolated evidence collection.
+repo_url: https://github.com/riteshspisha/brand-abuse-sentinel
+repo_name: brand-abuse-sentinel
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+strict: true
+
+# Kept in the repository, not published: decision artifacts and records that
+# carry host-specific operational detail (docs/development/documentation.md,
+# "What is published"). Links to them from published pages become repository links.
+exclude_docs: |
+  plans/
+  runbooks/handoff.md
+  runbooks/service-account.md
+  demo/*.py
+  tools/
+  requirements.txt
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+hooks:
+  - docs/tools/mkdocs_hooks.py
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Set up and first commands: guide/getting-started.md
+      - Offline demo: guide/demo.md
+      - Reproducibility and environments: guide/reproducibility.md
+  - Concepts:
+      - Architecture: concepts/architecture.md
+      - Pipeline and data flow: concepts/pipeline.md
+      - Evidence and scoring: concepts/scoring.md
+      - Security model and isolation: concepts/security.md
+      - Storage: concepts/storage.md
+  - Reference:
+      - CLI: reference/cli.md
+      - Configuration: reference/configuration.md
+  - Development:
+      - Testing and security validation: development/testing.md
+      - Documentation system: development/documentation.md
+  - Operations:
+      - Deployment and recovery: operations/deployment.md
+      - Sandbox runtime: runbooks/sandbox.md
+      - Media sandbox: runbooks/media.md
+      - Isolated browser: runbooks/browser.md
+      - Job telemetry: runbooks/telemetry.md
+      - Analyst triage: runbooks/triage.md
+  - Project:
+      - Status and maturity: project/status.md
+      - Roadmap and limitations: project/roadmap.md
+      - Milestone demo log: runbooks/demo.md
+      - Engineering notes:
+          - SQLite WAL switch: solutions/2026-10-11-sqlite-wal-switch-ignores-busy-timeout.md
+          - Docker attach backpressure: solutions/2026-10-09-docker-attach-backpressure-blocks-kill.md
+          - Chromium sandbox under cap-drop: solutions/2026-10-28-chromium-sandbox-under-cap-drop-all.md
+          - Confusable tables: solutions/2026-10-09-confusable-tables-need-a-backstop.md
+          - Invisible Unicode in source: solutions/2026-10-08-invisible-unicode-in-source.md
+          - httpcore SSL errors: solutions/2026-10-09-httpcore-ssl-errors-are-context-not-cause.md
+          - Page sockets and the method gate: solutions/2026-10-29-page-sockets-bypass-the-http-method-gate.md
+          - Bind mount of a replaced directory: solutions/2026-10-10-bind-mount-of-a-replaced-directory-is-empty.md
+          - BLAS threads and the PID limit: solutions/2026-10-11-blas-threads-exhaust-the-pid-limit.md
+          - Cancelled cleanup leaves a container: solutions/2026-10-28-cancelled-cleanup-leaves-sandbox-container.md
+          - OOMKilled for a child of init: solutions/2026-10-11-oomkilled-not-set-for-child-of-init.md
+      - Review findings by milestone:
+          - M0 foundation: residual-review-findings/feat-m0-foundation.md
+          - M1 registry and matching: residual-review-findings/feat-m1-registry-matching.md
+          - M2 discovery and intake: residual-review-findings/feat-m2-discovery-intake.md
+          - M3 guarded fetch and enrichment: residual-review-findings/feat-m3-guarded-fetch-enrichment.md
+          - M4 sandbox, egress, lab: residual-review-findings/feat-m4-sandbox-egress-lab.md
+          - M5 static detection: residual-review-findings/feat-m5-static-detection.md
+          - M6 media and visual: residual-review-findings/feat-m6-media-visual.md
+          - M7 isolated browser: residual-review-findings/feat-m7-isolated-browser.md
+          - M8 analyst render: residual-review-findings/feat-m8-analyst-render.md
