@@ -60,3 +60,24 @@ this page. Re-run them before relying on them.
 - **Anything a hostile server could do:** `tests/security/`, using the harness in
   `tests/security/harness.py`. Its DNS stub can map any name to a loopback test address.
 - **Real containers:** mark the test `docker`. `tests/docker_support.py` has the helpers.
+
+## CI
+
+[`.github/workflows/checks.yml`](../../.github/workflows/checks.yml) runs on every pull
+request. It runs lint, `tests/unit/test_docs.py`, the offline demo test, the CLI
+reference check and the strict documentation build. It uses no Docker and no secrets.
+
+The full offline suite is not in CI yet. On GitHub's `ubuntu-24.04` runner (2026-11-06,
+commit `5d9bcc7`) it reported 6 failed, 1518 passed, 1 skipped. On the developer machine
+the same tests pass:
+
+| Test | Observed on the runner | Likely cause |
+|---|---|---|
+| `test_media_worker.py::test_ae12_decompression_bomb_is_rejected_quickly` | took 2.5 s, limit 2 s | wall-clock bound; also fails locally with CPU throttled to 30 % |
+| `test_cli.py::test_status_reports_sandbox_disabled_with_reasons` | no `FAIL endpoint` line | the runner has a reachable Docker daemon; the test assumes none |
+| `test_analysis_pipeline.py::test_unreachable_site_records_failure_after_last_attempt` | job still `running` | not diagnosed |
+| `test_orchestrator.py::test_lease_is_renewed_while_waiting_for_the_domain_lock` | a second attempt ran | not diagnosed (timing) |
+| `test_render_requests.py::test_a_round_fetched_without_a_decision_is_skipped_not_stranded`, `::test_a_stale_request_for_a_dead_round_does_not_hide_a_later_one` | request stayed on round 0 | not diagnosed |
+
+Fix these as test or code changes of their own, then add the suite to the workflow. Do
+not skip them or loosen their bounds to make CI green.

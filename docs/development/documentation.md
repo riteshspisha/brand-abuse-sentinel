@@ -86,9 +86,10 @@ pictures; self-hosting the script is a follow-up if the site must work offline.
 `tests/integration/test_offline_demo.py` runs the [offline demo](../guide/demo.md) end to
 end and checks every case against its `expected.yaml`. The strict site build is the
 remaining check. Run it before merging documentation changes.
-[`.github/workflows/checks.yml`](../../.github/workflows/checks.yml) runs lint, the
-offline suite, the CLI reference check and the strict build on every pull request. It
-does not run the `docker or security` gate, which needs the rootless sandbox runtime.
+[`.github/workflows/checks.yml`](../../.github/workflows/checks.yml) runs lint, these
+checks, the CLI reference check and the strict build on every pull request. It does not
+run the full offline suite or the `docker or security` gate
+(see [Testing](testing.md#ci)).
 
 ## What is published
 

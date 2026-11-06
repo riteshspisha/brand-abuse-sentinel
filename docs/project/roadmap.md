@@ -48,6 +48,6 @@ Carried from the review findings and runbooks:
 - Fix the `eval` stub text ("planned for M8") in `src/brandsentinel/cli.py` to name the
   outstanding U20/U21 work. This is a one-line code change and not made here.
 - Add a license.
-- CI (`.github/workflows/checks.yml`) runs the offline checks and the strict site
-  build. The `docker or security` gate is not in CI: it needs the rootless sandbox
-  runtime.
+- Make the full offline suite pass on a hosted CI runner, then add it to
+  `.github/workflows/checks.yml` (see [Testing](../development/testing.md#ci)). The
+  `docker or security` gate is not in CI: it needs the rootless sandbox runtime.

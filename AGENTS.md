@@ -126,8 +126,8 @@ live outside this repository and are operated by the owner.
 5. Documentation: `uv run pytest tests/unit/test_docs.py` and the strict site build
    (section 9).
 
-CI (`.github/workflows/checks.yml`) runs steps 1 and 5 on every pull request. It does not
-run the `docker or security` gate, so step 3 stays your job.
+CI (`.github/workflows/checks.yml`) runs lint and step 5 on every pull request. It does
+not run the offline suite or the `docker or security` gate, so steps 1 and 3 stay your job.
 
 ## 8. Collecting and interpreting evidence
 
