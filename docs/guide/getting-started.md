@@ -106,9 +106,17 @@ because every stage is off: `cases list` shows it unscored. To watch a case be f
 scored and explained without any network, run the [offline demo](demo.md).
 
 !!! danger "Never use the production store for experiments"
-    Every store-opening command, even `status`, deletes unreferenced artifact files older
-    than one hour. Never point a development command at `/var/lib/brandsentinel/data` or
-    at a copy you need to keep byte-identical.
+    Every store-opening command, even `status` and `cases list`, writes. It can:
+
+    - create the data directory and database (without `-c`, `./data` in the current
+      directory);
+    - switch the database to WAL;
+    - apply migrations;
+    - delete unreferenced artifact files older than one hour.
+
+    Never point a development command at `/var/lib/brandsentinel/data` or at a copy you
+    need to keep byte-identical. Production commands belong to the owner, run as the
+    service account ([Deployment](../operations/deployment.md#production-cli-operations)).
 
 ## Next
 

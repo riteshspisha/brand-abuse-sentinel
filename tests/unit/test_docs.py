@@ -336,3 +336,47 @@ def test_excluded_pages_are_not_published():
     assert "docs/runbooks/handoff.md" not in published
     assert "docs/runbooks/service-account.md" not in published
     assert not any(p.startswith("docs/plans/") for p in published)
+
+
+# --- account enforcement (docs/concepts/security.md, "Which commands enforce it") --------
+
+# The account checks a command reaches, directly or through the one CLI helper that
+# runs them. Anything else in a command's body is not an account check.
+ACCOUNT_GATES = {"check_account", "hostile_content_runtime", "_print_sandbox"}
+DOCUMENTED_GATES = {
+    "run": {"check_account"},  # refuses to start
+    "registry collect": {"hostile_content_runtime"},  # refuses outside lab mode
+    "status": {"_print_sandbox"},  # reports only
+    "sandbox check": {"check_account"},  # reports, exits 1
+}
+
+
+def _leaf_commands(group, prefix=()):
+    for name, cmd in group.commands.items():
+        if hasattr(cmd, "commands"):
+            yield from _leaf_commands(cmd, (*prefix, name))
+        else:
+            yield " ".join((*prefix, name)), cmd
+
+
+def test_account_enforcement_matches_the_security_model():
+    """The security model lists which commands check the account; every other command
+    runs as root. A command that gains or loses a check must update that table (and
+    AGENTS.md, README.md and docs/operations/deployment.md) in the same change."""
+    import ast
+    import inspect
+
+    found = {}
+    for name, cmd in _leaf_commands(command_tree()):
+        tree = ast.parse(inspect.getsource(inspect.unwrap(cmd.callback)).lstrip())
+        used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        used |= {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        if used & ACCOUNT_GATES:
+            found[name] = used & ACCOUNT_GATES
+    assert found == DOCUMENTED_GATES
+
+    table = (DOCS / "concepts/security.md").read_text().split("#### Which commands enforce it")[1]
+    table = table.split("\n\n", 2)[1]
+    listed = set(re.findall(r"`([a-z]+(?: [a-z]+)?)`", table))
+    missing = {name for name, _ in _leaf_commands(command_tree())} - listed
+    assert not missing, f"commands missing from the enforcement table: {sorted(missing)}"
