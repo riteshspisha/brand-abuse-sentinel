@@ -52,13 +52,24 @@ Key properties:
 - A rejected write is recorded on the case as `artifact_quota_exceeded`.
 - A file is placed only inside the committing transaction.
 
-!!! warning "Opening a store deletes orphaned files"
-    `open_store` calls `sweep_orphans`, which removes temporary files and stored files
-    with no `artifacts` row that are older than one hour. Such files are left behind by
-    a crash between placing a file and committing. This happens for **every** command that
-    opens a store, including read-only ones (`status`, `cases`, `report`, `export`).
-    Never open a store whose files must stay byte-identical, such as a backup or a
-    forensic copy. Read a copy instead, or use SQLite's `immutable=1` read-only URI.
+!!! warning "Opening a store writes, even for inspection commands"
+    **Every** command that opens a store does this, including inspection commands
+    (`status`, `cases list`, `cases show`, `report`, `export csv`). `open_store`:
+
+    - creates `data_dir`, any missing parents and the database file if they do not exist
+      (without `-c`, `data_dir` is `./data` in the current directory);
+    - resets `data_dir` to mode 0700;
+    - switches the database to WAL mode, which creates `-wal` and `-shm` files while it
+      is open;
+    - applies pending migrations;
+    - calls `sweep_orphans`, which removes temporary files and stored files with no
+      `artifacts` row that are older than one hour. A crash between placing a file and
+      committing leaves such files.
+
+    Files it creates belong to whoever runs the command; as root they are root-owned.
+    Never open a store whose files must stay byte-identical, such as a backup, a trial
+    copy or a forensic copy. Read a copy instead, or use SQLite's `immutable=1` read-only
+    URI.
 
 ## Raw logs and retention
 

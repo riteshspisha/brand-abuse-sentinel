@@ -95,7 +95,7 @@ Each job is a fresh container, created with:
   - WebSockets are refused, and WebRTC and workers are removed.
   - Output is strictly validated (`render_rejected` otherwise).
 
-### Account (`config.py` runtime gate, SP1)
+### Account (`sandbox/preflight.py`, SP1)
 
 Production runs as a dedicated user. That user:
 
@@ -105,8 +105,39 @@ Production runs as a dedicated user. That user:
 - does not own the code;
 - has its own rootless Docker daemon.
 
-`brandsentinel run` refuses to start as root, and as the code owner or with rootful
-Docker access unless `runtime.allow_developer_account` is set (development only).
+That is a deployment property, and the application checks it only in a few places.
+`check_account` tests three things about the current process:
+
+- `not_root`: the UID is not 0. This always fails for root, even with the developer
+  override.
+- `not_code_owner`: the UID does not own the application code.
+- `no_rootful_docker`: no rootful Docker socket is readable and writable.
+
+The last two pass with a warning under `runtime.allow_developer_account`. The check does
+not confirm that the process is the `brandsentinel` account; any account with these
+properties passes.
+
+#### Which commands enforce it
+
+| Command | Account check | Opens the store |
+|---|---|---|
+| `run` | **refuses to start** (exit 2) before opening the store if any check fails. Its sandbox stages are additionally withheld, outside lab mode, unless the checks pass with no override (`gate_hostile_content`) | yes, after the check |
+| `registry collect` | outside lab mode, **refuses** (exit 1) unless the checks pass with no override, because it needs the media sandbox. In lab mode: no check | yes, after the check |
+| `status` | **reports only**: prints the account checks when `sandbox.enabled` is on, and never refuses. It opens the store first | yes |
+| `sandbox check` | **reports**, and exits 1 on a failure (`--strict`: also on a warning). A diagnostic, not a gate | no |
+| `submit`, `replay`, `sweep`, `analyze`, `cases list`, `cases show`, `cases label`, `cases rescore`, `report`, `export csv`, `registry corpus` | **none**: they run as root | yes |
+| `sandbox selftest`, `sandbox sweep`, `proxy` | **none** (`selftest` checks only the runtime) | no |
+| `version`, `match`, `registry validate`, `eval` | none | no |
+
+So **running a command is not evidence that the account is right.** Root can submit to,
+inspect, rescore, report from or export a production store. New files it writes there
+(raw-log segments, reports) are owned by root, mode 0600, so the service account cannot
+read them. Running the installed CLI as root can also write Python bytecode caches into
+the root-owned code tree. Any command run without `-c` uses `./data` in the current
+directory, creating a new store there if there is none. Enforcing the account for every command is an open
+follow-up ([Roadmap](../project/roadmap.md)); until then, the rule in
+[Deployment](../operations/deployment.md#production-cli-operations) is procedural.
+
 `sandbox check --strict` must pass with no warnings under the account.
 
 ### Storage and outputs
@@ -146,12 +177,18 @@ These are known and accepted for the current maturity. They are not hidden defec
   browser sandbox.
 - **Egress is attributable.** Fetches and renders come from the host's network. There is no
   VPN or anonymizing egress and no per-destination rate limit.
+- **No account enforcement outside `run` and `registry collect`.** Every other command,
+  including those that write the store, runs as root or as any other user (see
+  [Which commands enforce it](#which-commands-enforce-it)). This is **not accepted**: it
+  is an open security-engineering follow-up. Until it lands, production CLI use is
+  restricted by procedure only.
 - **No instance lock (SP2).** A concurrent `sandbox sweep`, `sandbox check` or a second
   process of the same instance can remove another process's running job containers. This
   blocks unattended operation (M9).
-- **Every store open sweeps orphan blobs.** Read-only commands such as `status` delete
-  unreferenced artifact files older than one hour. Never run them against a store whose
-  bytes must stay unchanged.
+- **Every store open writes.** Inspection commands such as `status` and `cases list`
+  can create the data directory and database, enable WAL, run migrations and delete
+  unreferenced artifact files older than one hour ([Storage](storage.md)). Never run them
+  against a store whose bytes must stay unchanged.
 - **Media and browser limits are per container.** Adversarial media can still amplify
   cost within those limits. There is no aggregate cost control across domains.
 - **The image is not vulnerability-scanned.**

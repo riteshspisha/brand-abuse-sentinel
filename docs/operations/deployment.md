@@ -43,6 +43,35 @@ public file in the repository. In outline:
 `validate.sh` runs Docker Compose on the account's daemon, including the lab stack. That
 itself is a privileged action needing approval.
 
+## Production CLI operations
+
+Every `brandsentinel` command against the production installation, **including inspection
+commands such as `status` and `cases list`**, follows these rules:
+
+- **Explicit authorization.** Each command against the live store is a separately
+  approved operation, like the other steps on this page. That includes `submit`, which
+  queues work that a later `run` will carry out against real hosts.
+- **As the dedicated service account only.** Never through `sudo` as root. Only `run`
+  and `registry collect` refuse an unsuitable account
+  ([which commands enforce it](../concepts/security.md#which-commands-enforce-it)).
+  Everything else runs as root without complaint, and the files it creates are then
+  root-owned.
+- **With the installed configuration passed explicitly:** `-c` with the installed
+  `service.yaml`. Without `-c` (and without `$BRANDSENTINEL_CONFIG`), a command uses
+  `./data` in the current directory and creates a new store there.
+- **Assume the command writes.** Opening a store can:
+    - create the data directory and the database;
+    - reset the directory to mode 0700;
+    - switch the database to WAL mode;
+    - apply pending migrations;
+    - delete unreferenced artifact files older than one hour.
+
+  `submit`, `replay` and `cases label` write records, and `cases rescore` adds score
+  rows. `report` writes HTML into `<data_dir>/reports` by default, and `export csv -o`
+  writes a file. Never run any of them against a recovery point, a trial copy or a store
+  whose bytes are pinned as a baseline. Verify those by hashes and metadata instead
+  ([Storage](../concepts/storage.md)).
+
 ## Promotion
 
 A new milestone reaches production through a **gated promotion**. Each gate has its own

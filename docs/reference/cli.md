@@ -11,8 +11,16 @@ which ones are safe where, see [Getting started](../guide/getting-started.md) an
 Every command accepts the global option `-c/--config PATH` (before the command name):
 the configuration file. Without it, `$BRANDSENTINEL_CONFIG` is used, then the built-in
 defaults (which put the data directory at `./data`). `$BRANDSENTINEL_DATA_DIR` overrides
-`data_dir` from either source. Commands that read or write a store act on the configured
+`data_dir` from either source. Commands that open a store act on the configured
 `data_dir`, so always pass an explicit `-c` outside a scratch checkout.
+
+**Commands that open a store write to it, including inspection commands** such as
+`status` and `cases list`. They create a missing store, apply migrations and sweep
+orphan blobs ([Storage](../concepts/storage.md)). **Only `run` and `registry collect`
+check the account**; the others run as root
+([Security model](../concepts/security.md#which-commands-enforce-it)). Production use is
+owner-operated, as the service account
+([Deployment](../operations/deployment.md#production-cli-operations)).
 
 
 ## Commands

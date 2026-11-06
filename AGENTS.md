@@ -45,8 +45,12 @@ Requirement IDs such as `R37`, `KTD13`, `AE18` or `U19` in code comments refer t
    asserts that the host does not import image libraries.
 3. **Containers are rootless and locked down**: `--cap-drop ALL`, `no-new-privileges`,
    read-only root, limits, `--pull never`, labelled per instance (`sandbox/runner.py`).
-   The application refuses to run as root or with rootful Docker access, unless
-   `runtime.allow_developer_account` is set, which is for development only.
+   Only `run` and `registry collect` check the account. `run` refuses to start as root
+   (always), as the code owner or with rootful Docker access (unless
+   `runtime.allow_developer_account` is set, development only). Its sandbox stages, and
+   `registry collect` outside lab mode, also need clean checks with no override.
+   **Every other command runs as root without complaint**
+   ([docs/concepts/security.md](docs/concepts/security.md#which-commands-enforce-it)).
 4. **Observe only.** BrandSentinel never submits forms, logs in, pays or contacts a
    suspect site except to fetch it. The browser stops non-GET requests.
 5. **Scoring is deterministic and explainable.** Every point cites evidence refs. Context
@@ -80,9 +84,14 @@ uv run python docs/demo/offline_demo.py /tmp/bs-demo      # end-to-end demo on s
 
 Always run CLI commands that touch a store with an explicit, scratch config:
 `brandsentinel -c <scratch.yaml> ...`. The default `data_dir` is `./data`. Never point
-a command at `/var/lib/brandsentinel/data`. Note that **every store-opening command,
-including read-only ones such as `status` and `cases list`, deletes unreferenced blobs
-older than one hour** (`store/blobs.py: sweep_orphans`).
+a command at `/var/lib/brandsentinel/data`. **Inspection commands such as `status` and
+`cases list` write, too.** Opening a store (`store/__init__.py: open_store`):
+
+- creates the data directory and the database if they are missing (without `-c`, that
+  means `./data` wherever you are);
+- resets the directory to 0700 and switches the database to WAL;
+- applies pending migrations;
+- deletes unreferenced blobs older than one hour (`store/blobs.py: sweep_orphans`).
 
 ## 5. Development versus production
 
@@ -100,6 +109,10 @@ live outside this repository and are operated by the owner.
 
 - Anything under `/opt/brandsentinel*`, `/var/lib/brandsentinel`, `/var/backups/brandsentinel`,
   or the `brandsentinel` account (including `sudo`, `systemd-run -M`, `machinectl`).
+- Any `brandsentinel` command against a production store or installation, **including
+  `status` and `cases list`**. Production CLI use is by the owner, as the dedicated
+  service account, with explicit `-c`, never through `sudo` as root
+  ([docs/operations/deployment.md](docs/operations/deployment.md#production-cli-operations)).
 - Starting live collection: `run` with CertStream or dnstwist, `sweep`, `submit` against
   real targets, `registry collect`, or `analyze` on real domains (these contact third
   parties).
@@ -155,13 +168,18 @@ not run the offline suite or the `docker or security` gate, so steps 1 and 3 sta
   - config examples that do not validate;
   - an example config missing a key;
   - broken repository links;
-  - host-specific paths or personal data in published pages.
+  - host-specific paths or personal data in published pages;
+  - a command gaining or losing an account check without the security model's
+    enforcement table changing with it.
 - Never present a planned or pending capability as done.
   `docs/project/status.md` separates implemented, development-tested, production-accepted,
   experimental and planned.
 
 ## 10. Known traps
 
+- Only `run` and `registry collect` check the account. Every other command runs as root
+  and writes root-owned files into whatever store it opens. A command that succeeds tells
+  you nothing about whether the account was right.
 - `brandsentinel eval` is an unimplemented stub, and its message still says "planned for M8".
   The M8 that shipped is analyst render and telemetry; the decision-model work (U20/U21)
   is outstanding.

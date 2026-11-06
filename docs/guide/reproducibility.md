@@ -63,9 +63,9 @@ Requirements, checked by `brandsentinel sandbox check`:
 - subordinate UID/GID ranges for your user;
 - about 3–4 GiB for the sandbox image (`scripts/check-disk-budget.sh`).
 
-On a developer machine you are the owner of the code, so the application refuses to start
-unless a local config sets `runtime.allow_developer_account: true`. That override is for
-development only.
+On a developer machine you are the owner of the code, so `brandsentinel run` refuses to
+start unless a local config sets `runtime.allow_developer_account: true`. Even then its
+sandbox stages run only lab content. That override is for development only.
 
 ```sh
 scripts/build-sandbox-image.sh                               # brandsentinel-sandbox:local; refuses a rootful endpoint

@@ -82,6 +82,7 @@ pictures; self-hosting the script is a follow-up if the site must work offline.
 | Repository links resolve | relative links in `README.md`, `AGENTS.md` and `docs/**.md` that point at missing files |
 | Diagrams are well-formed | each `mermaid` block starts with a known diagram type (rendering itself is client-side; review it in `mkdocs serve`) |
 | Nothing sensitive is published | in published pages: home-directory paths, e-mail addresses, private keys or tokens, evidence directory names, and non-documentation IP addresses |
+| Account enforcement is documented | a command that gains or loses an account check, or a command missing from the [enforcement table](../concepts/security.md#which-commands-enforce-it) |
 
 `tests/integration/test_offline_demo.py` runs the [offline demo](../guide/demo.md) end to
 end and checks every case against its `expected.yaml`. The strict site build is the

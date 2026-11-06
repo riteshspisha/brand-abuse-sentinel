@@ -129,7 +129,9 @@ uv run brandsentinel -c /tmp/bs-demo/demo.yaml status                # jobs: med
 
 `demo.yaml` enables lab mode only so the CLI loads the same registry (the committed
 registry plus the Lumina overlay). Fetching, enrichment, the sandbox, media and the
-browser are all off in it, so these commands only read the store.
+browser are all off in it, so these commands contact nothing. They still write: opening a
+store applies migrations and housekeeping ([Storage](../concepts/storage.md)), and
+`report` writes its HTML into the demo directory.
 
 Delete `/tmp/bs-demo` when you are done. It is yours; nothing else refers to it.
 

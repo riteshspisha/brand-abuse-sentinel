@@ -72,5 +72,7 @@ The trial tooling and its evidence live outside this repository.
 - BrandSentinel has not run live collection unattended, and has no soak result.
 - No real-world detection accuracy has been measured.
 - No advisory model is integrated.
+- The CLI does not enforce the service account for every command: only `run` and
+  `registry collect` check it ([security model](../concepts/security.md#which-commands-enforce-it)).
 - The production Brand Registry has no maintainer-confirmed official domains, payees or
   reference assets.

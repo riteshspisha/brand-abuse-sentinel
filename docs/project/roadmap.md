@@ -11,6 +11,7 @@ milestones. Nothing below is implemented unless [Status](status.md) says so.
 | Real-host validation of the corrected trial tooling, then I1 r2 on an isolated copy | (operations) | owner authorization | prepared |
 | Production Brand Registry confirmation: official domains, payees, reference assets and pages | R6, U17 | the organization | open decision |
 | Instance lock so a sweep or check cannot remove another process's job containers | SP2 | | not started |
+| Account enforcement for every command: refuse root, and the wrong account for a production store, before any store is opened ([security model](../concepts/security.md#which-commands-enforce-it)) | (security; no plan ID yet) | a decision on how a developer checkout opts out | not started |
 | DecisionProvider with Kev-0.8B and Laya (advisory only) | U20 | model servers | not started |
 | Labelled evaluation dataset and runner; rules-only vs models comparison | U21 | U20; labels | not started |
 | Unattended operation: supervision, health thresholds, retention, 24 h soak | U22 / M9 | SP2, U21 | not started |
@@ -33,7 +34,10 @@ Carried from the review findings and runbooks:
   See [Security model](../concepts/security.md#limits-and-residual-risks).
 - **Operations**
   - There is no supervision unit and no instance lock.
-  - Every store open sweeps orphan blobs.
+  - Only `run` and `registry collect` check the account. Other commands, including those
+    that write the store, run as root.
+  - Every store open writes: it creates missing files, applies migrations and sweeps
+    orphan blobs.
 - **Product**
   - The CLI has no offline or fixture mode. The [offline demo](../guide/demo.md) uses the
     test harness instead. An explicit, clearly-labelled demo mode would be a product
