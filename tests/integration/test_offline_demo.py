@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 DEMO = REPO / "docs/demo/offline_demo.py"
 
@@ -57,11 +59,19 @@ def test_offline_demo_refuses_an_existing_directory(tmp_path):
     assert r.returncode == 2 and "exists" in r.stderr
 
 
-def test_offline_demo_refuses_a_redirecting_environment(tmp_path):
-    r = _run(
-        str(DEMO), str(tmp_path / "demo"), env=_env(BRANDSENTINEL_DATA_DIR=str(tmp_path / "other"))
-    )
-    assert r.returncode == 2 and "BRANDSENTINEL_DATA_DIR" in r.stderr
+@pytest.mark.parametrize(
+    ("var", "value"),
+    [
+        ("BRANDSENTINEL_DATA_DIR", "{tmp}/other"),
+        ("BRANDSENTINEL_CONFIG", "{tmp}/other.yaml"),
+        ("BRANDSENTINEL_DATA_DIR", ""),  # empty still counts
+        ("BRANDSENTINEL_CONFIG", ""),
+        ("BRANDSENTINEL_NET_ALLOW", "10.0.0.0/8"),  # not a store path, but refused by the CLI
+    ],
+)
+def test_offline_demo_refuses_any_brandsentinel_variable(tmp_path, var, value):
+    r = _run(str(DEMO), str(tmp_path / "demo"), env=_env(**{var: value.format(tmp=tmp_path)}))
+    assert r.returncode == 2 and var in r.stderr, r.stderr
     assert not (tmp_path / "demo").exists() and not (tmp_path / "other").exists()
 
 

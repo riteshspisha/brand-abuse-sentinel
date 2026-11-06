@@ -85,8 +85,10 @@ pictures; self-hosting the script is a follow-up if the site must work offline.
 
 `tests/integration/test_offline_demo.py` runs the [offline demo](../guide/demo.md) end to
 end and checks every case against its `expected.yaml`. The strict site build is the
-remaining check. Run it before merging documentation changes. There is no CI in the
-repository yet.
+remaining check. Run it before merging documentation changes.
+[`.github/workflows/checks.yml`](../../.github/workflows/checks.yml) runs lint, the
+offline suite, the CLI reference check and the strict build on every pull request. It
+does not run the `docker or security` gate, which needs the rootless sandbox runtime.
 
 ## What is published
 
@@ -96,6 +98,21 @@ Everything under `docs/` is published except what `mkdocs.yml` excludes:
 - `docs/runbooks/handoff.md` and `docs/runbooks/service-account.md`: they record
   host-specific validation details;
 - tooling: `docs/tools/`, `docs/demo/*.py`, `docs/requirements.txt`.
+
+**Excluding a page is not access control.** `exclude_docs` keeps a page off the site,
+but the repository is public: the source file, and every earlier version of it in the
+git history, can be read on the repository host. Published pages link to excluded files
+as repository links. So:
+
+- never commit anything that must stay private (credentials, personal data, home
+  directory paths, private evidence), excluded or not; the sensitive-content check
+  covers published pages, `README.md` and `AGENTS.md` only;
+- removing a record from the current tree does not remove it from the history.
+
+The excluded runbooks hold operational records from the owner's host: install and
+evidence directory names, timestamps, commit hashes, container bridge addresses and
+locally bound listeners. They hold no credentials or personal data. They are excluded
+because they are records rather than current guidance.
 
 Publishing an excluded page is a decision. Remove host-specific records first, then delete
 it from `exclude_docs`, and the sensitive-content check will cover it.

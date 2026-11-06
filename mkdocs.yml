@@ -12,9 +12,10 @@ docs_dir: docs
 site_dir: site
 strict: true
 
-# Kept in the repository, not published: decision artifacts and records that
-# carry host-specific operational detail (docs/development/documentation.md,
-# "What is published"). Links to them from published pages become repository links.
+# Left off the site: decision artifacts and records that carry host-specific
+# operational detail (docs/development/documentation.md, "What is published").
+# This is not access control: the files stay public in the repository and its history.
+# Links to them from published pages become repository links.
 exclude_docs: |
   plans/
   runbooks/handoff.md

@@ -22,8 +22,8 @@
 
 The authoritative procedure, with every check, is the service-account runbook
 [`docs/runbooks/service-account.md`](../runbooks/service-account.md). That runbook is
-kept in the repository but not published on the site, because it contains host-specific
-validation records. In outline:
+kept off the site because it contains host-specific validation records. It is still a
+public file in the repository. In outline:
 
 1. **Create the account.** Root creates `brandsentinel` with subordinate UID/GID ranges,
    and enables lingering for its user manager.

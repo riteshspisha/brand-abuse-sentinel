@@ -28,8 +28,9 @@ The script refuses to run if:
 
 - the directory already exists;
 - the directory is under `/var/lib/brandsentinel`;
-- `BRANDSENTINEL_CONFIG` or `BRANDSENTINEL_DATA_DIR` is set (either would redirect the
-  CLI to another store).
+- any `BRANDSENTINEL_*` variable is set, even to an empty value. `BRANDSENTINEL_CONFIG`
+  and `BRANDSENTINEL_DATA_DIR` would redirect the CLI to another store, and the CLI
+  refuses every other variable with that prefix.
 
 Expected output (about 4 s; case numbers, hashes, ports and times vary):
 

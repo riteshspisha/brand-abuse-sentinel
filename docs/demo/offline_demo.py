@@ -56,11 +56,14 @@ def refuse(msg: str) -> None:
 
 
 def check_target(out: Path) -> None:
-    for var in ("BRANDSENTINEL_CONFIG", "BRANDSENTINEL_DATA_DIR"):
-        if os.environ.get(var):
-            refuse(
-                f"{var} is set; unset it so neither the demo nor the CLI can reach another store"
-            )
+    # Any BRANDSENTINEL_* variable, even empty: two of them redirect stores, and the CLI
+    # refuses every other one, so the demo would succeed but its walkthrough would not.
+    present = sorted(k for k in os.environ if k.startswith("BRANDSENTINEL_"))
+    if present:
+        refuse(
+            f"{', '.join(present)} set; unset every BRANDSENTINEL_* variable so neither"
+            " the demo nor the CLI can reach another store"
+        )
     resolved = Path(os.path.abspath(out))
     if resolved == PRODUCTION_DATA or PRODUCTION_DATA in resolved.parents:
         refuse(f"{out} is under {PRODUCTION_DATA}, the production location")

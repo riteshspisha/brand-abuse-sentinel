@@ -43,9 +43,11 @@ Carried from the review findings and runbooks:
 ## Documentation follow-ups
 
 - Decide whether the service-account runbook and the session handoff can be published
-  after removing host-specific records. They are excluded from the site for now.
+  after removing host-specific records. They are excluded from the site for now, but
+  they are public in the repository and its history either way.
 - Fix the `eval` stub text ("planned for M8") in `src/brandsentinel/cli.py` to name the
   outstanding U20/U21 work. This is a one-line code change and not made here.
 - Add a license.
-- Automate the strict site build in CI once CI exists. The repository has no CI
-  configuration yet.
+- CI (`.github/workflows/checks.yml`) runs the offline checks and the strict site
+  build. The `docker or security` gate is not in CI: it needs the rootless sandbox
+  runtime.
