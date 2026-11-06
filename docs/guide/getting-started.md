@@ -63,8 +63,8 @@ uv run ruff check
 uv run pytest -m "not docker and not lab and not models"
 ```
 
-On the development machine (2026-11-06, commit `e40ffcb`) the second command reported
-**1348 passed, 1 skipped, 118 deselected in 49.5 s**. The skip is the media worker's OCR
+From a clean clone (2026-11-06, commit `87c0d16`) the second command reported
+**1524 passed, 1 skipped, 118 deselected in 56.3 s**. The skip is the media worker's OCR
 test when Tesseract is absent. The deselected tests need Docker, the lab stack or model
 servers. See [Testing](../development/testing.md).
 

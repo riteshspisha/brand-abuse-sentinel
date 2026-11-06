@@ -14,7 +14,7 @@ Tests are pytest suites under `tests/`, selected by markers declared in `pyproje
 
 | Command | What it covers | Last recorded result |
 |---|---|---|
-| `uv run pytest -m "not docker and not lab and not models"` | everything that runs without containers | 1348 passed, 1 skipped, 118 deselected, 49.5 s: developer machine, 2026-11-06, `e40ffcb` |
+| `uv run pytest -m "not docker and not lab and not models"` | everything that runs without containers | 1524 passed, 1 skipped, 118 deselected, 56.3 s: clean clone on the developer machine, 2026-11-06, `87c0d16` |
 | `uv run pytest -m security` | network policy and fetcher against the adversarial harness | included in the line above |
 | `uv run pytest -m "docker or security"` | the standing security gate (SP3) | 517 passed, 0 skipped: developer's rootless runtime, M8 branch (*reported* in `docs/runbooks/handoff.md`) |
 | `uv run pytest -m lab` | lab-site expectations (static, media, browser) | passing at M7 and M8 on the developer runtime (*reported*) |

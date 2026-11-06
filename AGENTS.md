@@ -67,7 +67,7 @@ Requirement IDs such as `R37`, `KTD13`, `AE18` or `U19` in code comments refer t
 ```sh
 uv sync                                                   # .venv from uv.lock, dev group included
 uv run ruff check                                         # lint (also blocks Trojan-Source bidi characters)
-uv run pytest -m "not docker and not lab and not models"  # ~1350 tests, ~1 min, no Docker, no network
+uv run pytest -m "not docker and not lab and not models"  # ~1500 tests, ~1 min, no Docker, no network
 uv run python docs/demo/offline_demo.py /tmp/bs-demo      # end-to-end demo on synthetic pages
 ```
 

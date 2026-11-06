@@ -26,7 +26,7 @@ uv run python docs/demo/offline_demo.py /tmp/bs-demo
 |---|---|---|
 | `uv sync` | `.venv/` created from `uv.lock` | no Python 3.12: `uv python install 3.12` |
 | `ruff check` | `All checks passed!` | |
-| offline suite | 1348 passed, 1 skipped (2026-11-06, `e40ffcb`) | `BRANDSENTINEL_*` variables set in your shell: unset them. The configuration refuses unknown `BRANDSENTINEL_*` variables, and `BRANDSENTINEL_DATA_DIR` redirects stores. On macOS the harness addresses `127.77.0.x` are not on loopback |
+| offline suite | 1524 passed, 1 skipped (2026-11-06, `87c0d16`, clean clone) | `BRANDSENTINEL_*` variables set in your shell: unset them. The configuration refuses unknown `BRANDSENTINEL_*` variables, and `BRANDSENTINEL_DATA_DIR` redirects stores. On macOS the harness addresses `127.77.0.x` are not on loopback |
 | demo | five cases, every row `[ok]`, exit 0 | the target directory exists: choose a new one |
 
 What tier 0 does **not** prove: anything about real sites, real DNS, or container

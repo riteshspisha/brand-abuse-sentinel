@@ -79,8 +79,8 @@ uv run brandsentinel match sadhguru.org.verify-login.xyz odisha.gov.in save-soil
 uv run pytest -m "not docker and not lab and not models"
 ```
 
-The last command ran 1348 passed and 1 skipped (no host Tesseract) on the development
-machine on 2026-11-06, in about 50 s.
+From a clean clone (2026-11-06, commit `87c0d16`) the last command ran 1524 passed and
+1 skipped (no host Tesseract), in about 56 s.
 
 ## Demo: from submission to explained case (offline, Linux)
 
