@@ -13,3 +13,5 @@ data/
 .compound-engineering/*.local.yaml
 data-lab/
 docker/dist/
+# MkDocs output (mkdocs build)
+site/

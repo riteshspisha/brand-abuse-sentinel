@@ -1,5 +1,11 @@
 # Session handoff
 
+> **Superseded for current status (2026-11-06).** This record was last updated at the M8
+> development branch. M8 has since been merged (`e40ffcb`, 0.2.0) and promoted. The
+> current maturity and milestone status are kept in `docs/project/status.md`. The
+> sections below are kept as the historical record. This page is not published on the
+> documentation site, because it contains host-specific operational detail.
+
 The state a new session needs before it touches code or the installation. It is
 updated at each milestone close. Facts below were checked on the development
 host at the date given; re-check anything marked *reported*.

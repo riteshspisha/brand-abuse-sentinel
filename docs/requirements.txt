@@ -1,0 +1,10 @@
+# Documentation site toolchain only: never installed into the application's
+# environment, the wheel or the sandbox image, and not part of uv.lock.
+#   uv run --no-project --with-requirements docs/requirements.txt mkdocs build --strict
+# Material for MkDocs reaches end of life on 2027-05-05 (critical fixes until then;
+# notice printed by 9.8.0). Its successor, Zensical, reads mkdocs.yml. The site uses
+# only plain Markdown, pymdownx extensions and one small hook, so moving stays cheap
+# (docs/development/documentation.md).
+mkdocs==1.6.1
+mkdocs-material==9.8.0
+pymdown-extensions==12.3
