@@ -13,7 +13,8 @@
 #                                   (non-editable) + the dev group, for validation
 #   /opt/brandsentinel/bin          dockerd-rootless.sh (pinned to Docker 29.9.0, sha256 checked)
 #   /opt/brandsentinel/etc          service.yaml (no developer override)
-#   /opt/brandsentinel/INSTALL      what was installed, from which commit
+#   /opt/brandsentinel/INSTALL      what was installed, from which commit; published last,
+#                                   so its presence means that the install completed
 set -eu
 # Copy, never hardlink, from the developer's uv cache: a hardlinked file shares
 # its inode with the cache, and the later `chown -R root` would change the
@@ -70,16 +71,10 @@ echo "install: config -> $PREFIX/etc/service.yaml"
 mkdir "$PREFIX/etc"
 install -m 0644 "$PREFIX/src/config/service.yaml" "$PREFIX/etc/service.yaml"
 
-WHEEL=$(sha256sum "$STAGE"/dist/*.whl | cut -d' ' -f1)
-cat > "$PREFIX/INSTALL" <<EOF
-commit: $COMMIT
-installed_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-installed_by: $(id -un)
-python: $("$PREFIX/venv/bin/python" -c 'import sys; print(sys.version.split()[0])')
-wheel_sha256: $WHEEL
-uv_lock_sha256: $(sha256sum "$PREFIX/src/uv.lock" | cut -d' ' -f1)
-dockerd_rootless_sha256: $DOCKERD_ROOTLESS_SHA256
-EOF
+echo "install: launchers and bytecode (B2)"
+"$PREFIX/src/scripts/service-account/harden-bytecode.sh" "$PREFIX" \
+    || die "bytecode hardening failed"
+
 "$PREFIX/venv/bin/brandsentinel" version >/dev/null || die "installed CLI does not run"
 # Nothing may share an inode with a file outside the install (see UV_LINK_MODE).
 [ -z "$(find "$PREFIX" -type f -links +1 | head -1)" ] || die "hardlinked files under $PREFIX"
@@ -88,6 +83,23 @@ case "$(readlink -f "$PREFIX/venv/bin/python")" in
     "$PREFIX"/*) ;;
     *) die "venv interpreter resolves outside $PREFIX" ;;
 esac
+# The last check, so that it also sees anything the steps above wrote.
+"$PREFIX/venv/bin/python" -I -B -S "$PREFIX/src/scripts/service-account/check_bytecode.py" "$PREFIX" \
+    || die "bytecode verification failed: this installation is not complete"
+
+WHEEL=$(sha256sum "$STAGE"/dist/*.whl | cut -d' ' -f1)
+cat > "$STAGE/INSTALL" <<EOF
+commit: $COMMIT
+installed_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+installed_by: $(id -un)
+python: $("$PREFIX/venv/bin/python" -I -B -S -c 'import sys; print(sys.version.split()[0])')
+wheel_sha256: $WHEEL
+uv_lock_sha256: $(sha256sum "$PREFIX/src/uv.lock" | cut -d' ' -f1)
+dockerd_rootless_sha256: $DOCKERD_ROOTLESS_SHA256
+EOF
+# Published by rename, after every check: a partial install has no record.
+cp "$STAGE/INSTALL" "$PREFIX/.INSTALL.tmp"
+mv "$PREFIX/.INSTALL.tmp" "$PREFIX/INSTALL"
 
 echo
 cat "$PREFIX/INSTALL"

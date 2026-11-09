@@ -4,6 +4,7 @@
 #   sudo systemd-run --user -M brandsentinel@ --wait --pipe --collect \
 #     /opt/brandsentinel/src/scripts/service-account/validate.sh
 #
+# 0. the install completed, and its bytecode and launchers verify (check_bytecode.py);
 # 1. account: not root, not in `docker`, no rootful socket, cannot modify the
 #    installed application, config without the developer override;
 # 2. the production sandbox stack on the account's own rootless daemon;
@@ -29,6 +30,18 @@ not() { ! "$@"; }
 
 echo "== SP1 validation as $(id -un) (uid $(id -u)), $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "== install: $(tr '\n' ' ' < "$PREFIX/INSTALL")"
+
+echo "== 0. installation completeness, bytecode and launchers"
+check "install record present (the install completed)" test -f "$PREFIX/INSTALL"
+"$PREFIX/venv/bin/python" -I -B -S "$PREFIX/src/scripts/service-account/check_bytecode.py" "$PREFIX" \
+    >"$OUT/bytecode.txt" 2>&1
+BYTECODE_STATUS=$?
+cat "$OUT/bytecode.txt"
+if [ "$BYTECODE_STATUS" -eq 0 ]; then
+    pass "bytecode and launchers verified"
+else
+    fail "bytecode and launchers (check_bytecode.py exit $BYTECODE_STATUS, report in $OUT/bytecode.txt)"
+fi
 
 echo "== 1. account"
 check "running as $ACCOUNT" test "$(id -un)" = "$ACCOUNT"
