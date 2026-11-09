@@ -57,7 +57,7 @@ Key properties:
     (`status`, `cases list`, `cases show`, `report`, `export csv`). `open_store`:
 
     - creates `data_dir`, any missing parents and the database file if they do not exist
-      (without `-c`, `data_dir` is `./data` in the current directory);
+      (with no `data_dir` in the configuration, `./data` in the current directory);
     - resets `data_dir` to mode 0700;
     - switches the database to WAL mode, which creates `-wal` and `-shm` files while it
       is open;

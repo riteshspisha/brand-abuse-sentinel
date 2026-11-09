@@ -51,14 +51,19 @@ commands such as `status` and `cases list`**, follows these rules:
 - **Explicit authorization.** Each command against the live store is a separately
   approved operation, like the other steps on this page. That includes `submit`, which
   queues work that a later `run` will carry out against real hosts.
-- **As the dedicated service account only.** Never through `sudo` as root. Only `run`
-  and `registry collect` refuse an unsuitable account
+- **As the dedicated service account only.** Never through `sudo` as root. The installed
+  CLI does **not** refuse root yet: the guard is in the repository and awaits promotion
+  ([Status](../project/status.md)). From the release that includes it, the CLI refuses root
+  for the 14 store-opening commands, but that does not make a root run safe:
+  importing the installed CLI as root can still write bytecode into the code tree, even
+  for a refused command, and the non-store commands still run as root. Only `run` and
+  `registry collect` refuse an unsuitable non-root account
   ([which commands enforce it](../concepts/security.md#which-commands-enforce-it)).
-  Everything else runs as root without complaint, and the files it creates are then
-  root-owned.
 - **With the installed configuration passed explicitly:** `-c` with the **absolute** path
-  of the installed `service.yaml`. Without `-c` (and without `$BRANDSENTINEL_CONFIG`), a command uses
-  `./data` in the current directory and creates a new store there.
+  of the installed `service.yaml`. Until the guard is installed, a command with no
+  configuration source uses `./data` in the current directory and creates a store there.
+  After it, such a command refuses to run, but `$BRANDSENTINEL_CONFIG` or `$BRANDSENTINEL_DATA_DIR` satisfy that
+  guard, and only an absolute `-c` satisfies this rule.
 - **Assume the command writes.** Opening a store can:
     - create the data directory and the database;
     - reset the directory to mode 0700;

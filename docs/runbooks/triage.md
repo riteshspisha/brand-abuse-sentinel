@@ -6,6 +6,8 @@ takedown or contacts a site beyond one guarded static fetch.
 
 ## Commands
 
+The commands below need `-c`, `$BRANDSENTINEL_CONFIG` or `$BRANDSENTINEL_DATA_DIR` where they open a store.
+
 ```sh
 brandsentinel cases list [--priority P1 --priority P2] [--category donation_fraud]
                          [--label editorial_or_critical] [--source manual]

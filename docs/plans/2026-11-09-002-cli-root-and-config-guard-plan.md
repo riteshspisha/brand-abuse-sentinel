@@ -13,13 +13,13 @@ origin: docs/plans/2026-11-09-001-post-i1-engineering-backlog.md
 
 ## Goal Capsule
 
-- **Objective:** every BrandSentinel command that opens a store refuses, before any store is opened or created, when it runs as UID 0 or without an explicit configuration source. This removes both mechanisms of the 2026-11-06 incident from the CLI: a root-owned write into the live store, and a stray `./data` store.
+- **Objective:** every BrandSentinel command that opens a store refuses, before any store is opened or created, when it runs as UID 0 or without an explicit configuration source. This closes both CLI paths of the 2026-11-06 incident: a root-owned write into a store, and a stray `./data` store created because no configuration was given. It removes the implicit `./data` from a missing source only: an explicit source can still name a relative location (see Scope Boundaries).
 - **Authority:**
   1. this plan;
   2. `AGENTS.md` (§3 invariants, §6 approval boundaries);
   3. the security model, `docs/concepts/security.md`;
   4. backlog item B1 in `docs/plans/2026-11-09-001-post-i1-engineering-backlog.md`.
-- **Decisions (owner review, 2026-11-09):** D1 is **approved**. D2 is **provisionally approved**: the three explicit sources are accepted for this general CLI guard. Production operational policy still requires an absolute `-c` path and the dedicated service account; enforcing that in code is backlog item B3, not this plan.
+- **Decisions (owner review, 2026-11-09):** KTD-ROOT is **approved**. KTD-SOURCES is **provisionally approved**: the three explicit sources are accepted for this general CLI guard. Production operational policy still requires an absolute `-c` path and the dedicated service account; enforcing that in code is backlog item B3, not this plan.
 - **Stop and ask if:**
   - the work needs a change under `src/brandsentinel/net/` or `src/brandsentinel/sandbox/`;
   - a root override seems necessary;
@@ -63,16 +63,16 @@ After this change, all fourteen refuse both conditions with exit 2 and a one-lin
 - it left root-owned data in the live store;
 - without a configuration, it created a second store inside the installation tree.
 
-The procedural rule in `docs/operations/deployment.md` did not prevent it. The guard makes the rule mechanical.
+The procedural rule in `docs/operations/deployment.md` did not prevent it. The guard makes the rule mechanical for the 14 store-opening commands. Root runs of other commands and import-time bytecode stay procedural (B2, B3).
 
 ### Requirements
 
 **Refusing root**
 - R1. A store-opening command run with an effective UID of 0 exits 2 before any store is opened or created. The message names the cause and the remedy (run as the service account in production, or as yourself in development), and prints no paths from the configuration.
-- R2. There is no override: no flag, no environment variable, no configuration key (D1).
+- R2. There is no override: no flag, no environment variable, no configuration key (KTD-ROOT).
 
 **Requiring an explicit configuration source**
-- R3. A store-opening command exits 2 before any store is opened or created when none of these is given: `-c`/`--config`, a non-empty `BRANDSENTINEL_CONFIG`, or a non-empty `BRANDSENTINEL_DATA_DIR` (D2). The message says that the default would create `./data` and that `-c` is required.
+- R3. A store-opening command exits 2 before any store is opened or created when none of these is given: `-c`/`--config`, a non-empty `BRANDSENTINEL_CONFIG`, or a non-empty `BRANDSENTINEL_DATA_DIR` (KTD-SOURCES). "Non-empty" means exactly what `load_config` treats as set. A whitespace-only `BRANDSENTINEL_DATA_DIR` is not a location: it is refused, with or without another source, because `load_config` would apply it over `data_dir`. `load_config` itself is unchanged, so non-store commands are unaffected. The message says that the default would create `./data` and that `-c` is required.
 - R4. With an explicit source, behaviour is unchanged. That includes a relative `data_dir` inside a configuration file (`config/lab.yaml`).
 
 **Order and scope**
@@ -96,28 +96,31 @@ The procedural rule in `docs/operations/deployment.md` did not prevent it. The g
   - **privileged non-store commands as root.** `sandbox sweep` and `sandbox selftest` act on whichever Docker daemon root can reach, and `proxy` starts a listener. That is B3;
   - **CLI enforcement of the production policy** (absolute `-c`, the dedicated account). That is B3;
   - a guard in library entry points other than the CLI. Python code importing `brandsentinel.store` directly is not covered, which is accepted;
-  - `sandbox sweep` as root (SP2 area).
+  - **an explicit source that leaves a relative location.** `-c` naming a file with no `data_dir` (or an empty file), a relative `data_dir` in a file, or a relative `BRANDSENTINEL_DATA_DIR` is explicit under KTD-SOURCES and R4, and still resolves against the working directory. Refusing it would be a further policy decision and would change R4. Recorded as a known residual; `config/service.yaml` has an absolute `data_dir`, and production's absolute-`-c` rule is B3.
 - **Not changed:** the meaning of `BRANDSENTINEL_*` variables; `load_config` semantics for non-store commands.
 
 ### Outstanding Questions
-- **Deferred (non-blocking):** whether a later revision should resolve a relative `data_dir` against the configuration file's directory instead of the working directory. That would be a behaviour change for `config/lab.yaml` users; record it in the residuals if review raises it.
+None blocking. Resolving a relative `data_dir` against the configuration file's directory would change behaviour for `config/lab.yaml` users; it is part of the known residual in Scope Boundaries.
 
 ## Planning Contract
 
 ### Key Technical Decisions
-- **D1: no root override (approved by the owner, 2026-11-09).**
+- **KTD-ROOT: no root override (approved by the owner, 2026-11-09).**
   - Root has no legitimate use of a store-opening command. Recovery and forensics read stores as bytes, never through the CLI (`docs/operations/deployment.md`).
   - An override variable would contradict `load_config`'s rule that only path variables are accepted from the environment, and it is easy to paste.
   - *Rejected alternative:* `BRANDSENTINEL_ALLOW_ROOT=1`.
-- **D2: the explicit sources are `-c`, `BRANDSENTINEL_CONFIG` and `BRANDSENTINEL_DATA_DIR` (provisionally approved by the owner, 2026-11-09).** This is the general CLI guard only; it is not the production rule. Production use keeps the procedural rule "an absolute `-c` to the installed `service.yaml`, as the dedicated account" (`docs/operations/deployment.md`). Code enforcement of that rule is B3.
+- **KTD-SOURCES: the explicit sources are `-c`, `BRANDSENTINEL_CONFIG` and `BRANDSENTINEL_DATA_DIR` (provisionally approved by the owner, 2026-11-09).** This is the general CLI guard only; it is not the production rule. Production use keeps the procedural rule "an absolute `-c` to the installed `service.yaml`, as the dedicated account" (`docs/operations/deployment.md`). Code enforcement of that rule is B3.
   - All three are deliberate choices of a store location.
   - The existing tests and the offline demo use them, as does the I1-style operator tooling (`-c`).
   - *Rejected alternative:* requiring `-c` only. It would break documented and tested `BRANDSENTINEL_DATA_DIR` use with no security gain.
-- **Effective UID** (`os.geteuid()`), read through one module-level function so tests can inject it. sudo sets both IDs, so either would do; the effective UID is what governs file ownership.
-- **One entry point.** A helper (working name `_load_for_store(ctx)`) performs the root check, then the configuration-source check, then returns `_load(ctx)`.
+- **Effective UID** (`os.geteuid()`), read in one place, inside the helper. Tests patch `os.geteuid` itself, not a new helper name, so that the same tests can run unchanged against the parent commit (D4). sudo sets both IDs, so either would do; the effective UID is what governs file ownership.
+- **One predicate.** `config.py` gains `has_explicit_source(path)`, beside the variables it reads; a parity test ties it to what `load_config` honours. `load_config` itself does not change. A mistyped variable is refused as a missing source, which fails closed.
+- **One entry point.** The helper `_load_for_store(ctx)` performs the root check, then the configuration-source check, then returns `_load(ctx)`.
   - Every store-opening command calls it instead of `_load`.
   - `open_store` itself is not changed: library and test callers keep working, and the guard stays a CLI policy.
-- **Exit code 2,** the same as `run`'s refusal and `_load`'s configuration errors. Messages go to stderr, escaped with `escape_terminal`.
+- **Exit code 2,** the same as `run`'s refusal and `_load`'s configuration errors. Messages go to stderr.
+- **Named refusals (definition-of-done item D6).** The two refusals are named constants with stable leading text, pinned by tests: `refusing to open a store as root` and `refusing to open a store without a configuration`. They contain no value from the environment or a configuration. Nothing is logged: the guard runs before logging is configured.
+- **Placement.** The helper replaces `_load` at its existing call site. Argument checks that already precede `_load` (`report` with nothing to do, the `export csv` filter parse) stay first: they touch no file and open nothing. The invariant is that the guard precedes every use of the configuration and every `open_store`.
 
 ### Implementation Constraints
 - No change under `net/` or `sandbox/`. `sandbox/preflight.py` `check_account` is not modified.
@@ -130,43 +133,49 @@ U1 (code and tests), then U2 (documentation and the docs test). One commit each,
 
 ### U1. Guard helper and wiring
 - **Goal:** R1–R7.
-- **Files:** `src/brandsentinel/cli.py`; a new `tests/unit/test_cli_guard.py`; existing tests under `tests/` that call a store-opening command with no explicit source, if any.
+- **Files:** `src/brandsentinel/cli.py`; `src/brandsentinel/config.py`; a new `tests/unit/test_cli_guard.py` (no new skip); existing tests under `tests/` that call a store-opening command with no explicit source, if any.
 - **Approach:**
   - Add the helper beside `_load`. Replace `_load(ctx)` with it in the 14 store-opening commands listed in the Summary.
   - Leave `run`'s and `registry collect`'s existing account checks after it, unchanged.
+- **Test safety.** These tests also run against the parent commit, where nothing refuses. In every parametrized case, `brandsentinel.cli.run_service`, `brandsentinel.cli.DnstwistRunner`, `brandsentinel.pipeline.stages.build_network` and `brandsentinel.sandbox.preflight.hostile_content_runtime` are patched to raise, `brandsentinel.cli._print_sandbox` to a no-op (a no-source case has no file to turn the sandbox off), and all paths are temporary. Any temporary configuration sets `runtime.allow_developer_account`, sandbox and discovery off, and absolute registry and analysis paths, so that each case reaches the code under test. No test may reach the network or Docker, on either version. The test file pins `os.geteuid` non-zero where it expects to pass, and pins the refusal texts as literals: it imports no new name from `brandsentinel.cli`, so that it collects on the parent.
 - **Test scenarios:**
-  - For each of the 14 commands, parametrized:
+  - For each of the 14 commands, parametrized, with arguments valid up to the guard (`report --index`, `cases rescore --all`, a target or case number where required). **Every refused case asserts exit 2 and the leading refusal text**: exit 2 alone is also a usage error or `run`'s older refusal.
     - as an injected euid 0 with a valid temporary `-c` → exit 2, and neither the configured `data_dir` nor `./data` (cwd = a temporary directory) exists afterwards;
     - with no source (both variables removed, cwd = a temporary directory) → exit 2, and no `./data`;
     - with an empty `BRANDSENTINEL_CONFIG` and nothing else → exit 2.
   - With euid 0 and no source, the root message wins.
+  - `run` and `registry collect` with both `os.getuid` and `os.geteuid` at 0: the new message, not `refusing to start` (R6).
+  - Parity: `has_explicit_source` agrees with `load_config` for unset, empty, whitespace and ordinary values of each variable.
   - `open_store` patched to raise → never reached in the refused cases.
   - **Non-store commands as euid 0:** `version`, `match` and `registry validate --path …` succeed as before (R7).
   - **Positive:** `status` with `-c` (temporary config), with `BRANDSENTINEL_CONFIG`, and with `BRANDSENTINEL_DATA_DIR` → exit 0 and a schema v5 store.
   - **Structural (static, AST over the Typer command tree):**
     - **Two explicit sets cover all 22 leaf commands:** `STORE_COMMANDS` (the 14) and `NON_STORE_COMMANDS` (the 8). A leaf command in neither set fails the test, so every new command must be classified.
-    - **Indirect calls count.** A command "opens a store" if its callback, or any module-level function in `cli.py` it calls, transitively, references `open_store`, `connect` or `RawLog`. The test asserts that set equals `STORE_COMMANDS`.
-    - **Every store command calls the guard first.** Each `STORE_COMMANDS` callback calls the helper and never calls `_load` directly.
+    - **Indirect calls count.** A command "opens a store" if its callback, or any module-level function in `cli.py` it calls, transitively, calls `open_store`, `connect`, `RawLog`, `ensure_private_dir` or `write_private` (`ast.Call` of a bare name, so `asyncio.run` is not the `run` command). This is a tripwire for future commands, not a proof. The test asserts that set equals `STORE_COMMANDS`.
+    - **Every store command calls the guard first.** Each `STORE_COMMANDS` callback calls `_load_for_store` before `open_store` and never calls `_load` directly.
   - **Runtime cross-check:**
-    - **Refusals are inert.** With `brandsentinel.cli.open_store` and `brandsentinel.store.db.connect` patched to raise, every refused invocation exits 2, not with the patched error.
-    - **Non-store commands cannot open a store.** With the same patches, `version`, `match`, `registry validate --path …` and `eval` as euid 0 never reach either one.
-    - **No directory is created.** Each case asserts that no `data` directory was created, in the working directory or in the configured `data_dir`.
-- **Verification:** the new tests fail on the parent commit (record the failing count), then pass; the offline suite passes.
+    - **Refusals are inert.** With `brandsentinel.cli.open_store`, `brandsentinel.store.open_store` and `brandsentinel.store.connect` patched to raise, every refused invocation exits 2, not with the patched error.
+    - **Non-store commands cannot open a store.** With the same patches, and the Docker-facing calls stubbed, all 8 non-store commands as euid 0 never reach them and create nothing.
+    - **No directory is created.** With `open_store` left real, each refused case compares a full listing of the temporary tree (working directory and configured `data_dir` included) before and after: no entry appears.
+    - **Real process.** `[sys.executable, "-c", "from brandsentinel.cli import app; app()", "cases", "list"]`, with `BRANDSENTINEL_*` removed and `PYTHONPATH` kept, in an empty directory: exit 2, the refusal text, and the directory stays empty.
+  - **Hostile and edge inputs:** `BRANDSENTINEL_DATA_DIR` empty with nothing else → refused; a malformed or missing `-c` as euid 0 → the root message, the file unread; a terminal escape in a configuration path never reaches a refusal; `--help` as euid 0 still works.
+- **Verification:** on the parent commit every refused-case and structural test fails, while the R7, `--help` and positive tests pass (report both counts and any refused case that passes); on the branch all pass; the offline suite passes.
 
 ### U2. Documentation in the same change
 - **Goal:** R8.
 - **Files:**
-  - `docs/concepts/security.md` (the enforcement table and the paragraph after it);
+  - `docs/concepts/security.md` (the enforcement table, the paragraph after it, and the "No account enforcement" limitation, rewritten rather than removed: B3 stays open);
   - `AGENTS.md` §3, §4, §10;
   - `docs/operations/deployment.md` (production CLI operations);
   - `docs/project/status.md`, `docs/project/roadmap.md` (item 1 to implemented, not accepted);
   - `README.md` if it states the old behaviour;
+  - **every page that states the old behaviour or shows a store command that would now be refused:** `docs/guide/getting-started.md`, `docs/concepts/storage.md`, `docs/runbooks/{demo,triage,media,browser,telemetry}.md` (a one-line note that the examples need `-c`, `$BRANDSENTINEL_CONFIG` or `$BRANDSENTINEL_DATA_DIR`; historical records unchanged) and the preamble in `docs/tools/gen_cli_reference.py`;
   - `tests/unit/test_docs.py`;
-  - `docs/reference/cli.md` (regenerate if the help text changed).
+  - `docs/reference/cli.md` (regenerate: the generator preamble changes).
 - **Approach:**
   - **The table:** add a column, or a line, stating that all 14 store-opening commands refuse root and a missing configuration source. The account checks of `run` and `registry collect` are unchanged.
   - **The docs test:** recognize the helper as a documented gate for those commands; the table must still list every command.
-  - **The procedural rule stays** in deployment.md: still never `sudo` as root. Add that the CLI now refuses root, and that this does not make a root run safe, because the bytecode issue is B2.
+  - **The procedural rule stays** in deployment.md: still never `sudo` as root. Add, here and in the security model, that the CLI now refuses root for the 14 commands, and that this does not make a root run safe: import-time bytecode is B2, and non-store commands still run as root (B3).
 - **Test scenarios:** `tests/unit/test_docs.py` passes, including the enforcement test.
 - **Verification:** the strict site build passes.
 
@@ -174,10 +183,10 @@ U1 (code and tests), then U2 (documentation and the docs test). One commit each,
 | Gate | Command | Expectation |
 |---|---|---|
 | Lint | `uv run ruff check` | clean |
-| New tests on the old code | `git stash` the `cli.py` change or check out the parent, then `uv run pytest tests/unit/test_cli_guard.py` | fail (count recorded) |
+| New tests on the old code | export the parent's `src/` with `git archive` to the scratchpad and run the new test file against it through `PYTHONPATH`. No stash or checkout, so the working tree and the owner's untracked files are not touched | per U1 Verification: refused and structural cases fail; R7, `--help` and positive cases pass |
 | Offline suite | `uv run pytest -m "not docker and not lab and not models"` | all pass; counts, commit and date reported. The one existing skip stays the only skip |
 | Docs | `uv run pytest tests/unit/test_docs.py` | pass |
-| CLI reference | `uv run python docs/tools/gen_cli_reference.py`, then `git diff --exit-code docs/reference/cli.md` | no diff left |
+| CLI reference | `uv run python docs/tools/gen_cli_reference.py`, then the same with `--check` | exit 0 |
 | Site | `uv run --no-project --with-requirements docs/requirements.txt mkdocs build --strict` | pass |
 | SP3 | not required: no change under `net/` or `sandbox/`. State this in the report | |
 
@@ -185,6 +194,7 @@ No BrandSentinel command is run against any real store. Every test uses temporar
 
 ## Definition of Done
 - R1–R8 are met. U1 and U2 are verified as above, with counts, commit and date reported.
+- **Report against D1–D9 in `AGENTS.md` §7.** D1 to D9 there are definition-of-done items, unrelated to this plan's KTD-* decisions.
 - **Threat-boundary note in the report:**
   - **boundary:** privilege and the store;
   - **invariant:** §3 item 3, which this strengthens;

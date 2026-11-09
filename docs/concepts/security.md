@@ -123,20 +123,29 @@ properties passes.
 |---|---|---|
 | `run` | **refuses to start** (exit 2) before opening the store if any check fails. Its sandbox stages are additionally withheld, outside lab mode, unless the checks pass with no override (`gate_hostile_content`) | yes, after the check |
 | `registry collect` | outside lab mode, **refuses** (exit 1) unless the checks pass with no override, because it needs the media sandbox. In lab mode: no check | yes, after the check |
-| `status` | **reports only**: prints the account checks when `sandbox.enabled` is on, and never refuses. It opens the store first | yes |
+| `status` | **reports only**: prints the account checks when `sandbox.enabled` is on; they never refuse (the CLI guard below still applies). It opens the store first | yes |
 | `sandbox check` | **reports**, and exits 1 on a failure (`--strict`: also on a warning). A diagnostic, not a gate | no |
-| `submit`, `replay`, `sweep`, `analyze`, `cases list`, `cases show`, `cases label`, `cases rescore`, `report`, `export csv`, `registry corpus` | **none**: they run as root | yes |
-| `sandbox selftest`, `sandbox sweep`, `proxy` | **none** (`selftest` checks only the runtime) | no |
+| `submit`, `replay`, `sweep`, `analyze`, `cases list`, `cases show`, `cases label`, `cases rescore`, `report`, `export csv`, `registry corpus` | **none** beyond the CLI guard below: any non-root account can run them | yes |
+| `sandbox selftest`, `sandbox sweep`, `proxy` | **none** (`selftest` checks only the runtime): they run as root | no |
 | `version`, `match`, `registry validate`, `eval` | none | no |
 
-So **running a command is not evidence that the account is right.** Root can submit to,
-inspect, rescore, report from or export a production store. New files it writes there
-(raw-log segments, reports) are owned by root, mode 0600, so the service account cannot
-read them. Running the installed CLI as root can also write Python bytecode caches into
-the root-owned code tree. Any command run without `-c` uses `./data` in the current
-directory, creating a new store there if there is none. Enforcing the account for every command is an open
-follow-up ([Roadmap](../project/roadmap.md)); until then, the rule in
-[Deployment](../operations/deployment.md#production-cli-operations) is procedural.
+**The CLI guard** (in the repository, not yet installed in production; see
+[Status](../project/status.md)). All 14 commands marked *yes* in the last column first pass one check.
+They exit 2, before the configuration is read or anything is opened or created, when
+the effective UID is 0, or when none of `-c`, a non-empty `$BRANDSENTINEL_CONFIG` or a
+non-empty `$BRANDSENTINEL_DATA_DIR` is given, or when `$BRANDSENTINEL_DATA_DIR` is only
+whitespace. There is no override. An explicit source
+that leaves a relative location (a file with no `data_dir`, a relative path) still
+resolves against the current directory. `run` and `registry collect` keep their account
+checks after the guard.
+
+The guard does **not** make a root run safe, and **running a command is still not
+evidence that the account is right**. It runs inside the command, after the installed CLI
+has been imported, so a root invocation can still write Python bytecode caches into the
+root-owned code tree, even when it is refused. The commands marked *no* still run as
+root. Any non-root account, the code owner included, can open any store it can write
+to. Closing these is open work ([Roadmap](../project/roadmap.md)); until then, the rule in
+[Deployment](../operations/deployment.md#production-cli-operations) stays procedural.
 
 `sandbox check --strict` must pass with no warnings under the account.
 
@@ -177,11 +186,12 @@ These are known and accepted for the current maturity. They are not hidden defec
   browser sandbox.
 - **Egress is attributable.** Fetches and renders come from the host's network. There is no
   VPN or anonymizing egress and no per-destination rate limit.
-- **No account enforcement outside `run` and `registry collect`.** Every other command,
-  including those that write the store, runs as root or as any other user (see
-  [Which commands enforce it](#which-commands-enforce-it)). This is **not accepted**: it
-  is an open security-engineering follow-up. Until it lands, production CLI use is
-  restricted by procedure only.
+- **No account enforcement outside `run` and `registry collect`.** The store-opening
+  commands refuse UID 0 and a missing configuration source, but any non-root account can
+  run them against a store it can write to, and the non-store commands still run as root
+  (see [Which commands enforce it](#which-commands-enforce-it)). This is **not accepted**:
+  it is an open security-engineering follow-up. Until it lands, production CLI use beyond
+  that guard is restricted by procedure only.
 - **No instance lock (SP2).** A concurrent `sandbox sweep`, `sandbox check` or a second
   process of the same instance can remove another process's running job containers. This
   blocks unattended operation (M9).

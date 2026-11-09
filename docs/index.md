@@ -32,9 +32,9 @@ and rootless-Docker sandboxes for hostile content.
   offline run on a copy of a recovery point, with no discovery, enrichment, fetch or
   network. No network-facing stage has been trialled on M8 in production yet (the earlier
   supervised live run, T1, was on M7).
-- **Security follow-up first:** the CLI does not yet refuse root or a missing
-  configuration for every command, and a production incident on 2026-11-06 came from
-  exactly that ([Status](project/status.md#incident-2026-11-06)).
+- **Security follow-up first:** the production CLI does not yet refuse root or a missing
+  configuration (the guard for store-opening commands awaits promotion), and a production
+  incident on 2026-11-06 came from exactly that ([Status](project/status.md#incident-2026-11-06)).
 - **Not implemented:** advisory decision models, model evaluation, unattended operation
   and the instance lock.
 

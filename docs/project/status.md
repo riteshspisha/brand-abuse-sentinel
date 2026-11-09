@@ -84,14 +84,15 @@ and Python bytecode in the code tree.
 installation tree returned to its accepted listing. On 2026-11-08 production was verified
 to be in its accepted M8 state. Forensic copies are retained.
 
-**Preventive controls still open.** These are the first work items on the
+**Preventive controls.** The CLI guard, which refuses root and a missing configuration
+source in every store-opening command, is implemented and **not yet promoted**: production
+still runs without it. These are still open, as the first work items on the
 [Roadmap](roadmap.md):
 
-- refuse root and a missing configuration source in every store-opening command;
 - precompile installed bytecode, so a privileged run cannot write into the code tree;
 - enforce the service account on a production store.
 
-Until they ship, the
+Until all of them ship, the
 [production CLI rules](../operations/deployment.md#production-cli-operations) are
 procedural.
 
@@ -105,7 +106,7 @@ live `run` with enrichment on will carry them out and contact that case's host.
 - No advisory model is integrated.
 - The CLI does not enforce the service account for every command: only `run` and
   `registry collect` check it ([security model](../concepts/security.md#which-commands-enforce-it)).
-  A store-opening command without a configuration still creates `./data`.
+  The guard against root and a missing configuration is not installed in production.
 - No network-facing stage has been trialled in production after the M8 promotion.
 - The production Brand Registry has no maintainer-confirmed official domains, payees or
   reference assets.
