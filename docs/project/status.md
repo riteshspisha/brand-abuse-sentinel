@@ -76,23 +76,22 @@ The trial tooling and its evidence live outside this repository.
 
 *Operator-reported.*
 
-**What happened.** The installed CLI was run through `sudo` as root against production.
-- One `submit` wrote rows and a root-owned raw-log segment into the live store.
-- One `cases list`, run without `-c`, created a second store under the installation tree.
-- Both runs wrote Python bytecode into the root-owned code tree.
+**Failure class.** The installed CLI ran with root privileges against production. That
+left root-owned data in the live store, a stray second store under the installation tree,
+and Python bytecode in the code tree.
 
-**Recovery.**
-- The live store was restored from a verified recovery point on 2026-11-07.
-- The installation tree was returned to its accepted listing on 2026-11-08.
-- On 2026-11-08 production was verified to be in its accepted M8 state: snapshot exit 0, the same code, image and proxy, the live store equal to the recovery point. The raw host-unit snapshot differed from the accepted one only in allowlisted host-volatile units, which the accepted comparison sets aside.
-- Forensic copies are retained.
+**Verified recovery.** The live store was restored from a verified recovery point and the
+installation tree returned to its accepted listing. On 2026-11-08 production was verified
+to be in its accepted M8 state. Forensic copies are retained.
 
-**Root causes, still open in the code:**
-- Only `run` and `registry collect` check the account.
-- A store-opening command without a configuration creates `./data`.
-- Running installed code as root writes bytecode.
+**Preventive controls still open.** These are the first work items on the
+[Roadmap](roadmap.md):
 
-These are the first work items on the [Roadmap](roadmap.md). Until they are fixed, the
+- refuse root and a missing configuration source in every store-opening command;
+- precompile installed bytecode, so a privileged run cannot write into the code tree;
+- enforce the service account on a production store.
+
+Until they ship, the
 [production CLI rules](../operations/deployment.md#production-cli-operations) are
 procedural.
 

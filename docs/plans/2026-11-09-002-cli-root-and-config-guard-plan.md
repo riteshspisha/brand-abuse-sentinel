@@ -59,9 +59,9 @@ After this change, all fourteen refuse both conditions with exit 2 and a one-lin
 - **Every other entry point:** the in-container workers (`sandbox/media_worker.py`, `sandbox/browser_worker.py`), `sandbox/netns.py`, `scripts/` and the offline demo (`docs/demo/offline_demo.py` calls `open_store` directly on a temporary directory; it is a library caller, not the CLI). The console script `brandsentinel` → `brandsentinel.cli:app` is the only installed entry point (`pyproject.toml`).
 
 ### Problem Frame
-**What the incident showed.** The installed CLI was run through `sudo` as root:
-- a `submit` wrote root-owned rows and a raw-log segment into the live store;
-- a `cases list` without `-c` created a second store inside the installation tree.
+**What the incident showed.** The installed CLI ran with root privileges against production:
+- it left root-owned data in the live store;
+- without a configuration, it created a second store inside the installation tree.
 
 The procedural rule in `docs/operations/deployment.md` did not prevent it. The guard makes the rule mechanical.
 
