@@ -44,6 +44,34 @@ This document returns development to the Compound Engineering workflow. It sets 
 - S1–S7 (§5);
 - trial-tooling residuals (§5, T-items).
 
+### 1a. Historical gate ledger (reconciled 2026-11-09)
+
+**Basis:** the owner's sealed records outside this repository. "Verified" means the manifest was re-checked (`sha256sum -c`) on 2026-11-09. "Recorded" means it was accepted in a sealed record but not re-checked on that date. Nothing here was re-run, and no superseded gate needs re-running.
+
+| Operation | Class | Basis |
+|---|---|---|
+| M6 cutover D0–D3, root kit (Gate 1), Gate 2 r2 (tag), Gate 3 (install, S6) | completed and evidenced | recorded (M6 closeout) |
+| M6 Gate 4: operational acceptance on an isolated copy | completed and evidenced | **verified**: manifest OK, `GATE 4: PASS` |
+| M6 Gate 5: first M6 open of the live v5 store (`status`) | completed and evidenced | **verified**: manifest OK, `GATE 5: PASS` |
+| M6 Gate 2 attempt 1 (kit defect) | superseded by Gate 2 r2 | recorded |
+| M7 Gate D, D′ kit, P0–P5 | completed and evidenced | **verified**: acceptance manifest OK. P2 attempt 1 is superseded by its retry |
+| M7 residuals 1–2 (proxy labels and lab mounts naming staging) | completed, closed by the M7 promotion | recorded |
+| T1: first supervised live run (one owner-controlled domain) | completed and evidenced | **verified**: manifest OK |
+| T2a-dev, then T2a (service account, lab, isolated store; 28/28) | completed and evidenced | **verified**: both manifests OK |
+| M8 build and acceptance B1–B5, rehearsal R1–R7 | completed and evidenced | recorded |
+| M8 promotion P0–P5 | completed and evidenced | **verified**: all 10 manifests OK, hashes equal the completion record. The failed P3 attempt 1 is preserved and superseded by its re-verification |
+| Incident 2026-11-06: forensics, data restore, installation correction, verification, checkpoint A | completed and evidenced | recorded (closure record) |
+| I1 r1 | stopped, not accepted; superseded | recorded |
+| I1 r2 | prepared, **never run**; superseded by r3 | recorded |
+| Sudo-chain probe (C), then I1 r3 | completed, evidenced, **accepted** | **verified** 2026-11-09 |
+| M7 "first supervised live run" proposal; M7 data rollback to the v5 backup; M7 code rollback kit | superseded by M8 and its current recovery point | recorded |
+| T1/T2a trial tool revision 3 (setsid before sudo, `systemd-run -M`) | **still required if reused**: revise before any reuse | closure residual 8 |
+| Housekeeping: staging and superseded trees, the Gate 4 and T2a copies, `/var/tmp` rehearsals, `:sp1-31318f0`, the I1 copies | optional; retention decision (O5). Nothing is deleted without it | recorded |
+| Pinned offline install inputs under `/var/tmp` (they age out about 2026-11-17/30) | **obsolete for the next promotion**: B7 needs freshly pinned inputs | recorded |
+| "Preflight proxy-image check" follow-up (M7 housekeeping) | **unverified**: the record holds no detail | open question to the owner |
+| Root-run side effects outside the install tree and the live store (closure 6) | unverified, optional | closure record |
+| Production state after I1's after-snapshot (2026-11-09T06:44Z) | unverified since then: take a fresh S6 snapshot before the next privileged gate | |
+
 ## 2. Definition of done
 
 A change is **done** when it is merged with every applicable item below satisfied. It is **accepted** only after a separate gated promotion. Agents never perform the promotion.
@@ -109,12 +137,15 @@ The edit is made in its own small docs change after this plan is reviewed (seque
 | ID | Item | Source | Depends on | Size |
 |---|---|---|---|---|
 | **B1** | **CLI guard:** every store-opening command refuses UID 0 and refuses to run without an explicit configuration source, before any store is opened | closure 1 | O1 confirmation of the plan's decisions | S; plan `2026-11-09-002` |
-| **B2** | **Installation bytecode:** `install.sh` installs the venv with precompiled bytecode and compiles the bundled interpreter's standard library. `validate.sh` fails if any `.py` under the prefix lacks a current `.pyc`; the check is factored into a testable helper. The incident's writes were in `site-packages/brandsentinel/*` and the interpreter's `html/` package | closure 2 | none (independent of B1); ships with B1 | S |
-| B3 | **Production-store account enforcement:** every store-opening command applies `check_account` (not root, not the code owner, no rootful Docker) when the store is the production one. Needs a rule for "production" (e.g. a marker the installer writes in `data_dir`) and the developer opt-out | closure 1 (rest); roadmap | B1; **O2** | M |
+| **B2** | **Installation bytecode.** The CLI guard (B1) cannot help here: it runs after the console script has imported `brandsentinel.cli`, and file permissions do not stop root. Two layers instead: | closure 2 | none (independent of B1); ships with B1 | S |
+| | (1) at install, after the tree is in its final place, compile the venv's `site-packages` **and** the bundled interpreter's standard library (the incident wrote `.pyc` in both), with the installed interpreter and `--invalidation-mode checked-hash`. Hash-based `.pyc` stay valid when a copy or `chown` changes source mtimes; a timestamp `.pyc` could be judged stale and rewritten | | | |
+| | (2) the first statement of `brandsentinel/__init__.py` sets `sys.dont_write_bytecode = True` when the effective UID is 0. Every later import writes nothing, even if a `.pyc` is missing | | | |
+| | Plus: `validate.sh` (as a testable helper) fails if any `.py` under the prefix lacks a valid `.pyc` for the interpreter's cache tag. Test: a subprocess with euid 0 simulated through an injected function, or run by the helper on a temporary prefix, leaves no new `__pycache__` file. **Residual:** imports that happen before `brandsentinel/__init__.py` (interpreter startup, the console script) depend on (1) alone | | | |
+| B3 | **Production-store account enforcement.** Every store-opening command applies `check_account` (not root, not the code owner, no rootful Docker) when the store is the production one, and requires the production policy: an absolute `-c`, the dedicated account. Needs a rule for "production" (e.g. a marker the installer writes in `data_dir`) and the developer opt-out. **Also in scope:** the privileged non-store commands `sandbox sweep` and `sandbox selftest` (which act on whatever Docker daemon root reaches) and `proxy` (a listener). Today they run as root | closure 1 (rest); roadmap | B1; **O2** | M |
 | B4 | **Named error for an unreadable raw-log segment:** `run` exits with a stable code and an allowlisted message instead of a traceback | closure 5 | none | S |
 | B5 | **Replay counters (S2):** add `skipped` (logged before the replay marker) to `ReplayStats`, so `records = ingested + duplicates + invalid + skipped`; unit test with a record older than the marker | S2 | none | XS |
 | B6 | **Inspection side effects (S6):** an integration test that `status` and `cases list` on an already-migrated store with no orphan blobs change no byte. Docs keep "assume the command writes" | S6 | B1 (tests use explicit config) | XS |
-| B7 | **Promotion of B1–B6:** new wheel and image, gated owner promotion, with the I1-style isolated acceptance on a copy | closure 1, 2 | B1, B2 (B3–B6 if ready) | operator |
+| B7 | **Promotion of B1–B6.** A new wheel and image, then a gated owner promotion. Its gates include: freshly pinned offline install inputs (the old ones are aging out); SP3 `docker or security` under the account with **0 skipped**, plus `sandbox check --strict` (the P5 pattern); a check that no `.pyc` is missing; an I1-style isolated acceptance on a copy; and a fresh S6 snapshot before and after | closure 1, 2 | B1, B2 (B3–B6 if ready) | operator |
 
 ### 5.2 Engineering notes (docs)
 
@@ -143,7 +174,26 @@ The edit is made in its own small docs change after this plan is reviewed (seque
 | B13 | **Retention and disk guard:** blob and `no_action` retention near the store cap; free-disk pause of the firehose and fetching | contract U22, R49 | B11 |
 | B14 | **Supervision:** a systemd user unit for `run` under the account, restart on failure, orphan cleanup before lease recovery (existing) | contract U22, R33 | B11, B12 |
 | B15 | **Offline suite in CI:** fix the 6 runner failures as test or code changes, then add the suite to the workflow | testing.md | none; before B11 is preferred |
-| B16 | **M9 promotion and the rules-only 24 h soak** | contract M9, R45 | B7, B11–B14, **O3**, **O4** |
+| B16 | **M9 promotion and the rules-only 24 h soak** | contract M9, R45 | B7, B11–B14, B17–B19, L1–L4, **O3**, **O4**, **O6** |
+
+### 5.4a Before any live run (operations; security-relevant; none is code in this repository unless stated)
+
+| ID | Item | Source | Depends on |
+|---|---|---|---|
+| L1 | **Run configuration.** Production `service.yaml` has no `browser:` section, so M8 defaults apply: automatic rendering **on**, `sample_rate` 0.1, through the egress proxy. CertStream and dnstwist are on by default and must be disabled explicitly for a bounded run. Decide browser on/off, the sample rate, the analyst budget (0), the run duration and the discovery switches. Any change is a reviewed `service.yaml` change and a promotion item | M8 trial prerequisites §4–5 | O3, O4 |
+| L2 | **A fresh recovery point before the first live write.** The current point equals the live store, but the first M8 write ends the M7 data rollback. Needs the backup tool's direct-socket revision (b1 r2) and a parameterized verifier (b2), because b2 r1 pins the current state | M8 trial prerequisites §2 | O4 |
+| L3 | **Trial and run classifiers** for any supervised live run: the T1/T2a r3 tools still put setsid before sudo and use `systemd-run -M`. They need the r2 launch chain and the I1 classifier lessons | closure residual 8 | O4 |
+| L4 | **The two due rechecks (O3)** contact the case's host on the first live run with enrichment on | closure residual 7 | O3 |
+
+### 5.4b Additional M9 and hardening items found in the reconciliation
+
+| ID | Item | Contract | Depends on |
+|---|---|---|---|
+| B17 | **Scheduled, verified backups.** The only recovery point is a manual one. U22 retention does not cover backups | M9 readiness | B7, L2 |
+| B18 | **Alert delivery.** U22 makes `status` exit non-zero; how P1 and P2 cases and an unhealthy `status` reach a person is an owner decision (O6) | contract U22 | B12 |
+| B19 | **CertStream source endpoint** for unattended discovery (a local server or an approved URL; O6) | contract M9 soak | B11 |
+| B20 | **Deterministic upstream for the 5 live-endpoint tests** that need the public Internet (recorded at M8 P5 for M9) | M8 P5 watch item | none |
+| B21 | **Separate test environment.** The production venv carries the dev dependency group, so that the acceptance suites can run under the account. Move the tests to a separate environment so production installs only runtime dependencies | handoff carried item | B7 or later |
 
 ### 5.5 Owner decisions
 
@@ -153,7 +203,9 @@ The edit is made in its own small docs change after this plan is reviewed (seque
 | O2 | how a store is recognized as production, and the developer opt-out for B3 | B3 |
 | O3 | the two due live rechecks: let them run on the first live run, or supersede them by a reviewed procedure | any live run, B16 |
 | O4 | authorization of live collection (and of any network-facing trial on a copy before it) | B16 |
-| O5 | host-side guard against `sudo brandsentinel` (closure 3), the `/root` check (closure 6), retention of the trial copies and forensic evidence (closure 9) | none in code |
+| O5 | host-side guard against `sudo brandsentinel` (closure 3), the `/root` check (closure 6), retention of the trial copies and forensic evidence (closure 9), and of the M6/M7 housekeeping items in §1a. **Until decided, nothing is deleted** | none in code |
+| O6 | alert delivery (B18), the CertStream endpoint (B19), and the live-run configuration (L1) | B16, any live run |
+| O7 | the order of remediation and live use: recommended, B7 is promoted before any live run, so that the first live write already runs under the CLI guard | any live run |
 
 ## 6. Sequence
 
@@ -180,7 +232,8 @@ flowchart LR
 2. **The `AGENTS.md` definition-of-done edit** (§4).
 3. **B1** via `ce-work`, the first bounded task; then **B2** (independent, small); B4, B5, B6 as small follow-ups.
 4. **B3** after O2.
-5. **B7:** the owner's gated promotion of the remediation.
+5. **B7:** the owner's gated promotion of the remediation. Recommended (O7): before any live run.
+5a. **L1–L4** and the owner decisions O3, O4 and O6, before any live run.
 6. B8–B10 at any point, as docs-only changes.
 7. **B15**, then **SP2 (B11)**, then **M9 (B12–B14)**, then **B16** after O3 and O4.
 8. U20/U21 after M9 (owner decision 2026-10-31).

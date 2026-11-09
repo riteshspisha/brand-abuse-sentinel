@@ -84,7 +84,7 @@ The trial tooling and its evidence live outside this repository.
 **Recovery.**
 - The live store was restored from a verified recovery point on 2026-11-07.
 - The installation tree was returned to its accepted listing on 2026-11-08.
-- Production was verified unchanged from the accepted M8 state on 2026-11-08.
+- On 2026-11-08 production was verified to be in its accepted M8 state: snapshot exit 0, the same code, image and proxy, the live store equal to the recovery point. The raw host-unit snapshot differed from the accepted one only by a USB disk and bluetooth, and matched it once those allowlisted host-volatile units were set aside.
 - Forensic copies are retained.
 
 **Root causes, still open in the code:**
