@@ -56,8 +56,8 @@ commands such as `status` and `cases list`**, follows these rules:
   ([which commands enforce it](../concepts/security.md#which-commands-enforce-it)).
   Everything else runs as root without complaint, and the files it creates are then
   root-owned.
-- **With the installed configuration passed explicitly:** `-c` with the installed
-  `service.yaml`. Without `-c` (and without `$BRANDSENTINEL_CONFIG`), a command uses
+- **With the installed configuration passed explicitly:** `-c` with the **absolute** path
+  of the installed `service.yaml`. Without `-c` (and without `$BRANDSENTINEL_CONFIG`), a command uses
   `./data` in the current directory and creates a new store there.
 - **Assume the command writes.** Opening a store can:
     - create the data directory and the database;

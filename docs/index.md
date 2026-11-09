@@ -27,9 +27,14 @@ and rootless-Docker sandboxes for hostile content.
 
 - **Installed:** version 0.2.0 (milestone M8, commit `e40ffcb`) is the production build,
   and its promotion was accepted on 2026-11-05.
-- **Live collection:** no unattended collection has run.
-- **Isolated-copy trial (I1):** the first attempt stopped before processing because of a
-  launch-script defect. A corrected script is prepared but not yet validated on the host.
+- **Live collection:** not authorized; no unattended collection has run.
+- **Isolated-copy trial (I1):** accepted on 2026-11-09 (third revision). One bounded,
+  offline run on a copy of a recovery point, with no discovery, enrichment, fetch or
+  network. No network-facing stage has been trialled on M8 in production yet (the earlier
+  supervised live run, T1, was on M7).
+- **Security follow-up first:** the CLI does not yet refuse root or a missing
+  configuration for every command, and a production incident on 2026-11-06 came from
+  exactly that ([Status](project/status.md#incident-2026-11-06)).
 - **Not implemented:** advisory decision models, model evaluation, unattended operation
   and the instance lock.
 

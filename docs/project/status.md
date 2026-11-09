@@ -1,6 +1,6 @@
 # Status and maturity
 
-As of **2026-11-06**. This page separates what is implemented from what is accepted in
+As of **2026-11-09**. This page separates what is implemented from what is accepted in
 production, and both from what is only planned. Production facts come from the owner's
 gated operations, whose evidence is kept outside this repository; they are marked
 *operator-reported*.
@@ -62,10 +62,41 @@ gated operations, whose evidence is kept outside this repository; they are marke
 |---|---|---|
 | T1 (M7) | first supervised live run, one owner-controlled domain | ran on M7; the four gaps it showed are the M8 scope |
 | T2a-dev / T2a (M7, M8) | lab scenarios, developer runtime and service account | 28 detection criteria pass (M8 re-run on the developer runtime) |
-| I1 r1 (M8) | bounded offline run on an isolated **copy** of a recovery point: no discovery, enrichment, fetch, sandbox or browser | **stopped before processing** (2026-11-05). A launch-ordering defect in the trial tooling: sudo after `setsid` lost the cached credential. Not accepted. A read-only post-check of the copy and production is pending |
-| I1 r2 | corrected trial tooling (sudo first, chain probed before any copy) | prepared; development tests pass. **Real-host validation and the second attempt are pending**, each needing separate authorization |
+| I1 r1 (M8) | bounded offline run on an isolated **copy** of a recovery point: no discovery, enrichment, fetch, sandbox or browser | **stopped before processing** (2026-11-05). A launch-ordering defect in the trial tooling: sudo after `setsid` lost the cached credential. Not accepted |
+| I1 r2 | corrected trial tooling (sudo first, chain probed before any copy) | **not run.** Its snapshot check compared a raw hash that benign host-unit drift (removable media and peripheral state) had changed, so it could not pass its preconditions. Superseded by r3 |
+| I1 r3 (M8) | r2 plus one change: the production snapshot must match the accepted one after setting aside an allowlist of host-volatile units (removable media and peripheral targets). The sudo chain was probed on the host first and passed | **accepted 2026-11-09** within its scope (*operator-reported*; owner acceptance after an independent evidence review). Run exit 0, ended by idle after 11 s; the 12 criteria pass. The two due rechecks were promoted to pending jobs and nothing else changed in the copy. The live store, the recovery point and the production snapshot stayed unchanged |
+
+**What I1 does not show:** any stage execution (enrichment, fetch, media, browser), any
+network egress, discovery, a run on the live store or under supervision, or behaviour
+over more than seconds.
 
 The trial tooling and its evidence live outside this repository.
+
+## Incident 2026-11-06
+
+*Operator-reported.*
+
+**Failure class.** The installed CLI ran with root privileges against production. That
+left root-owned data in the live store, a stray second store under the installation tree,
+and Python bytecode in the code tree.
+
+**Verified recovery.** The live store was restored from a verified recovery point and the
+installation tree returned to its accepted listing. On 2026-11-08 production was verified
+to be in its accepted M8 state. Forensic copies are retained.
+
+**Preventive controls still open.** These are the first work items on the
+[Roadmap](roadmap.md):
+
+- refuse root and a missing configuration source in every store-opening command;
+- precompile installed bytecode, so a privileged run cannot write into the code tree;
+- enforce the service account on a production store.
+
+Until they ship, the
+[production CLI rules](../operations/deployment.md#production-cli-operations) are
+procedural.
+
+**Pending owner decision.** Two rechecks of the live store's only case are due. They must not be carried out without a separate owner decision. The first
+live `run` with enrichment on will carry them out and contact that case's host.
 
 ## What is not true yet
 
@@ -74,5 +105,7 @@ The trial tooling and its evidence live outside this repository.
 - No advisory model is integrated.
 - The CLI does not enforce the service account for every command: only `run` and
   `registry collect` check it ([security model](../concepts/security.md#which-commands-enforce-it)).
+  A store-opening command without a configuration still creates `./data`.
+- No network-facing stage has been trialled in production after the M8 promotion.
 - The production Brand Registry has no maintainer-confirmed official domains, payees or
   reference assets.

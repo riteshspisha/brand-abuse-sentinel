@@ -6,15 +6,22 @@ milestones. Nothing below is implemented unless [Status](status.md) says so.
 
 ## Next
 
+The order below follows the post-I1 backlog
+([`2026-11-09-001-post-i1-engineering-backlog.md`](../plans/2026-11-09-001-post-i1-engineering-backlog.md)).
+Security remediation of the [2026-11-06 incident](status.md#incident-2026-11-06) comes first.
+
 | Item | Plan ref | Depends on | Status |
 |---|---|---|---|
-| Real-host validation of the corrected trial tooling, then I1 r2 on an isolated copy | (operations) | owner authorization | prepared |
+| **1. CLI guard:** every store-opening command refuses UID 0 and refuses to run without an explicit configuration or data directory, before any store is opened ([security model](../concepts/security.md#which-commands-enforce-it)) | incident remediation; [plan](../plans/2026-11-09-002-cli-root-and-config-guard-plan.md) | owner confirmation of the plan's two decisions | planned |
+| **2. Installation bytecode:** install with precompiled bytecode for the venv and the bundled interpreter, and verify that no `.pyc` is missing | incident remediation | 1 (same promotion) | not started |
+| 3. Account enforcement for a production store: refuse the code owner or a rootful-Docker user on a production store | incident remediation | 1; a decision on how a developer checkout opts out | not started |
+| 4. Promotion of 1–3: new wheel and image, gated promotion. Item 3 is a required gate: no live-production promotion without it | (operations) | 1, 2 and 3 | not started |
 | Production Brand Registry confirmation: official domains, payees, reference assets and pages | R6, U17 | the organization | open decision |
-| Instance lock so a sweep or check cannot remove another process's job containers | SP2 | | not started |
-| Account enforcement for every command: refuse root, and the wrong account for a production store, before any store is opened ([security model](../concepts/security.md#which-commands-enforce-it)) | (security; no plan ID yet) | a decision on how a developer checkout opts out | not started |
+| Instance lock so a sweep or check cannot remove another process's job containers | SP2 | sequenced after 1–2 (owner order: SP2, then M9) | not started |
+| Continuous monitoring: health samples, thresholds that make `status` exit non-zero (so a supervisor or cron can alert), heartbeat, free-disk pause | U22 / M9 (R35, R36) | SP2 | not started |
+| Unattended operation: supervision unit, retention, 24 h soak (the first soak runs rules-only) | U22 / M9 | SP2 ([owner decision 2026-10-31](../plans/2026-10-31-001-roadmap-alignment.md)) | not started |
 | DecisionProvider with Kev-0.8B and Laya (advisory only) | U20 | model servers | not started |
-| Labelled evaluation dataset and runner; rules-only vs models comparison | U21 | U20; labels | not started |
-| Unattended operation: supervision, health thresholds, retention, 24 h soak | U22 / M9 | SP2, U21 | not started |
+| Labelled evaluation dataset and runner; rules-only vs models comparison | U21 | U20; labels; after M9 | not started |
 
 ## Known limitations
 
@@ -35,7 +42,9 @@ Carried from the review findings and runbooks:
 - **Operations**
   - There is no supervision unit and no instance lock.
   - Only `run` and `registry collect` check the account. Other commands, including those
-    that write the store, run as root.
+    that write the store, run as root (the cause of the 2026-11-06 incident).
+  - A store-opening command without a configuration creates `./data` in the current
+    directory.
   - Every store open writes: it creates missing files, applies migrations and sweeps
     orphan blobs.
 - **Product**
