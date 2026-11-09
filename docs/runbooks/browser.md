@@ -120,6 +120,8 @@ self-test.
 
 ## Operating
 
+The commands below need `-c`, `$BRANDSENTINEL_CONFIG` or `$BRANDSENTINEL_DATA_DIR` where they open a store.
+
 ```sh
 brandsentinel sandbox check                    # includes the network and its direct-egress probe
 brandsentinel sandbox selftest browser         # Chromium sandbox, unprivileged worker, no direct route

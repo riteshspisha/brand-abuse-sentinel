@@ -1,5 +1,8 @@
 # BrandSentinel milestone demos
 
+These are records of each milestone. Commands that open a store now need `-c`,
+`$BRANDSENTINEL_CONFIG` or `$BRANDSENTINEL_DATA_DIR`.
+
 ## M1 - Registry and matching (2026-10-09)
 
 ```bash

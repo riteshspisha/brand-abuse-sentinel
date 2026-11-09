@@ -115,9 +115,11 @@ See [Testing and security validation](docs/development/testing.md).
   Media containers have no network; browser containers reach the Internet only through
   the validating egress proxy.
 - Production runs under a dedicated unprivileged account with its own rootless Docker
-  daemon. `brandsentinel run` refuses to start as root or with rootful Docker access.
-  Other commands do not check the account (including `submit`, `status` and `cases`),
-  so production use is restricted by procedure:
+  daemon. Every command that opens a store refuses to run as root or without an explicit
+  configuration (in the repository, not yet installed in production). `brandsentinel run`
+  also refuses rootful Docker access. Other store-opening commands (including `submit`,
+  `status` and `cases`) accept any non-root account and non-store commands still run as
+  root, so production use is still restricted by procedure:
   [which commands enforce it](docs/concepts/security.md#which-commands-enforce-it).
 - Stored artifacts are inert (content-addressed, mode 0600, never executed). Reports
   escape everything and use a strict CSP.

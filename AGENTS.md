@@ -45,11 +45,13 @@ Requirement IDs such as `R37`, `KTD13`, `AE18` or `U19` in code comments refer t
    asserts that the host does not import image libraries.
 3. **Containers are rootless and locked down**: `--cap-drop ALL`, `no-new-privileges`,
    read-only root, limits, `--pull never`, labelled per instance (`sandbox/runner.py`).
-   Only `run` and `registry collect` check the account. `run` refuses to start as root
-   (always), as the code owner or with rootful Docker access (unless
-   `runtime.allow_developer_account` is set, development only). Its sandbox stages, and
-   `registry collect` outside lab mode, also need clean checks with no override.
-   **Every other command runs as root without complaint**
+   Every store-opening command refuses effective UID 0 and a missing configuration
+   source (`cli.py: _load_for_store`), with no override. Only `run` and `registry
+   collect` also check the account. `run` refuses to start as the code owner or with
+   rootful Docker access (unless `runtime.allow_developer_account` is set, development
+   only). Its sandbox stages, and `registry collect` outside lab mode, also need clean
+   checks with no override. **The non-store commands still run as root, and any non-root
+   account can open a store it can write to**
    ([docs/concepts/security.md](docs/concepts/security.md#which-commands-enforce-it)).
 4. **Observe only.** BrandSentinel never submits forms, logs in, pays or contacts a
    suspect site except to fetch it. The browser stops non-GET requests.
@@ -83,12 +85,13 @@ uv run python docs/demo/offline_demo.py /tmp/bs-demo      # end-to-end demo on s
 - `-m models` needs Kev or Laya servers, which do not exist in this repository yet.
 
 Always run CLI commands that touch a store with an explicit, scratch config:
-`brandsentinel -c <scratch.yaml> ...`. The default `data_dir` is `./data`. Never point
+`brandsentinel -c <scratch.yaml> ...`. Without `-c`, `$BRANDSENTINEL_CONFIG` or
+`$BRANDSENTINEL_DATA_DIR` they refuse to run. A file with no `data_dir` still means
+`./data`. Never point
 a command at `/var/lib/brandsentinel/data`. **Inspection commands such as `status` and
 `cases list` write, too.** Opening a store (`store/__init__.py: open_store`):
 
-- creates the data directory and the database if they are missing (without `-c`, that
-  means `./data` wherever you are);
+- creates the data directory and the database if they are missing;
 - resets the directory to 0700 and switches the database to WAL;
 - applies pending migrations;
 - deletes unreferenced blobs older than one hour (`store/blobs.py: sweep_orphans`).
@@ -229,9 +232,10 @@ gated tooling.
 
 ## 10. Known traps
 
-- Only `run` and `registry collect` check the account. Every other command runs as root
-  and writes root-owned files into whatever store it opens. A command that succeeds tells
-  you nothing about whether the account was right.
+- Only `run` and `registry collect` check the account. The guard refuses root for
+  store-opening commands only, and runs after import, so a root invocation can still
+  write bytecode into the code tree. A command that succeeds tells you nothing about
+  whether the account was right.
 - `brandsentinel eval` is an unimplemented stub, and its message still says "planned for M8".
   The M8 that shipped is analyst render and telemetry; the decision-model work (U20/U21)
   is outstanding.

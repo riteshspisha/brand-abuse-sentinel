@@ -581,6 +581,14 @@ def _format_errors(err: ValidationError) -> str:
     return "; ".join(parts)
 
 
+def has_explicit_source(path: Path | None = None) -> bool:
+    """Whether a configuration location was chosen, rather than left to the defaults.
+
+    Uses the same test for a set variable as `load_config`.
+    """
+    return path is not None or bool(os.environ.get(ENV_CONFIG) or os.environ.get(ENV_DATA_DIR))
+
+
 def load_config(path: Path | None = None) -> Config:
     """Load config from `path`, else $BRANDSENTINEL_CONFIG, else built-in defaults."""
     if path is None and os.environ.get(ENV_CONFIG):

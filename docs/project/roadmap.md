@@ -12,7 +12,7 @@ Security remediation of the [2026-11-06 incident](status.md#incident-2026-11-06)
 
 | Item | Plan ref | Depends on | Status |
 |---|---|---|---|
-| **1. CLI guard:** every store-opening command refuses UID 0 and refuses to run without an explicit configuration or data directory, before any store is opened ([security model](../concepts/security.md#which-commands-enforce-it)) | incident remediation; [plan](../plans/2026-11-09-002-cli-root-and-config-guard-plan.md) | owner confirmation of the plan's two decisions | planned |
+| **1. CLI guard:** every store-opening command refuses UID 0 and refuses to run without an explicit configuration or data directory, before any store is opened ([security model](../concepts/security.md#which-commands-enforce-it)) | incident remediation; [plan](../plans/2026-11-09-002-cli-root-and-config-guard-plan.md) | owner confirmation of the plan's two decisions (done) | implemented; not promoted (item 4) |
 | **2. Installation bytecode:** install with precompiled bytecode for the venv and the bundled interpreter, and verify that no `.pyc` is missing | incident remediation | 1 (same promotion) | not started |
 | 3. Account enforcement for a production store: refuse the code owner or a rootful-Docker user on a production store | incident remediation | 1; a decision on how a developer checkout opts out | not started |
 | 4. Promotion of 1–3: new wheel and image, gated promotion. Item 3 is a required gate: no live-production promotion without it | (operations) | 1, 2 and 3 | not started |
@@ -41,10 +41,11 @@ Carried from the review findings and runbooks:
   See [Security model](../concepts/security.md#limits-and-residual-risks).
 - **Operations**
   - There is no supervision unit and no instance lock.
-  - Only `run` and `registry collect` check the account. Other commands, including those
-    that write the store, run as root (the cause of the 2026-11-06 incident).
-  - A store-opening command without a configuration creates `./data` in the current
-    directory.
+  - Only `run` and `registry collect` check the account. The store-opening commands now
+    refuse root (the cause of the 2026-11-06 incident) once item 4 is promoted; the
+    non-store commands still run as root.
+  - An explicit configuration with no `data_dir`, or a relative one, resolves against the
+    current directory.
   - Every store open writes: it creates missing files, applies migrations and sweeps
     orphan blobs.
 - **Product**

@@ -73,9 +73,11 @@ servers. See [Testing](../development/testing.md).
 Commands that open a store (`status`, `submit`, `run`, `cases`, `report`, `export`,
 `analyze`, `replay`, `registry collect`) use the configured `data_dir`:
 
-1. `-c FILE` if given, else `$BRANDSENTINEL_CONFIG`, else built-in defaults;
+1. `-c FILE` if given, else `$BRANDSENTINEL_CONFIG`, else built-in defaults, but only with
+   `$BRANDSENTINEL_DATA_DIR` set: with none of the three, these commands refuse to run,
+   as they do for root;
 2. then `$BRANDSENTINEL_DATA_DIR`, if set, overrides `data_dir`;
-3. the default `data_dir` is `./data`, relative to the current directory.
+3. a file with no `data_dir` means `./data`, relative to the current directory.
 
 Use a scratch config for anything you try:
 
@@ -108,7 +110,7 @@ scored and explained without any network, run the [offline demo](demo.md).
 !!! danger "Never use the production store for experiments"
     Every store-opening command, even `status` and `cases list`, writes. It can:
 
-    - create the data directory and database (without `-c`, `./data` in the current
+    - create the data directory and database (with no `data_dir` in the file, `./data` in the current
       directory);
     - switch the database to WAL;
     - apply migrations;

@@ -6,6 +6,7 @@ command surface is stable and `--help` documents where each one lands.
 
 import asyncio
 import json
+import os
 import signal
 import sys
 import time
@@ -16,7 +17,7 @@ from typing import Annotated
 import typer
 
 from brandsentinel import __version__
-from brandsentinel.config import Config, ConfigError, load_config
+from brandsentinel.config import Config, ConfigError, has_explicit_source, load_config
 from brandsentinel.discovery.dnstwist_runner import DnstwistRunner
 from brandsentinel.discovery.events import replay as replay_events
 from brandsentinel.discovery.submit import SubmissionError
@@ -67,12 +68,37 @@ def main(
     ctx.obj = {"config_path": config}
 
 
+_REFUSE_ROOT = (
+    "refusing to open a store as root: run as the service account in production,"
+    " or as yourself in development"
+)
+_REFUSE_NO_SOURCE = (
+    "refusing to open a store without a configuration: the default would create ./data"
+    " here; pass -c FILE (or set $BRANDSENTINEL_CONFIG or $BRANDSENTINEL_DATA_DIR)"
+)
+
+
 def _load(ctx: typer.Context) -> Config:
     try:
         return load_config(ctx.obj.get("config_path"))
     except ConfigError as e:
         typer.echo(escape_terminal(str(e)), err=True)
         raise typer.Exit(2) from e
+
+
+def _load_for_store(ctx: typer.Context) -> Config:
+    """The configuration for a command that opens a store, or exit 2.
+
+    Opening a store writes to it, and with no configuration creates `./data`. Both
+    refusals come before the configuration is read, so they touch nothing.
+    """
+    if os.geteuid() == 0:
+        typer.echo(_REFUSE_ROOT, err=True)
+        raise typer.Exit(2)
+    if not has_explicit_source(ctx.obj.get("config_path")):
+        typer.echo(_REFUSE_NO_SOURCE, err=True)
+        raise typer.Exit(2)
+    return _load(ctx)
 
 
 @app.command()
@@ -84,7 +110,7 @@ def version() -> None:
 @app.command()
 def status(ctx: typer.Context) -> None:
     """Show store, queue, artifact and raw-log status."""
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     store = open_store(config)
     try:
         now = datetime.fromtimestamp(time.time(), UTC).isoformat(timespec="seconds")
@@ -258,7 +284,7 @@ def run(
     """Run discovery (CertStream, dnstwist) and the pipeline until interrupted."""
     from brandsentinel.sandbox.preflight import check_account
 
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     certstream_on = config.discovery.certstream.enabled if certstream is None else certstream
     dnstwist_on = config.discovery.dnstwist.enabled if dnstwist is None else dnstwist
     if until_idle and (certstream_on or dnstwist_on):
@@ -330,7 +356,7 @@ def submit(
     ] = False,
 ) -> None:
     """Submit URLs or domains for analysis (never suppressed)."""
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     matcher = Matcher(registry)
     store = open_store(config)
@@ -369,7 +395,7 @@ def sweep(
     ] = None,
 ) -> None:
     """Run dnstwist sweeps now, ignoring the schedule."""
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     configure_logging("WARNING")
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     store = open_store(config)
@@ -407,7 +433,7 @@ def replay(
     ] = None,
 ) -> None:
     """Re-ingest the discovery raw log (idempotent: nothing is duplicated)."""
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     store = open_store(config)
     try:
@@ -439,7 +465,7 @@ def analyze(
     from brandsentinel.matching.normalize import canonical_host, registrable_domain
     from brandsentinel.pipeline.stages import HTTP_FALLBACK, AnalysisStages, build_network
 
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     _check_analysis_config(config)
     try:
@@ -669,7 +695,7 @@ def cases_list(
     from brandsentinel.triage import list_cases
 
     f = _case_filter(priority, category, label, source, strength, status, since, limit)
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     store = open_store(config)
     try:
         rows = list_cases(store.conn, f)
@@ -701,7 +727,7 @@ def cases_show(
     from brandsentinel.triage import load_case
     from brandsentinel.triage.report import render_case_text
 
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     store = open_store(config)
     try:
         report = load_case(store.conn, case_id)
@@ -754,7 +780,7 @@ def cases_label(
     if not pairs:
         typer.echo(f"give --verdict and/or --question/--value; questions: {', '.join(QUESTIONS)}")
         raise typer.Exit(2)
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     store = open_store(config)
     try:
         for q, v in pairs:
@@ -787,7 +813,7 @@ def cases_rescore(
     from brandsentinel.pipeline.stages import reextract as reextract_case
     from brandsentinel.policy.scorer import CaseScorer
 
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     policy, catalog = _check_analysis_config(config)
     if not case_ids and not all_cases:
@@ -842,7 +868,7 @@ def report(
     if not case_ids and not index:
         typer.echo("give case numbers and/or --index", err=True)
         raise typer.Exit(2)
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     out_dir = out or config.reports_dir
     store = open_store(config)
     try:
@@ -887,7 +913,7 @@ def export_csv(
     from brandsentinel.triage.report import write_private
 
     f = _case_filter(priority, category, label, source, strength, status, since, limit)
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     store = open_store(config)
     try:
         cases = list_cases(store.conn, f)
@@ -991,7 +1017,7 @@ def registry_collect(
     from brandsentinel.sandbox.runner import SandboxError
     from brandsentinel.visual.collector import Collector
 
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     _check_analysis_config(config)
     unknown = sorted(set(brand or ()) - {b.id for b in registry.brands})
@@ -1063,7 +1089,7 @@ def registry_corpus(ctx: typer.Context) -> None:
     current registry no longer vouches for."""
     from brandsentinel.visual.corpus import load_corpus
 
-    config = _load(ctx)
+    config = _load_for_store(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     store = open_store(config)
     try:

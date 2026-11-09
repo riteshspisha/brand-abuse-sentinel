@@ -380,3 +380,29 @@ def test_account_enforcement_matches_the_security_model():
     listed = set(re.findall(r"`([a-z]+(?: [a-z]+)?)`", table))
     missing = {name for name, _ in _leaf_commands(command_tree())} - listed
     assert not missing, f"commands missing from the enforcement table: {sorted(missing)}"
+
+
+def test_the_cli_guard_matches_the_security_model():
+    """The commands the enforcement table says open a store are the ones behind the guard."""
+    import ast
+    import inspect
+
+    guarded = set()
+    for name, cmd in _leaf_commands(command_tree()):
+        tree = ast.parse(inspect.getsource(inspect.unwrap(cmd.callback)).lstrip())
+        calls = {
+            n.func.id
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        }
+        if "_load_for_store" in calls:
+            guarded.add(name)
+
+    table = (DOCS / "concepts/security.md").read_text().split("#### Which commands enforce it")[1]
+    rows = [r.split("|") for r in table.split("\n\n", 2)[1].splitlines()[2:]]
+    documented = set()
+    for row in rows:
+        if row[3].strip().startswith("yes"):
+            documented |= set(re.findall(r"`([a-z]+(?: [a-z]+)?)`", row[1]))
+    assert guarded == documented
+    assert len(guarded) == 14

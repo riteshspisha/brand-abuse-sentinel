@@ -41,6 +41,8 @@ in the proxy container's log), discovery logs, and the reference collector.
 
 ## Bounded runs: `--until-idle`
 
+The commands below need `-c`, `$BRANDSENTINEL_CONFIG` or `$BRANDSENTINEL_DATA_DIR` where they open a store.
+
 ```sh
 brandsentinel submit --render https://site.test/
 brandsentinel run --no-certstream --no-dnstwist --until-idle --duration 900

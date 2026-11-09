@@ -46,7 +46,7 @@ flowchart TB
 | Browser container ↔ Internet | the page's own requests | internal network; the only member with a route out is the egress proxy (`net/proxy.py`), which re-applies netguard and pins the validated address |
 | Media container ↔ anything | nothing | `--network none` |
 | Store ↔ analyst | reports, terminal output, CSV | escaping (`textsafe.py`), Jinja autoescape and a strict CSP, CSV formula neutralizing |
-| Account ↔ host | the account's files and its own Docker daemon | dedicated user, not in the `docker` group, does not own the code; the app refuses root and rootful Docker |
+| Account ↔ host | the account's files and its own Docker daemon | dedicated user, not in the `docker` group, does not own the code; `run` refuses rootful Docker, and the store-opening commands refuse root once the [CLI guard](security.md#which-commands-enforce-it) is installed |
 
 The plan's diagram also shows a `DecisionProvider` talking to local Kev-0.8B and Laya
 model servers. **That component does not exist yet** (U20, see the

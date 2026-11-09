@@ -98,6 +98,8 @@ failed, partial or disabled result is decided again.
 
 ## Operating
 
+The commands below need `-c`, `$BRANDSENTINEL_CONFIG` or `$BRANDSENTINEL_DATA_DIR` where they open a store.
+
 ```sh
 brandsentinel sandbox selftest media     # real container: hashes, OCR, QR, rejections, no network
 brandsentinel registry validate          # reference assets: pins, official hosts
