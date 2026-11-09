@@ -8,6 +8,7 @@ Tests are pytest suites under `tests/`, selected by markers declared in `pyproje
 | `security` | security-control tests: netguard, fetcher, proxy, quotas, leases, sandbox clients | Linux loopback range `127.77.0.0/24` (the local harness) |
 | `docker` | real containers: isolation, limits, sandbox workers | rootless Docker, the sandbox image, `bs_sandbox` and the egress proxy |
 | `lab` | the controlled lab sites | the lab Compose stack |
+| `installed_layout` | a real installed layout, with root simulated by a user namespace | `uv` and unprivileged user namespaces; skipped without them, unless `REQUIRE_INSTALLED_LAYOUT=1` makes that a failure |
 | `models` | Kev or Laya servers | **not available**: no provider is implemented |
 
 ## Suites and recorded results

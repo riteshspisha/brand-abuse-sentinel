@@ -89,7 +89,7 @@ source in every store-opening command, is implemented and **not yet promoted**: 
 still runs without it. These are still open, as the first work items on the
 [Roadmap](roadmap.md):
 
-- precompile installed bytecode, so a privileged run cannot write into the code tree;
+- bytecode-write prevention (precompiled bytecode and `-B` launchers, so a root run of a console script does not write bytecode into the code tree): developed on a branch, **not merged or promoted**, and not installation immutability;
 - enforce the service account on a production store.
 
 Until all of them ship, the

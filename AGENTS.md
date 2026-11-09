@@ -234,8 +234,10 @@ gated tooling.
 ## 10. Known traps
 
 - Only `run` and `registry collect` check the account. The guard refuses root for
-  store-opening commands only, and runs after import, so a root invocation can still
-  write bytecode into the code tree. A command that succeeds tells you nothing about
+  store-opening commands only, and runs after import. Bytecode-write prevention (checked-hash
+  precompilation and `-B` launchers, `scripts/service-account/harden-bytecode.sh`) is in the
+  repository and **not installed in production**. It covers console scripts only and does not
+  make the installation immutable. A command that succeeds tells you nothing about
   whether the account was right.
 - `brandsentinel eval` is an unimplemented stub, and its message still says "planned for M8".
   The M8 that shipped is analyst render and telemetry; the decision-model work (U20/U21)

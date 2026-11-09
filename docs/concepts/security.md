@@ -141,8 +141,11 @@ checks after the guard.
 
 The guard does **not** make a root run safe, and **running a command is still not
 evidence that the account is right**. It runs inside the command, after the installed CLI
-has been imported, so a root invocation can still write Python bytecode caches into the
-root-owned code tree, even when it is refused. The commands marked *no* still run as
+has been imported, so on the current production installation a root invocation can still
+write Python bytecode caches into the root-owned code tree, even when it is refused.
+[Bytecode-write prevention](../operations/deployment.md#bytecode-write-prevention) closes
+that for console scripts on a new installation. It is implemented and not yet promoted, and
+it is not immutability: root can still change the tree. The commands marked *no* still run as
 root. Any non-root account, the code owner included, can open any store it can write
 to. Closing these is open work ([Roadmap](../project/roadmap.md)); until then, the rule in
 [Deployment](../operations/deployment.md#production-cli-operations) stays procedural.
