@@ -66,8 +66,8 @@ This document returns development to the Compound Engineering workflow. It sets 
 | Sudo-chain probe (C), then I1 r3 | completed, evidenced, **accepted** | **verified** 2026-11-09 |
 | M7 "first supervised live run" proposal; M7 data rollback to the v5 backup; M7 code rollback kit | superseded by M8 and its current recovery point | recorded |
 | T1/T2a trial tool revision 3 (setsid before sudo, `systemd-run -M`) | **still required if reused**: revise before any reuse | closure residual 8 |
-| Housekeeping: staging and superseded trees, the Gate 4 and T2a copies, `/var/tmp` rehearsals, `:sp1-31318f0`, the I1 copies | optional; retention decision (O5). Nothing is deleted without it | recorded |
-| Pinned offline install inputs under `/var/tmp` (they age out about 2026-11-17/30) | **obsolete for the next promotion**: B7 needs freshly pinned inputs | recorded |
+| Housekeeping: staging and superseded trees, the Gate 4 and T2a copies, temporary rehearsal copies, the SP1 rollback image, the I1 copies | optional; retention decision (O5). Nothing is deleted without it | recorded |
+| Pinned offline install inputs (temporary storage; they age out in late November 2026) | **obsolete for the next promotion**: B7 needs freshly pinned inputs | recorded |
 | "Preflight proxy-image check" follow-up (M7 housekeeping) | **unverified**: the record holds no detail | open question to the owner |
 | Root-run side effects outside the install tree and the live store (closure 6) | unverified, optional | closure record |
 | Production state after I1's after-snapshot (2026-11-09T06:44Z) | unverified since then: take a fresh S6 snapshot before the next privileged gate | |
@@ -145,14 +145,14 @@ The edit is made in its own small docs change after this plan is reviewed (seque
 | B4 | **Named error for an unreadable raw-log segment:** `run` exits with a stable code and an allowlisted message instead of a traceback | closure 5 | none | S |
 | B5 | **Replay counters (S2):** add `skipped` (logged before the replay marker) to `ReplayStats`, so `records = ingested + duplicates + invalid + skipped`; unit test with a record older than the marker | S2 | none | XS |
 | B6 | **Inspection side effects (S6):** an integration test that `status` and `cases list` on an already-migrated store with no orphan blobs change no byte. Docs keep "assume the command writes" | S6 | B1 (tests use explicit config) | XS |
-| B7 | **Promotion of B1–B6.** A new wheel and image, then a gated owner promotion. Its gates include: freshly pinned offline install inputs (the old ones are aging out); SP3 `docker or security` under the account with **0 skipped**, plus `sandbox check --strict` (the P5 pattern); a check that no `.pyc` is missing; an I1-style isolated acceptance on a copy; and a fresh S6 snapshot before and after | closure 1, 2 | B1, B2 (B3–B6 if ready) | operator |
+| B7 | **Promotion of B1–B3 (B4–B6 if ready).** A new wheel and image, then a gated owner promotion. **B3 is a required gate (owner decision 2026-11-09):** no live-production promotion without production-store account enforcement. Its gates include: freshly pinned offline install inputs (the old ones are aging out); SP3 `docker or security` under the account with **0 skipped**, plus `sandbox check --strict` (the P5 pattern); a check that no `.pyc` is missing; an I1-style isolated acceptance on a copy; and a fresh S6 snapshot before and after | closure 1, 2 | B1, B2, **B3** (so **O2**); B4–B6 if ready | operator |
 
 ### 5.2 Engineering notes (docs)
 
 | ID | Item | Source |
 |---|---|---|
 | B8 | `docs/solutions/` entry: sudo 1.9 tty-keyed tickets break `setsid … sudo -n`; probe the chain before any privileged trial. The rule is already in deployment.md; this adds the diagnosis | S5 |
-| B9 | `docs/solutions/` entry: a fail-closed snapshot invariant needs an explicit, anchored allowlist for host-volatile units, governed by an adversarial suite (raw hashes broke on a USB re-mount) | S7 |
+| B9 | `docs/solutions/` entry: a fail-closed snapshot invariant needs an explicit, anchored allowlist for host-volatile units, governed by an adversarial suite (raw hashes broke on a removable-media re-mount) | S7 |
 | B10 | `eval` stub text names U20/U21 instead of "planned for M8" (existing roadmap follow-up) | roadmap |
 
 ### 5.3 Trial tooling (outside this repository; needed before the next privileged trial, not before B1)
@@ -200,7 +200,7 @@ The edit is made in its own small docs change after this plan is reviewed (seque
 | ID | Decision | Blocks |
 |---|---|---|
 | O1 | confirm the two decisions in plan `2026-11-09-002` (no root override; which explicit sources count) | B1 |
-| O2 | how a store is recognized as production, and the developer opt-out for B3 | B3 |
+| O2 | how a store is recognized as production, and the developer opt-out for B3 | B3, and therefore B7 (on the critical path) |
 | O3 | the two due live rechecks: let them run on the first live run, or supersede them by a reviewed procedure | any live run, B16 |
 | O4 | authorization of live collection (and of any network-facing trial on a copy before it) | B16 |
 | O5 | host-side guard against `sudo brandsentinel` (closure 3), the `/root` check (closure 6), retention of the trial copies and forensic evidence (closure 9), and of the M6/M7 housekeeping items in §1a. **Until decided, nothing is deleted** | none in code |
@@ -219,7 +219,7 @@ flowchart LR
   D1 --> B4[B4 named segment error]
   D1 --> B5[B5 replay counters]
   B1 & B2 --> B7[B7 promotion, owner]
-  B3 -.optional.-> B7
+  B3 --> B7
   B7 --> B11[SP2 lock]
   B15[CI offline suite] -.preferred.-> B11
   B11 --> B12[health/monitoring]
@@ -231,7 +231,7 @@ flowchart LR
 1. **This docs change:** I1 acceptance in status, roadmap and index; this plan; plan 002.
 2. **The `AGENTS.md` definition-of-done edit** (§4).
 3. **B1** via `ce-work`, the first bounded task; then **B2** (independent, small); B4, B5, B6 as small follow-ups.
-4. **B3** after O2.
+4. **B3** after O2: a required gate for B7.
 5. **B7:** the owner's gated promotion of the remediation. Recommended (O7): before any live run.
 5a. **L1–L4** and the owner decisions O3, O4 and O6, before any live run.
 6. B8–B10 at any point, as docs-only changes.

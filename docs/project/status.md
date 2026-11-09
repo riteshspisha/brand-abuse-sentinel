@@ -63,8 +63,8 @@ gated operations, whose evidence is kept outside this repository; they are marke
 | T1 (M7) | first supervised live run, one owner-controlled domain | ran on M7; the four gaps it showed are the M8 scope |
 | T2a-dev / T2a (M7, M8) | lab scenarios, developer runtime and service account | 28 detection criteria pass (M8 re-run on the developer runtime) |
 | I1 r1 (M8) | bounded offline run on an isolated **copy** of a recovery point: no discovery, enrichment, fetch, sandbox or browser | **stopped before processing** (2026-11-05). A launch-ordering defect in the trial tooling: sudo after `setsid` lost the cached credential. Not accepted |
-| I1 r2 | corrected trial tooling (sudo first, chain probed before any copy) | **not run.** Its snapshot check compared a raw hash that host-unit drift (a USB disk, bluetooth) had changed, so it could not pass its preconditions. Superseded by r3 |
-| I1 r3 (M8) | r2 plus one change: the production snapshot must match the accepted one after setting aside an allowlist of host-volatile units (removable disks, bluetooth, sound). The sudo chain was probed on the host first and passed | **accepted 2026-11-09** within its scope (*operator-reported*; owner acceptance after an independent evidence review). Run exit 0, ended by idle after 11 s; the 12 criteria pass. The two due rechecks were promoted to pending jobs and nothing else changed in the copy. The live store, the recovery point and the production snapshot stayed unchanged |
+| I1 r2 | corrected trial tooling (sudo first, chain probed before any copy) | **not run.** Its snapshot check compared a raw hash that benign host-unit drift (removable media and peripheral state) had changed, so it could not pass its preconditions. Superseded by r3 |
+| I1 r3 (M8) | r2 plus one change: the production snapshot must match the accepted one after setting aside an allowlist of host-volatile units (removable media and peripheral targets). The sudo chain was probed on the host first and passed | **accepted 2026-11-09** within its scope (*operator-reported*; owner acceptance after an independent evidence review). Run exit 0, ended by idle after 11 s; the 12 criteria pass. The two due rechecks were promoted to pending jobs and nothing else changed in the copy. The live store, the recovery point and the production snapshot stayed unchanged |
 
 **What I1 does not show:** any stage execution (enrichment, fetch, media, browser), any
 network egress, discovery, a run on the live store or under supervision, or behaviour
@@ -84,7 +84,7 @@ The trial tooling and its evidence live outside this repository.
 **Recovery.**
 - The live store was restored from a verified recovery point on 2026-11-07.
 - The installation tree was returned to its accepted listing on 2026-11-08.
-- On 2026-11-08 production was verified to be in its accepted M8 state: snapshot exit 0, the same code, image and proxy, the live store equal to the recovery point. The raw host-unit snapshot differed from the accepted one only by a USB disk and bluetooth, and matched it once those allowlisted host-volatile units were set aside.
+- On 2026-11-08 production was verified to be in its accepted M8 state: snapshot exit 0, the same code, image and proxy, the live store equal to the recovery point. The raw host-unit snapshot differed from the accepted one only in allowlisted host-volatile units, which the accepted comparison sets aside.
 - Forensic copies are retained.
 
 **Root causes, still open in the code:**
@@ -96,7 +96,7 @@ These are the first work items on the [Roadmap](roadmap.md). Until they are fixe
 [production CLI rules](../operations/deployment.md#production-cli-operations) are
 procedural.
 
-**Pending owner decision.** Two rechecks of the live store's only case are due. The first
+**Pending owner decision.** Two rechecks of the live store's only case are due. They must not be carried out without a separate owner decision. The first
 live `run` with enrichment on will carry them out and contact that case's host.
 
 ## What is not true yet

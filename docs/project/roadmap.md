@@ -15,7 +15,7 @@ Security remediation of the [2026-11-06 incident](status.md#incident-2026-11-06)
 | **1. CLI guard:** every store-opening command refuses UID 0 and refuses to run without an explicit configuration or data directory, before any store is opened ([security model](../concepts/security.md#which-commands-enforce-it)) | incident remediation; [plan](../plans/2026-11-09-002-cli-root-and-config-guard-plan.md) | owner confirmation of the plan's two decisions | planned |
 | **2. Installation bytecode:** install with precompiled bytecode for the venv and the bundled interpreter, and verify that no `.pyc` is missing | incident remediation | 1 (same promotion) | not started |
 | 3. Account enforcement for a production store: refuse the code owner or a rootful-Docker user on a production store | incident remediation | 1; a decision on how a developer checkout opts out | not started |
-| 4. Promotion of 1–3: new wheel and image, gated promotion | (operations) | 1–3 | not started |
+| 4. Promotion of 1–3: new wheel and image, gated promotion. Item 3 is a required gate: no live-production promotion without it | (operations) | 1, 2 and 3 | not started |
 | Production Brand Registry confirmation: official domains, payees, reference assets and pages | R6, U17 | the organization | open decision |
 | Instance lock so a sweep or check cannot remove another process's job containers | SP2 | sequenced after 1–2 (owner order: SP2, then M9) | not started |
 | Continuous monitoring: health samples, thresholds that make `status` exit non-zero (so a supervisor or cron can alert), heartbeat, free-disk pause | U22 / M9 (R35, R36) | SP2 | not started |
