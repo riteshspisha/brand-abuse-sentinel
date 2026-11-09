@@ -12,8 +12,9 @@ Every command accepts the global option `-c/--config PATH` (before the command n
 the configuration file. Without it, `$BRANDSENTINEL_CONFIG` is used, then the built-in
 defaults (which put the data directory at `./data`). `$BRANDSENTINEL_DATA_DIR` overrides
 `data_dir` from either source. Commands that open a store act on the configured
-`data_dir`, and refuse to run as root or with none of those three, so always pass an
-explicit `-c` outside a scratch checkout.
+`data_dir`, and refuse to run as root or with none of those three (a guard not yet
+installed in production, which does not check for the service account), so always pass
+an explicit `-c` outside a scratch checkout.
 
 **Commands that open a store write to it, including inspection commands** such as
 `status` and `cases list`. They create a missing store, apply migrations and sweep

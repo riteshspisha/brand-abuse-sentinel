@@ -46,7 +46,8 @@ Requirement IDs such as `R37`, `KTD13`, `AE18` or `U19` in code comments refer t
 3. **Containers are rootless and locked down**: `--cap-drop ALL`, `no-new-privileges`,
    read-only root, limits, `--pull never`, labelled per instance (`sandbox/runner.py`).
    Every store-opening command refuses effective UID 0 and a missing configuration
-   source (`cli.py: _load_for_store`), with no override. Only `run` and `registry
+   source (`cli.py: _load_for_store`), with no override. This is in the code here and
+   **not yet installed in production**, and it does not check for the service account. Only `run` and `registry
    collect` also check the account. `run` refuses to start as the code owner or with
    rootful Docker access (unless `runtime.allow_developer_account` is set, development
    only). Its sandbox stages, and `registry collect` outside lab mode, also need clean

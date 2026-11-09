@@ -581,6 +581,15 @@ def _format_errors(err: ValidationError) -> str:
     return "; ".join(parts)
 
 
+def has_blank_data_dir() -> bool:
+    """Whether $BRANDSENTINEL_DATA_DIR is set to nothing but whitespace.
+
+    `load_config` would take that as a directory name. It is a mistake, not a location.
+    """
+    value = os.environ.get(ENV_DATA_DIR, "")
+    return bool(value) and not value.strip()
+
+
 def has_explicit_source(path: Path | None = None) -> bool:
     """Whether a configuration location was chosen, rather than left to the defaults.
 

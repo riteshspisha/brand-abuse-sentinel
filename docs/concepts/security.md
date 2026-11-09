@@ -133,7 +133,8 @@ properties passes.
 [Status](../project/status.md)). All 14 commands marked *yes* in the last column first pass one check.
 They exit 2, before the configuration is read or anything is opened or created, when
 the effective UID is 0, or when none of `-c`, a non-empty `$BRANDSENTINEL_CONFIG` or a
-non-empty `$BRANDSENTINEL_DATA_DIR` is given. There is no override. An explicit source
+non-empty `$BRANDSENTINEL_DATA_DIR` is given, or when `$BRANDSENTINEL_DATA_DIR` is only
+whitespace. There is no override. An explicit source
 that leaves a relative location (a file with no `data_dir`, a relative path) still
 resolves against the current directory. `run` and `registry collect` keep their account
 checks after the guard.

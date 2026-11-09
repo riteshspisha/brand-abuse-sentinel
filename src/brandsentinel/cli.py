@@ -17,7 +17,13 @@ from typing import Annotated
 import typer
 
 from brandsentinel import __version__
-from brandsentinel.config import Config, ConfigError, has_explicit_source, load_config
+from brandsentinel.config import (
+    Config,
+    ConfigError,
+    has_blank_data_dir,
+    has_explicit_source,
+    load_config,
+)
 from brandsentinel.discovery.dnstwist_runner import DnstwistRunner
 from brandsentinel.discovery.events import replay as replay_events
 from brandsentinel.discovery.submit import SubmissionError
@@ -72,6 +78,9 @@ _REFUSE_ROOT = (
     "refusing to open a store as root: run as the service account in production,"
     " or as yourself in development"
 )
+_REFUSE_BLANK_DATA_DIR = (
+    "refusing to open a store with a blank $BRANDSENTINEL_DATA_DIR: unset it or name a directory"
+)
 _REFUSE_NO_SOURCE = (
     "refusing to open a store without a configuration: the default would create ./data"
     " here; pass -c FILE (or set $BRANDSENTINEL_CONFIG or $BRANDSENTINEL_DATA_DIR)"
@@ -94,6 +103,9 @@ def _load_for_store(ctx: typer.Context) -> Config:
     """
     if os.geteuid() == 0:
         typer.echo(_REFUSE_ROOT, err=True)
+        raise typer.Exit(2)
+    if has_blank_data_dir():
+        typer.echo(_REFUSE_BLANK_DATA_DIR, err=True)
         raise typer.Exit(2)
     if not has_explicit_source(ctx.obj.get("config_path")):
         typer.echo(_REFUSE_NO_SOURCE, err=True)

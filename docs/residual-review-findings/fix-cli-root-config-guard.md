@@ -8,8 +8,8 @@ findings fixed were in the plan's test design and in documentation wording.
 ## Accepted limits
 
 - **An explicit source can still name a relative location.** `-c` naming a file with no
-  `data_dir` (or an empty file, or `/dev/null`), a relative `data_dir`, or a relative or
-  whitespace-only `BRANDSENTINEL_DATA_DIR` satisfies the guard and resolves against the
+  `data_dir` (or an empty file, or `/dev/null`), a relative `data_dir`, or a relative
+  `BRANDSENTINEL_DATA_DIR` satisfies the guard and resolves against the
   working directory. This follows from the owner's decision on explicit sources. A test
   pins the behaviour. Enforcing an absolute production `-c` is backlog item B3.
 - **The guard is a check, not a boundary.** It stops an accidental root invocation. A

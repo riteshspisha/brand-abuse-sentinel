@@ -23,6 +23,8 @@ from brandsentinel.config import load_config
 REPO = Path(__file__).resolve().parents[2]
 ROOT_REFUSAL = "refusing to open a store as root"
 SOURCE_REFUSAL = "refusing to open a store without a configuration"
+BLANK_REFUSAL = "refusing to open a store with a blank $BRANDSENTINEL_DATA_DIR"
+BLANK_VALUES = [" ", "   ", "\t", "\n", " \t\n "]
 
 STORE_COMMANDS = {
     # Arguments are valid up to the guard, so that a refusal is not a usage error.
@@ -91,6 +93,10 @@ def _world(monkeypatch, tmp_path):
 
     cwd = tmp_path / "cwd"
     cwd.mkdir()
+    # The default registry and policy paths are relative. Without these, a command on the
+    # code before the guard stops at a missing file and never reaches its store.
+    (cwd / "registry").symlink_to(REPO / "registry")
+    (cwd / "config").symlink_to(REPO / "config")
     monkeypatch.chdir(cwd)
     for name in list(os.environ):
         if name.startswith("BRANDSENTINEL_"):
@@ -100,9 +106,14 @@ def _world(monkeypatch, tmp_path):
         "brandsentinel.cli.run_service",
         "brandsentinel.cli.DnstwistRunner",
         "brandsentinel.pipeline.stages.build_network",
-        "brandsentinel.sandbox.preflight.hostile_content_runtime",
     ):
         monkeypatch.setattr(target, _forbidden)
+
+    async def ready_runtime(_config):
+        return object(), Report()
+
+    monkeypatch.setattr("brandsentinel.sandbox.preflight.hostile_content_runtime", ready_runtime)
+    monkeypatch.setattr("brandsentinel.cli._reference_browser", lambda _c, _r: None)
     monkeypatch.setattr("brandsentinel.cli._print_sandbox", lambda _config: None)
     monkeypatch.setattr("brandsentinel.sandbox.preflight.check_runtime", _empty_report)
     monkeypatch.setattr("brandsentinel.sandbox.preflight.check_account", lambda *_a, **_k: Report())
@@ -125,7 +136,6 @@ def _config(tmp_path: Path, **overrides) -> Path:
         "data_dir": str(tmp_path / "store"),
         "registry_path": str(REPO / "registry/brands.yaml"),
         "runtime": {"allow_developer_account": True},
-        "sandbox": {"enabled": False},
         "analysis": {
             "policy": str(REPO / "config/policy.yaml"),
             "payment_providers": str(REPO / "config/payment_providers.yaml"),
@@ -229,6 +239,49 @@ def test_refusal_carries_no_terminal_escape_from_a_hostile_path(as_root):
     result = _invoke("-c", "/tmp/\x1b[2Jevil.yaml", "status")
     _assert_refused(result, ROOT_REFUSAL)
     assert "\x1b" not in result.output
+
+
+@pytest.mark.parametrize("value", BLANK_VALUES)
+@pytest.mark.parametrize("command", STORE_IDS)
+def test_a_blank_data_dir_is_refused_and_creates_nothing(command, value, tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", value)
+    before = _tree(tmp_path)
+    _assert_refused(_invoke(*STORE_COMMANDS[command]), BLANK_REFUSAL)
+    assert _tree(tmp_path) == before
+
+
+@pytest.mark.parametrize("command", STORE_IDS)
+def test_a_blank_data_dir_cannot_override_a_configuration(command, tmp_path, monkeypatch):
+    """`load_config` lets the variable replace `data_dir` from the file."""
+    config = _config(tmp_path)
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", " ")
+    before = _tree(tmp_path)
+    _assert_refused(_invoke("-c", str(config), *STORE_COMMANDS[command]), BLANK_REFUSAL)
+    assert _tree(tmp_path) == before
+
+
+def test_root_is_refused_before_a_blank_data_dir(monkeypatch, as_root):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", " ")
+    _assert_refused(_invoke("status"), ROOT_REFUSAL)
+
+
+def test_a_blank_data_dir_leaves_non_store_commands_alone(monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", " ")
+    assert _invoke("version").exit_code == 0
+
+
+def test_an_empty_data_dir_is_unset_beside_a_configuration(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", "")
+    result = _invoke("-c", str(_config(tmp_path)), "status")
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "store/brandsentinel.db").is_file()
+
+
+def test_a_padded_data_dir_keeps_its_meaning(tmp_path, monkeypatch):
+    monkeypatch.setenv("BRANDSENTINEL_DATA_DIR", " padded")
+    result = _invoke("status")
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "cwd/ padded/brandsentinel.db").is_file()
 
 
 def test_a_mistyped_variable_is_not_a_source(tmp_path, monkeypatch):

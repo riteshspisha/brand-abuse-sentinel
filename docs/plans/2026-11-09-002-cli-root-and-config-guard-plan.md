@@ -72,7 +72,7 @@ The procedural rule in `docs/operations/deployment.md` did not prevent it. The g
 - R2. There is no override: no flag, no environment variable, no configuration key (KTD-ROOT).
 
 **Requiring an explicit configuration source**
-- R3. A store-opening command exits 2 before any store is opened or created when none of these is given: `-c`/`--config`, a non-empty `BRANDSENTINEL_CONFIG`, or a non-empty `BRANDSENTINEL_DATA_DIR` (KTD-SOURCES). "Non-empty" means exactly what `load_config` treats as set. The message says that the default would create `./data` and that `-c` is required.
+- R3. A store-opening command exits 2 before any store is opened or created when none of these is given: `-c`/`--config`, a non-empty `BRANDSENTINEL_CONFIG`, or a non-empty `BRANDSENTINEL_DATA_DIR` (KTD-SOURCES). "Non-empty" means exactly what `load_config` treats as set. A whitespace-only `BRANDSENTINEL_DATA_DIR` is not a location: it is refused, with or without another source, because `load_config` would apply it over `data_dir`. `load_config` itself is unchanged, so non-store commands are unaffected. The message says that the default would create `./data` and that `-c` is required.
 - R4. With an explicit source, behaviour is unchanged. That includes a relative `data_dir` inside a configuration file (`config/lab.yaml`).
 
 **Order and scope**
@@ -96,7 +96,7 @@ The procedural rule in `docs/operations/deployment.md` did not prevent it. The g
   - **privileged non-store commands as root.** `sandbox sweep` and `sandbox selftest` act on whichever Docker daemon root can reach, and `proxy` starts a listener. That is B3;
   - **CLI enforcement of the production policy** (absolute `-c`, the dedicated account). That is B3;
   - a guard in library entry points other than the CLI. Python code importing `brandsentinel.store` directly is not covered, which is accepted;
-  - **an explicit source that leaves a relative location.** `-c` naming a file with no `data_dir` (or an empty file), a relative `data_dir` in a file, or a relative or whitespace-only `BRANDSENTINEL_DATA_DIR` is explicit under KTD-SOURCES and R4, and still resolves against the working directory. Refusing it would be a further policy decision and would change R4. Recorded as a known residual; `config/service.yaml` has an absolute `data_dir`, and production's absolute-`-c` rule is B3.
+  - **an explicit source that leaves a relative location.** `-c` naming a file with no `data_dir` (or an empty file), a relative `data_dir` in a file, or a relative `BRANDSENTINEL_DATA_DIR` is explicit under KTD-SOURCES and R4, and still resolves against the working directory. Refusing it would be a further policy decision and would change R4. Recorded as a known residual; `config/service.yaml` has an absolute `data_dir`, and production's absolute-`-c` rule is B3.
 - **Not changed:** the meaning of `BRANDSENTINEL_*` variables; `load_config` semantics for non-store commands.
 
 ### Outstanding Questions
