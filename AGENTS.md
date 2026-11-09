@@ -120,27 +120,79 @@ live outside this repository and are operated by the owner.
   `compose up/down`, retagging or removing images, `system prune`.
 - Restores, rollbacks, migrations of a real store, and deleting evidence directories or
   backups.
+- Promotions and other security-sensitive deployment actions: installing a new wheel or
+  image, replacing the egress proxy, and changing production configuration, service units
+  or sudo policy.
 - Weakening a security control or test: removing a test from the SP3 gate, adding a skip,
   widening netguard, or relaxing container flags. Stop and ask instead.
 - `git push`, merging PRs and publishing the documentation site.
 - Changing `registry/brands.yaml` statuses. Brand and domain confirmation belongs to the
   organization.
 
-## 7. How to validate a change
+Authorization is explicit and specific to the action. Approving a plan, a PR or an earlier
+step does not authorize the next one. A workflow, a checklist or a passing test never
+does.
 
-1. `uv run ruff check` and the offline suite pass.
-2. Add tests next to the code you change (`tests/unit` for pure logic,
-   `tests/integration` for the queue, stages and store, `tests/security` for anything
-   touching the network policy). Regression tests should fail on the old code.
-3. Under `net/` or `sandbox/`: run the `docker or security` gate with no skips. If you
-   cannot (no Docker), say so explicitly in your report. Do not claim the gate.
-4. Scoring changes: bump the policy `version`, then run `tests/unit/test_policy*.py` and
-   the lab expectations (`tests/unit/test_lab_fixtures.py`, `tests/lab/` with the lab stack).
-5. Documentation: `uv run pytest tests/unit/test_docs.py` and the strict site build
-   (section 9).
+## 7. Definition of done
 
-CI (`.github/workflows/checks.yml`) runs lint and step 5 on every pull request. It does
-not run the offline suite or the `docker or security` gate, so steps 1 and 3 stay your job.
+Use this list to find gaps, not to replace judgment. A fully ticked list does not make a
+change safe. If something looks wrong and no item covers it, stop and raise it. Apply
+each item in proportion to the risk; "not applicable, because…" is a valid answer for all
+but D8 and D9. Rationale: the
+[post-I1 backlog](docs/plans/2026-11-09-001-post-i1-engineering-backlog.md).
+
+| # | Item | What it means | Report |
+|---|---|---|---|
+| D1 | **Requirements and scope** | A plan in `docs/plans/`, or a bounded request with stop conditions, says what is wanted and what is not. The diff stays inside it, or the deviation is explained | the plan or request |
+| D2 | **Trust boundaries** | Which boundary is touched (untrusted host, sandbox or container, privilege and account, the store, operator input)? Which section 3 invariant could break? Does every new failure fail closed? Is any privilege, egress, file write or dependency added? | the answers, or why none apply |
+| D3 | **Adversarial and failure cases** | A boundary change has a test of the refused case and of hostile input, beside the positive test. Think through partial failure, interruption and concurrency | test names |
+| D4 | **Tests and regressions** | Tests land with the code: `tests/unit` for pure logic, `tests/integration` for the queue, stages and store, `tests/security` for anything touching the network policy. A bug or security fix has a regression test **shown failing on the old code** | the failing result, then the passing one |
+| D5 | **Implementation verified** | The smallest change that follows existing patterns, with abandoned attempts removed. `uv run ruff check` and the offline suite pass. Under `net/` or `sandbox/`, the `docker or security` gate passes with no skips; if you cannot run it, say so and do not claim it. Scoring changes bump the policy `version`, then run `tests/unit/test_policy*.py` and the lab expectations (`tests/unit/test_lab_fixtures.py`, `tests/lab/` with the lab stack) | commands, counts, commit, date (section 8) |
+| D6 | **Observability** | A new failure mode has a named error and a stable exit code. Log fields stay on the allowlist (section 3, item 7). `status` shows new persistent state. Unknown stays visible | a test or sample output |
+| D7 | **Documentation** | Updated in the same change (section 9), with `uv run pytest tests/unit/test_docs.py` and the strict site build passing | the changed pages |
+| D8 | **Review** | `ce-code-review` or a human review of every non-mechanical diff, at full depth for a D2 change. Findings are fixed, or recorded in the PR's known residuals and in `docs/residual-review-findings/` | the review summary |
+| D9 | **Operational acceptance and authorization** | What production needs is written down as a promotion item, and is never done as part of development. Section 6 applies throughout | the promotion item, or "none" |
+
+CI (`.github/workflows/checks.yml`) runs lint and the D7 checks on every pull request. It
+does not run the offline suite or the `docker or security` gate, so those stay your job.
+
+### Four stages of "done"
+
+Each stage claims nothing about the next one. Report the stage reached, and never round up.
+
+| Stage | Reached when | Who | [Status](docs/project/status.md) level |
+|---|---|---|---|
+| **Development complete** | D1–D8 hold on a local branch, with evidence | developer or agent | Development-tested |
+| **PR accepted** | reviewed and merged to `main` | owner | Implemented |
+| **Production promoted** | installed through a gated promotion, with its evidence ([Deployment](docs/operations/deployment.md#promotion)) | owner | Production-accepted |
+| **Operationally validated** | shown doing its real job in production, under a separate authorization | owner | Operational |
+
+Passing tests, a merge or a promotion is not evidence for a later stage. An isolated-copy
+trial shows only what it exercised.
+
+### Working with Compound Engineering
+
+These workflows organize the work. They grant no authority: section 6 overrides any
+default of theirs. Plans are public, so they use repo-relative paths and contain no host
+paths, evidence names or personal data.
+
+| Need | Command | Use here |
+|---|---|---|
+| Scope is unclear | `ce-brainstorm` | requirements only |
+| More than one module, or any boundary | `ce-plan`, then `ce-doc-review` | the review is required for a security plan. A one-file fix can be a bounded request |
+| Implement | `ce-work mode:return-to-caller <plan-path>` | **the default.** Always name the plan: a blank invocation picks the newest one. Plain `ce-work` ends by pushing and opening a PR, so use it only when the owner has approved pushing that branch |
+| Failing tests | `ce-debug` | |
+| Isolate from the main checkout | `ce-worktree` | it may hold the owner's untracked files; leave them alone |
+| Review | `ce-code-review` | run it yourself after return-to-caller, which skips it; `depth:full` for a D2 change |
+| Commit | `ce-commit` | feature branches only, never `main` |
+| Push and open a PR | `ce-commit-push-pr` | **only after the owner approves it for that branch** |
+| Record a lesson | `ce-compound` | a flat `docs/solutions/YYYY-MM-DD-<slug>.md`, added to the `mkdocs.yml` navigation |
+| Hands-off pipeline | `lfg` | **do not use**: it runs through to a pushed PR |
+
+A bounded session: the owner approves the plan; implement; review; fix; commit locally;
+report D1–D9 evidence and the stage reached; **stop**. Push, merge and promotion are the
+owner's separate decisions. Production work stays outside these workflows, in the owner's
+gated tooling.
 
 ## 8. Collecting and interpreting evidence
 
