@@ -49,6 +49,7 @@ owner-operated, as the service account
 | `sandbox selftest` | Run a worker in a real sandbox container and check its gate (media: hashing, OCR, QR, bomb and format rejection, no network; browser: after the network check, Chromium's own sandbox, an unprivileged worker, and no direct route for a browser without a proxy). Exits 1 if any check fails. |
 | `sandbox sweep` | Remove every sandbox container labelled with this instance (normally done automatically at startup, before job leases are recovered). |
 | `status` | Show store, queue, artifact and raw-log status. |
+| `store check` | Run every check a store command runs, without opening the store. Exits 0 when a store command would proceed and 2 when it would be refused. Reads metadata and the configuration only; creates, migrates and sweeps nothing. |
 | `submit` | Submit URLs or domains for analysis (never suppressed). |
 | `sweep` | Run dnstwist sweeps now, ignoring the schedule. |
 | `version` | Print the BrandSentinel version. |
@@ -247,6 +248,11 @@ Remove every sandbox container labelled with this instance (normally done automa
 ## `brandsentinel status`
 
 Show store, queue, artifact and raw-log status.
+
+
+## `brandsentinel store check`
+
+Run every check a store command runs, without opening the store. Exits 0 when a store command would proceed and 2 when it would be refused. Reads metadata and the configuration only; creates, migrates and sweeps nothing.
 
 
 ## `brandsentinel submit`

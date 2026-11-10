@@ -59,13 +59,20 @@ NON_STORE_COMMANDS = {
         ],
         0,
     ),
+}
+# B3 (owner decision O2-D): these act on a Docker daemon or open a listener, and refuse
+# a real or effective UID of 0. As any other user they keep their exit codes.
+ROOT_REFUSED_COMMANDS = {
     "sandbox check": (["sandbox", "check", "--no-network"], 0),
     "sandbox selftest": (["sandbox", "selftest", "media"], 1),
     "sandbox sweep": (["sandbox", "sweep"], 0),
     "proxy": (["proxy", "--listen", "not-an-address"], 2),
 }
+# B3 U8: runs the store guard and the production checks, and never opens a store.
+STORE_INSPECTING_COMMANDS = {"store check": ["store", "check"]}
 STORE_IDS = sorted(STORE_COMMANDS)
 NON_STORE_IDS = sorted(NON_STORE_COMMANDS)
+ROOT_REFUSED_IDS = sorted(ROOT_REFUSED_COMMANDS)
 # The ways of leaving the configuration source unset.
 NO_SOURCE = {
     "unset": {},
@@ -338,6 +345,35 @@ def test_non_store_commands_are_unchanged_as_root(command, tmp_path, monkeypatch
     assert _tree(tmp_path) == before
 
 
+@pytest.mark.parametrize("uid", ["effective", "real"])
+@pytest.mark.parametrize("command", ROOT_REFUSED_IDS)
+def test_daemon_and_listener_commands_refuse_root(command, uid, tmp_path, monkeypatch):
+    """B3 R12: before configuration loading or Docker; the patched world forbids both."""
+    _block_store(monkeypatch)
+    monkeypatch.setattr(os, "geteuid" if uid == "effective" else "getuid", lambda: 0)
+    monkeypatch.setattr("brandsentinel.cli._load", _forbidden)
+    monkeypatch.setattr("brandsentinel.sandbox.runner.DockerCli.call", _forbidden)
+    before = _tree(tmp_path)
+    _assert_refused(_invoke(*ROOT_REFUSED_COMMANDS[command][0]), ROOT_REFUSAL)
+    assert _tree(tmp_path) == before
+
+
+@pytest.mark.parametrize("command", ROOT_REFUSED_IDS)
+def test_daemon_and_listener_commands_are_unchanged_for_other_users(command, tmp_path):
+    before = _tree(tmp_path)
+    args, code = ROOT_REFUSED_COMMANDS[command]
+    result = _invoke(*args)
+    assert result.exit_code == code, result.output
+    assert "refusing" not in result.output
+    assert _tree(tmp_path) == before
+
+
+def test_store_check_follows_the_store_guard(tmp_path, monkeypatch):
+    _assert_refused(_invoke("store", "check"), SOURCE_REFUSAL)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    _assert_refused(_invoke("-c", str(_config(tmp_path)), "store", "check"), ROOT_REFUSAL)
+
+
 @pytest.mark.parametrize("kind", ["option", "config_variable"])
 def test_a_configuration_file_is_a_source(kind, tmp_path, monkeypatch):
     config = _config(tmp_path)
@@ -440,9 +476,10 @@ def _commands() -> dict[str, str]:
 
 
 def test_every_command_is_classified():
-    assert set(_commands()) == set(STORE_COMMANDS) | set(NON_STORE_COMMANDS)
-    assert len(_commands()) == 22
-    assert not set(STORE_COMMANDS) & set(NON_STORE_COMMANDS)
+    groups = [STORE_COMMANDS, NON_STORE_COMMANDS, ROOT_REFUSED_COMMANDS, STORE_INSPECTING_COMMANDS]
+    assert set(_commands()) == set().union(*groups)
+    assert len(_commands()) == 23
+    assert sum(len(g) for g in groups) == 23  # no command in two groups
 
 
 def test_the_classification_matches_the_code():
