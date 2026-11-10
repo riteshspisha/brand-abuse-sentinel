@@ -62,6 +62,7 @@ markers = [
     "docker: needs the rootless Docker sandbox runtime",
     "lab: needs the controlled lab sites",
     "models: needs a running Kev or Laya server",
+    "installed_layout: builds a real installed layout; needs uv and unprivileged user namespaces",
 ]
 
 [tool.ruff]

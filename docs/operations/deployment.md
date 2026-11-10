@@ -43,6 +43,33 @@ public file in the repository. In outline:
 `validate.sh` runs Docker Compose on the account's daemon, including the lab stack. That
 itself is a privileged action needing approval.
 
+### Bytecode-write prevention
+
+This is in the repository and **not yet installed in production**. A new installation is
+hardened by [`harden-bytecode.sh`](../../scripts/service-account/harden-bytecode.sh):
+
+- the venv's `site-packages` and the bundled standard library are compiled as
+  checked-hash bytecode, which file-metadata changes cannot make stale;
+- every console script starts Python with `-B`, so bytecode writing is off before any
+  code runs.
+
+[`check_bytecode.py`](../../scripts/service-account/check_bytecode.py) then verifies the
+bytecode and launchers. `install.sh` publishes the `INSTALL` record only after it passes, so
+**a tree with no `INSTALL` record is an incomplete install**. `validate.sh` runs the same
+check under the service account. Exit 1 means violations; exit 2 means the inspection was
+incomplete, which is never a pass.
+
+**This is not immutability.** Root can still change anything under the prefix. Running the
+bare interpreter as root can still write bytecode if a `.pyc` is damaged or missing, as can a
+child process started without `-B`. `python -O` as root writes optimized bytecode even on an
+intact tree. Non-Python writes are unaffected. A pass shows the bytecode and launchers
+are correct at that moment. It does not show that the tree is unmodified or that no root
+run occurred. Kernel-level immutability is a separate owner decision.
+
+A `.pyc` damaged inside its body makes the import fail rather than run. Editing a launcher
+leaves its wheel `RECORD` hash stale, which is harmless because installations are built
+fresh and never upgraded in place.
+
 ## Production CLI operations
 
 Every `brandsentinel` command against the production installation, **including inspection
@@ -55,8 +82,9 @@ commands such as `status` and `cases list`**, follows these rules:
   CLI does **not** refuse root yet: the guard is in the repository and awaits promotion
   ([Status](../project/status.md)). From the release that includes it, the CLI refuses root
   for the 14 store-opening commands, but that does not make a root run safe:
-  importing the installed CLI as root can still write bytecode into the code tree, even
-  for a refused command, and the non-store commands still run as root. Only `run` and
+  until bytecode-write prevention is installed too, importing the installed CLI as root
+  can still write bytecode into the code tree, even for a refused command, and the
+  non-store commands still run as root. Only `run` and
   `registry collect` refuse an unsuitable non-root account
   ([which commands enforce it](../concepts/security.md#which-commands-enforce-it)).
 - **With the installed configuration passed explicitly:** `-c` with the **absolute** path

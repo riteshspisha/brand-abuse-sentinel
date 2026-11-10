@@ -117,7 +117,12 @@ the operator after review. `U` is the service account's UID.
    ```
 
    `install.sh` refuses a dirty tree or a non-empty target and prints the commit
-   it installed. Expect `find` to print nothing.
+   it installed. Expect `find` to print nothing. It hardens the launchers, compiles
+   checked-hash bytecode and runs `check_bytecode.py`, and writes `INSTALL` only after
+   that passes: a tree with no `INSTALL` is incomplete and must be rebuilt from an empty
+   directory. Launcher edits leave wheel `RECORD` hashes stale, which is expected. A
+   uv `#!/bin/sh` trampoline, generated for a long prefix or one with spaces, fails the
+   check on purpose.
 
 5. Start the account's rootless dockerd (inside its user manager):
 
