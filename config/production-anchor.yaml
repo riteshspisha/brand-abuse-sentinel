@@ -1,0 +1,11 @@
+# The production anchor (B3). Installed by root, outside the install prefix, at
+# /etc/brandsentinel/production.yaml (mode 0644, every directory from / down
+# root-owned and not writable by others), by write-then-rename; see
+# docs/runbooks/service-account.md. It names the one production store, the only
+# configuration that may open it, the account allowed to, and the installation.
+# The keys must stay in this order, and `complete: true` must be the last line.
+account: brandsentinel
+store_path: /var/lib/brandsentinel/data
+config_path: /opt/brandsentinel/etc/service.yaml
+install_prefix: /opt/brandsentinel
+complete: true
