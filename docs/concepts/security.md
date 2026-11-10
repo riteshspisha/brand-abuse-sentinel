@@ -121,34 +121,105 @@ properties passes.
 
 | Command | Account check | Opens the store |
 |---|---|---|
-| `run` | **refuses to start** (exit 2) before opening the store if any check fails. Its sandbox stages are additionally withheld, outside lab mode, unless the checks pass with no override (`gate_hostile_content`) | yes, after the check |
-| `registry collect` | outside lab mode, **refuses** (exit 1) unless the checks pass with no override, because it needs the media sandbox. In lab mode: no check | yes, after the check |
-| `status` | **reports only**: prints the account checks when `sandbox.enabled` is on; they never refuse (the CLI guard below still applies). It opens the store first | yes |
-| `sandbox check` | **reports**, and exits 1 on a failure (`--strict`: also on a warning). A diagnostic, not a gate | no |
-| `submit`, `replay`, `sweep`, `analyze`, `cases list`, `cases show`, `cases label`, `cases rescore`, `report`, `export csv`, `registry corpus` | **none** beyond the CLI guard below: any non-root account can run them | yes |
-| `sandbox selftest`, `sandbox sweep`, `proxy` | **none** (`selftest` checks only the runtime): they run as root | no |
+| `run` | the [production-store checks](#production-store-enforcement) first; then it **refuses to start** (exit 2) before opening the store if any account check fails. Its sandbox stages are additionally withheld, outside lab mode, unless the checks pass with no override (`gate_hostile_content`) | yes, after the checks |
+| `registry collect` | the production-store checks; then, outside lab mode, **refuses** (exit 1) unless the account checks pass with no override, because it needs the media sandbox. In lab mode: no further check | yes, after the checks |
+| `status` | the production-store checks; then **reports only**: prints the account checks when `sandbox.enabled` is on. It prints the store class | yes |
+| `submit`, `replay`, `sweep`, `analyze`, `cases list`, `cases show`, `cases label`, `cases rescore`, `report`, `export csv`, `registry corpus` | the production-store checks: on the production store, only the service account with the approved configuration. On a development store, any non-root account | yes |
+| `store check` | the production-store checks, then it stops: exits 0 when a store command would proceed and 2 when it would be refused | no: it reads metadata and the configuration only |
+| `sandbox check` | **refuses root** (real or effective UID 0, exit 2); otherwise **reports**, and exits 1 on a failure (`--strict`: also on a warning). A diagnostic, not a gate | no |
+| `sandbox selftest`, `sandbox sweep`, `proxy` | **refuse root** (real or effective UID 0, exit 2) before configuration loading or Docker; no other check (`selftest` checks only the runtime) | no |
 | `version`, `match`, `registry validate`, `eval` | none | no |
 
 **The CLI guard** (in the repository, not yet installed in production; see
-[Status](../project/status.md)). All 14 commands marked *yes* in the last column first pass one check.
-They exit 2, before the configuration is read or anything is opened or created, when
-the effective UID is 0, or when none of `-c`, a non-empty `$BRANDSENTINEL_CONFIG` or a
-non-empty `$BRANDSENTINEL_DATA_DIR` is given, or when `$BRANDSENTINEL_DATA_DIR` is only
-whitespace. There is no override. An explicit source
-that leaves a relative location (a file with no `data_dir`, a relative path) still
-resolves against the current directory. `run` and `registry collect` keep their account
-checks after the guard.
+[Status](../project/status.md)). All 14 commands marked *yes* in the last column, and
+`store check`, first pass one check. They exit 2, before the configuration is read or
+anything is opened or created, when the effective UID is 0, or when none of `-c`, a
+non-empty `$BRANDSENTINEL_CONFIG` or a non-empty `$BRANDSENTINEL_DATA_DIR` is given, or
+when `$BRANDSENTINEL_DATA_DIR` is only whitespace. There is no override. On a
+development store, an explicit source that leaves a relative location (a file with no
+`data_dir`, a relative path) still resolves against the current directory.
 
-The guard does **not** make a root run safe, and **running a command is still not
-evidence that the account is right**. It runs inside the command, after the installed CLI
-has been imported, so on the current production installation a root invocation can still
-write Python bytecode caches into the root-owned code tree, even when it is refused.
+#### Production-store enforcement
+
+In the repository, not yet installed in production (B3, plan
+`docs/plans/2026-11-10-001-feat-b3-production-store-enforcement-plan.md`). After the CLI
+guard, a store command reads its configuration once and decides, **before anything under
+the data directory is created, migrated or swept**, whether the store is the production
+store and whether this process may open it. Deciding reads only metadata and the store
+marker. Every refusal exits 2 with
+`refusing to open a store:` followed by stable check names, and prints no path or value.
+
+- **The anchor.** A root-owned file, `/etc/brandsentinel/production.yaml`, outside the
+  install prefix, names the account, the store path, the approved configuration and the
+  install prefix. It is believed only if every directory from `/` down and the file
+  itself are root-owned and not writable by others, the file is a single regular file
+  of at most 64 KiB, and it ends with `complete: true`. Otherwise every store command on
+  the host refuses (`anchor_unsafe`). Installed code on a host with no anchor refuses
+  every store command (`anchor_missing`); a checkout falls back to the marker.
+- **Classification.** A data directory at, under or above the anchor's store path is
+  production, decided from the configured path alone, so the account's 0700 home is
+  never searched. A path that resolves there (symlinks and `..` resolved as the kernel
+  does), the same directory by device and inode (only when this process can reach the
+  live store), or a directory holding the store marker is production too. Only the anchor's exact
+  store path may be used: a production-class store anywhere else, including a marked
+  byte copy, is refused for everyone (`noncanonical_production_store`).
+- **The production policy,** at the canonical store only: the effective and real UID
+  are the anchor's account, which owns the store; `check_account` passes with no
+  warning; `runtime.allow_developer_account` is refused, not ignored; the configuration
+  is the approved file, given as an absolute `-c` with no symlink component, root-owned
+  and not writable by others; `$BRANDSENTINEL_CONFIG`, `$BRANDSENTINEL_DATA_DIR`,
+  `PYTHONPATH`, `PYTHONHOME`, `PYTHONUSERBASE` and `PYTHONSTARTUP` are unset; the running
+  package and every `sys.path` entry lie inside the install prefix; the production paths
+  are absolute; and the store exists. A production store is never created.
+- **Integrity, for every store.** A store is refused (`store_integrity`) when its
+  database, WAL, shared-memory or journal file is a symlink or has more than one link,
+  or when `raw/`, `artifacts/` and the directories inside them that the store writes
+  and sweeps, `cache/` or `reports/` is a symlink. Without this, a scratch store with a
+  symlinked `artifacts/` would let the orphan sweep delete another store's evidence.
+- **The store layer** repeats the anchor, classification and integrity checks, and
+  refuses a production-class store unless it receives the authorization the CLI
+  produced for that store's path, device and inode and the effective UID.
+
+**What these checks are.** File permissions are the boundary between accounts: the
+account's 0700 home keeps every other non-root account out of the live store. These
+checks prevent accidents by the authorized account (a relative `-c`, a store variable,
+a symlinked or copied configuration, a checkout on `PYTHONPATH`, the developer
+override) and refuse everyone else before anything is touched. They are **not** a
+boundary against a deliberate service account or root:
+
+- **The marker is an accidental-misuse signal, not an identity.** Whoever can write a
+  store directory can remove it. A copy of the database file alone (`.backup`,
+  `VACUUM INTO`, `cp brandsentinel.db`), a copy that skips the marker, and copies made
+  before the live store was marked are development stores when opened elsewhere.
+  Removing a marker is not an approved procedure.
+- **Code without these checks ignores them**: an older checkout, a retained previous
+  installation, `legacy/`.
+- **The authorization is a value**: it stops accidental callers of `open_store`, not
+  hostile Python, which can build one.
+- **Not checked:** `DOCKER_HOST`, `XDG_RUNTIME_DIR`, `PATH`, `HOME`, `LD_PRELOAD`; the
+  destinations of `report --out` and `export csv -o`; hard links to existing report
+  files (a report written over a hard-linked file reaches every name); links created
+  after a store is opened, during a long `run`.
+- **Tests read the host.** In-process tests never read the real anchor; tests that
+  start the CLI as a subprocess (the offline demo, the lab demo) do.
+- **One anchor governs the host.** Once it is installed, a malformed or unsafe anchor
+  (a wrong mode, a comment after `complete: true`, reordered keys) refuses every store
+  command on the host, development included, and installed code with no anchor refuses
+  them all too. A deliberate account that can mount over `/etc/brandsentinel` in a
+  user namespace can hide the anchor from a checkout; the marker then still classifies
+  the live store, unless it was removed too.
+
+The guard and these checks do **not** make a root run safe, and **running a command is
+still not evidence that the account is right**. They run inside the command, after the
+installed CLI has been imported, so on the current production installation a root
+invocation can still write Python bytecode caches into the root-owned code tree, even
+when it is refused.
 [Bytecode-write prevention](../operations/deployment.md#bytecode-write-prevention) closes
 that for console scripts on a new installation. It is implemented and not yet promoted, and
-it is not immutability: root can still change the tree. The commands marked *no* still run as
-root. Any non-root account, the code owner included, can open any store it can write
-to. Closing these is open work ([Roadmap](../project/roadmap.md)); until then, the rule in
-[Deployment](../operations/deployment.md#production-cli-operations) stays procedural.
+it is not immutability: root can still change the tree. `version`, `match`,
+`registry validate` and `eval` still run as root. Until these controls are promoted, the
+rule in [Deployment](../operations/deployment.md#production-cli-operations) stays the
+only enforcement in production.
 
 `sandbox check --strict` must pass with no warnings under the account.
 
@@ -189,12 +260,13 @@ These are known and accepted for the current maturity. They are not hidden defec
   browser sandbox.
 - **Egress is attributable.** Fetches and renders come from the host's network. There is no
   VPN or anonymizing egress and no per-destination rate limit.
-- **No account enforcement outside `run` and `registry collect`.** The store-opening
-  commands refuse UID 0 and a missing configuration source, but any non-root account can
-  run them against a store it can write to, and the non-store commands still run as root
-  (see [Which commands enforce it](#which-commands-enforce-it)). This is **not accepted**:
-  it is an open security-engineering follow-up. Until it lands, production CLI use beyond
-  that guard is restricted by procedure only.
+- **Production-store enforcement is not installed.** The anchor, the account and
+  configuration policy, store integrity and the root refusal for Docker and listener
+  commands are in the repository on a development branch, not merged or promoted
+  ([Production-store enforcement](#production-store-enforcement)). Until they are, the
+  installed CLI checks the account only in `run` and `registry collect`, and production
+  CLI use is restricted by procedure. Even then they are accident controls: they do not
+  stop a deliberate service account, root, or code without them.
 - **No instance lock (SP2).** A concurrent `sandbox sweep`, `sandbox check` or a second
   process of the same instance can remove another process's running job containers. This
   blocks unattended operation (M9).

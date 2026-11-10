@@ -148,7 +148,43 @@ the operator after review. `U` is the service account's UID.
    brandsentinel-sandbox:local`, and the manifest with `"id_matches": true` and
    `"verdict": "ok"`.
 
-7. Validate SP1 (stop the developer's lab first, restart it after):
+7. Install the production anchor (B3; root, write-then-rename into a root-only
+   directory, so a reader sees the old file or the new one, never part of one):
+
+   ```sh
+   # install -d -o root -g root -m 0755 /etc/brandsentinel
+   # install -o root -g root -m 0644 /opt/brandsentinel/src/config/production-anchor.yaml \
+       /etc/brandsentinel/.production.yaml.new
+   # mv /etc/brandsentinel/.production.yaml.new /etc/brandsentinel/production.yaml
+   # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
+       /opt/brandsentinel/venv/bin/python -I -B \
+       /opt/brandsentinel/src/scripts/service-account/check_anchor.py /opt/brandsentinel
+   ```
+
+   Expect only `PASS` lines. No Docker is needed. From now on every store command on
+   this host follows the anchor: an unsafe anchor refuses all of them, the developer's
+   included.
+
+8. Mark the production store (B3; as the account, once, before any later reinstall or
+   rollback swap). The marker is an accidental-misuse signal that travels with byte
+   copies; it is not an identity, and removing it is not an approved procedure:
+
+   ```sh
+   # systemd-run --user -M brandsentinel@ --wait --pipe --collect sh -c \
+       'printf "brandsentinel_store: 1\nclass: production\n" > /var/lib/brandsentinel/data/.marker.new \
+        && chmod 0444 /var/lib/brandsentinel/data/.marker.new \
+        && mv /var/lib/brandsentinel/data/.marker.new /var/lib/brandsentinel/data/BRANDSENTINEL-STORE'
+   # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
+       /opt/brandsentinel/venv/bin/python -I -B \
+       /opt/brandsentinel/src/scripts/service-account/check_anchor.py /opt/brandsentinel --marker
+   # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
+       /opt/brandsentinel/venv/bin/brandsentinel -c /opt/brandsentinel/etc/service.yaml store check
+   ```
+
+   Expect only `PASS` lines, then `store class: production (anchor path)` and
+   `store check: ok`. `store check` reads metadata only: it does not open the store.
+
+9. Validate SP1 (stop the developer's lab first, restart it after):
 
    ```sh
    $ docker --host unix://$XDG_RUNTIME_DIR/docker.sock compose -f docker/lab.compose.yaml stop
@@ -165,15 +201,17 @@ the operator after review. `U` is the service account's UID.
 
 Created: one account and group, its home `/var/lib/brandsentinel`, one
 subordinate UID/GID range, a lingering user manager running one rootless dockerd
-(about 100 MB RAM plus the egress-proxy container), `/opt/brandsentinel`.
+(about 100 MB RAM plus the egress-proxy container), `/opt/brandsentinel`, the
+production anchor `/etc/brandsentinel/production.yaml` and the store marker
+`/var/lib/brandsentinel/data/BRANDSENTINEL-STORE`.
 Unchanged: sudoers, the `docker` group, firewall rules, the rootful daemon and
 its containers, the developer's rootless runtime and data, other `/opt` entries.
-The developer's lab is stopped and started around step 7 (not removed).
+The developer's lab is stopped and started around step 9 (not removed).
 
 ## Rollback
 
-Touches only the `brandsentinel` account, `/var/lib/brandsentinel` and
-`/opt/brandsentinel`:
+Touches only the `brandsentinel` account, `/var/lib/brandsentinel`,
+`/opt/brandsentinel` and `/etc/brandsentinel`:
 
 ```sh
 # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
@@ -184,7 +222,11 @@ Touches only the `brandsentinel` account, `/var/lib/brandsentinel` and
 # grep -H '^brandsentinel:' /etc/subuid /etc/subgid || echo "subordinate ranges removed"
 # test -d /var/lib/brandsentinel && rm -rf --one-file-system /var/lib/brandsentinel
 # rm -rf --one-file-system /opt/brandsentinel
+# rm -f /etc/brandsentinel/production.yaml && rmdir /etc/brandsentinel
 ```
+
+Remove the anchor only together with the store. While a production store stays on
+the host, keep the anchor: it is what classifies that store as production.
 
 `userdel --remove` cannot always delete image layers owned by subordinate UIDs;
 the `rm` after it removes what remains. Partial rollback:

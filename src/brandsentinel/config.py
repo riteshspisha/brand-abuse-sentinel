@@ -6,6 +6,8 @@ Environment variables may override paths only.
 
 import ipaddress
 import os
+import stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -598,23 +600,17 @@ def has_explicit_source(path: Path | None = None) -> bool:
     return path is not None or bool(os.environ.get(ENV_CONFIG) or os.environ.get(ENV_DATA_DIR))
 
 
-def load_config(path: Path | None = None) -> Config:
-    """Load config from `path`, else $BRANDSENTINEL_CONFIG, else built-in defaults."""
-    if path is None and os.environ.get(ENV_CONFIG):
-        path = Path(os.environ[ENV_CONFIG])
+def _parse_file(text: str, path: Path) -> dict:
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise ConfigError(f"invalid YAML in {path}: {e}") from e
+    if loaded is not None and not isinstance(loaded, dict):
+        raise ConfigError(f"config {path} must be a mapping")
+    return loaded or {}
 
-    raw: dict = {}
-    if path is not None:
-        try:
-            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except OSError as e:
-            raise ConfigError(f"cannot read config {path}: {e}") from e
-        except yaml.YAMLError as e:
-            raise ConfigError(f"invalid YAML in {path}: {e}") from e
-        if loaded is not None and not isinstance(loaded, dict):
-            raise ConfigError(f"config {path} must be a mapping")
-        raw = loaded or {}
 
+def _finish(raw: dict) -> Config:
     # Only paths may come from the environment; anything else that looks like
     # BrandSentinel configuration (for example network ranges) is refused.
     unknown = sorted(
@@ -630,3 +626,87 @@ def load_config(path: Path | None = None) -> Config:
         return Config.model_validate(raw)
     except ValidationError as e:
         raise ConfigError(f"invalid config: {_format_errors(e)}") from e
+
+
+def load_config(path: Path | None = None) -> Config:
+    """Load config from `path`, else $BRANDSENTINEL_CONFIG, else built-in defaults."""
+    if path is None and os.environ.get(ENV_CONFIG):
+        path = Path(os.environ[ENV_CONFIG])
+
+    raw: dict = {}
+    if path is not None:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise ConfigError(f"cannot read config {path}: {e}") from e
+        raw = _parse_file(text, path)
+    return _finish(raw)
+
+
+@dataclass(frozen=True)
+class ConfigSourceFacts:
+    """How a configuration file was given, recorded from the one read (B3 R8, R9).
+
+    Judged only for a production store (`store/policy.py`); development ignores it."""
+
+    given: str  # the path exactly as given
+    option: bool  # from -c, not from $BRANDSENTINEL_CONFIG
+    st: os.stat_result  # fstat of the descriptor that was read
+    symlink_free: bool  # no component of the given path is a symlink (False if unknown)
+    parent: os.stat_result | None  # lstat of the given path's directory
+
+
+def _symlink_free(path: Path) -> bool:
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        try:
+            if stat.S_ISLNK(os.lstat(current).st_mode):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _lstat_parent(path: Path) -> os.stat_result | None:
+    absolute = path if path.is_absolute() else Path.cwd() / path
+    try:
+        return os.lstat(absolute.parent)
+    except OSError:
+        return None
+
+
+def _read_once(path: Path) -> tuple[str, os.stat_result]:
+    """Read the file through exactly one descriptor, opened as `load_config` opens it
+    (blocking, so a FIFO waits for its writer as before), and return that descriptor's
+    metadata. It is never reopened: a reopen could read a different file, or lose a
+    FIFO's writer."""
+    try:
+        with open(path, "rb", opener=lambda p, flags: os.open(p, flags | os.O_CLOEXEC)) as f:
+            st = os.fstat(f.fileno())
+            data = f.read()
+    except OSError as e:
+        raise ConfigError(f"cannot read config {path}: {e}") from e
+    return data.decode("utf-8"), st
+
+
+def load_config_once(path: Path | None = None) -> tuple[Config, ConfigSourceFacts | None]:
+    """`load_config` for store-opening commands: the same result, read from one
+    descriptor, with the facts the production policy judges. None when no file was
+    given ($BRANDSENTINEL_DATA_DIR alone)."""
+    option = path is not None
+    if path is None and os.environ.get(ENV_CONFIG):
+        path = Path(os.environ[ENV_CONFIG])
+    if path is None:
+        return _finish({}), None
+    text, st = _read_once(path)
+    raw = _parse_file(text, path)
+    facts = ConfigSourceFacts(
+        given=str(path),
+        option=option,
+        st=st,
+        symlink_free=_symlink_free(path),
+        parent=_lstat_parent(path),
+    )
+    return _finish(raw), facts

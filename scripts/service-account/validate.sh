@@ -5,6 +5,7 @@
 #     /opt/brandsentinel/src/scripts/service-account/validate.sh
 #
 # 0. the install completed, and its bytecode and launchers verify (check_bytecode.py);
+#    the production anchor and the store marker verify (check_anchor.py, B3);
 # 1. account: not root, not in `docker`, no rootful socket, cannot modify the
 #    installed application, config without the developer override;
 # 2. the production sandbox stack on the account's own rootless daemon;
@@ -41,6 +42,17 @@ if [ "$BYTECODE_STATUS" -eq 0 ]; then
     pass "bytecode and launchers verified"
 else
     fail "bytecode and launchers (check_bytecode.py exit $BYTECODE_STATUS, report in $OUT/bytecode.txt)"
+fi
+
+echo "== 0b. production anchor and store marker (B3)"
+"$PREFIX/venv/bin/python" -I -B "$PREFIX/src/scripts/service-account/check_anchor.py" "$PREFIX" --marker \
+    >"$OUT/anchor.txt" 2>&1
+ANCHOR_STATUS=$?
+cat "$OUT/anchor.txt"
+if [ "$ANCHOR_STATUS" -eq 0 ]; then
+    pass "production anchor and store marker verified"
+else
+    fail "production anchor and store marker (check_anchor.py exit $ANCHOR_STATUS, report in $OUT/anchor.txt)"
 fi
 
 echo "== 1. account"

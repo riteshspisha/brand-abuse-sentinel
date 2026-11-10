@@ -1,9 +1,34 @@
+import os
 from pathlib import Path
 
 import pytest
 
 from brandsentinel.config import Config, SandboxSettings
 from brandsentinel.store import Store, open_store
+
+
+@pytest.fixture(scope="session")
+def _anchor_free_root(tmp_path_factory) -> Path:
+    root = tmp_path_factory.mktemp("no-anchor-root")
+    root.chmod(0o755)
+    return root
+
+
+@pytest.fixture(autouse=True)
+def _no_host_anchor(monkeypatch, _anchor_free_root):
+    """In-process tests never read the host's production anchor or detect the host's
+    installation (B3). Subprocess CLI tests are not covered: they read the real host.
+    On code without the identity module (the D4 run on the old commit) this does nothing."""
+    try:
+        from brandsentinel.store import identity
+    except ImportError:
+        return
+    monkeypatch.setattr(identity, "CHAIN_ROOT", _anchor_free_root)
+    monkeypatch.setattr(identity, "TRUSTED_UID", os.getuid())
+    monkeypatch.setattr(
+        identity, "ANCHOR_PATH", _anchor_free_root / "etc" / "brandsentinel" / "production.yaml"
+    )
+    monkeypatch.setattr(identity, "install_record_candidates", lambda: [])
 
 
 class FakeClock:

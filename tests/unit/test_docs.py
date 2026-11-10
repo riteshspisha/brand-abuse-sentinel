@@ -342,12 +342,36 @@ def test_excluded_pages_are_not_published():
 
 # The account checks a command reaches, directly or through the one CLI helper that
 # runs them. Anything else in a command's body is not an account check.
-ACCOUNT_GATES = {"check_account", "hostile_content_runtime", "_print_sandbox"}
+ACCOUNT_GATES = {
+    "check_account",
+    "hostile_content_runtime",
+    "_print_sandbox",
+    "_load_for_store",  # the CLI guard and the production-store checks (B3)
+    "_refuse_root",  # root refusal for daemon and listener commands (B3, O2-D)
+}
+_STORE_GUARDED = {
+    "submit",
+    "replay",
+    "sweep",
+    "analyze",
+    "cases list",
+    "cases show",
+    "cases label",
+    "cases rescore",
+    "report",
+    "export csv",
+    "registry corpus",
+    "store check",
+}
 DOCUMENTED_GATES = {
-    "run": {"check_account"},  # refuses to start
-    "registry collect": {"hostile_content_runtime"},  # refuses outside lab mode
-    "status": {"_print_sandbox"},  # reports only
-    "sandbox check": {"check_account"},  # reports, exits 1
+    **{name: {"_load_for_store"} for name in _STORE_GUARDED},
+    "run": {"_load_for_store", "check_account"},  # refuses to start
+    "registry collect": {"_load_for_store", "hostile_content_runtime"},  # outside lab mode
+    "status": {"_load_for_store", "_print_sandbox"},  # reports only
+    "sandbox check": {"_refuse_root", "check_account"},  # reports, exits 1
+    "sandbox selftest": {"_refuse_root"},
+    "sandbox sweep": {"_refuse_root"},
+    "proxy": {"_refuse_root"},
 }
 
 
@@ -404,5 +428,6 @@ def test_the_cli_guard_matches_the_security_model():
     for row in rows:
         if row[3].strip().startswith("yes"):
             documented |= set(re.findall(r"`([a-z]+(?: [a-z]+)?)`", row[1]))
-    assert guarded == documented
-    assert len(guarded) == 14
+    # `store check` runs the guard and never opens a store (B3 U8).
+    assert guarded == documented | {"store check"}
+    assert len(documented) == 14

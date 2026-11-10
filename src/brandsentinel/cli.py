@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 
@@ -23,6 +23,7 @@ from brandsentinel.config import (
     has_blank_data_dir,
     has_explicit_source,
     load_config,
+    load_config_once,
 )
 from brandsentinel.discovery.dnstwist_runner import DnstwistRunner
 from brandsentinel.discovery.events import replay as replay_events
@@ -38,6 +39,7 @@ from brandsentinel.registry.loader import RegistryError, ValidationReport, load_
 from brandsentinel.registry.model import Registry
 from brandsentinel.store import open_store
 from brandsentinel.store.db import schema_version
+from brandsentinel.store.identity import StoreRefused
 from brandsentinel.textsafe import escape_terminal
 
 app = typer.Typer(
@@ -61,6 +63,8 @@ cases_app = typer.Typer(help="List, inspect, label and re-score cases.", no_args
 app.add_typer(cases_app, name="cases")
 export_app = typer.Typer(help="Export cases.", no_args_is_help=True)
 app.add_typer(export_app, name="export")
+store_app = typer.Typer(help="Check a store without opening it.", no_args_is_help=True)
+app.add_typer(store_app, name="store")
 
 
 @app.callback()
@@ -81,10 +85,20 @@ _REFUSE_ROOT = (
 _REFUSE_BLANK_DATA_DIR = (
     "refusing to open a store with a blank $BRANDSENTINEL_DATA_DIR: unset it or name a directory"
 )
+_REFUSE_STORE = "refusing to open a store"
 _REFUSE_NO_SOURCE = (
     "refusing to open a store without a configuration: the default would create ./data"
     " here; pass -c FILE (or set $BRANDSENTINEL_CONFIG or $BRANDSENTINEL_DATA_DIR)"
 )
+
+
+def _refuse_root() -> None:
+    """For commands that act on a Docker daemon or open a listener (B3 R12, O2-D):
+    root's daemon is not the account's, and a listener as root is never needed. Real
+    or effective UID 0, before configuration or Docker is touched. No override."""
+    if os.geteuid() == 0 or os.getuid() == 0:
+        typer.echo(_REFUSE_ROOT, err=True)
+        raise typer.Exit(2)
 
 
 def _load(ctx: typer.Context) -> Config:
@@ -110,7 +124,50 @@ def _load_for_store(ctx: typer.Context) -> Config:
     if not has_explicit_source(ctx.obj.get("config_path")):
         typer.echo(_REFUSE_NO_SOURCE, err=True)
         raise typer.Exit(2)
-    return _load(ctx)
+    # B3: read the configuration once, then decide whether this is the production store
+    # and whether this process may open it, before anything under it is touched.
+    from brandsentinel.store import policy
+
+    try:
+        config, source = load_config_once(ctx.obj.get("config_path"))
+    except ConfigError as e:
+        typer.echo(escape_terminal(str(e)), err=True)
+        raise typer.Exit(2) from e
+    try:
+        decision = policy.authorize(config, source)
+    except StoreRefused as e:
+        _refuse_store(e.checks)
+    except OSError:  # a failure to look (a deleted working directory, I/O): fail closed
+        _refuse_store(("unclassifiable",))
+    ctx.obj["store_decision"] = decision
+    return config
+
+
+def _refuse_store(checks: tuple[str, ...]) -> NoReturn:
+    typer.echo(f"{_REFUSE_STORE}: {', '.join(checks)}", err=True)
+    raise typer.Exit(2)
+
+
+def _open_store(ctx: typer.Context, config: Config):
+    """Open the store with the authorization `_load_for_store` produced (B3 R15). The
+    store layer repeats the checks; its refusal is the same named exit 2."""
+    decision = ctx.obj.get("store_decision")
+    try:
+        return open_store(config, authorization=decision.authorization if decision else None)
+    except StoreRefused as e:
+        _refuse_store(e.checks)
+    except OSError:
+        _refuse_store(("unclassifiable",))
+
+
+@store_app.command("check")
+def store_check(ctx: typer.Context) -> None:
+    """Run every check a store command runs, without opening the store. Exits 0 when
+    a store command would proceed and 2 when it would be refused. Reads metadata and
+    the configuration only; creates, migrates and sweeps nothing."""
+    _load_for_store(ctx)
+    typer.echo(_store_class_line(ctx))
+    typer.echo("store check: ok (the store was not opened)")
 
 
 @app.command()
@@ -123,11 +180,12 @@ def version() -> None:
 def status(ctx: typer.Context) -> None:
     """Show store, queue, artifact and raw-log status."""
     config = _load_for_store(ctx)
-    store = open_store(config)
+    store = _open_store(ctx, config)
     try:
         now = datetime.fromtimestamp(time.time(), UTC).isoformat(timespec="seconds")
         typer.echo(f"BrandSentinel {__version__} status at {now}")
         typer.echo(f"store: {config.db_path} (schema v{schema_version(store.conn)})")
+        typer.echo(_store_class_line(ctx))
 
         depths = store.jobs.depths()
         if depths:
@@ -170,6 +228,12 @@ def status(ctx: typer.Context) -> None:
             typer.echo(f"  {source:<20} {store.raw_bytes(source)} bytes")
     finally:
         store.close()
+
+
+def _store_class_line(ctx: typer.Context) -> str:
+    found = ctx.obj["store_decision"].classification
+    kind = "production" if found.production else "development"
+    return f"store class: {kind} ({found.signal})"
 
 
 def _print_analysis(store, config: Config) -> None:
@@ -316,7 +380,7 @@ def run(
     configure_logging(log_level.upper())
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     _check_analysis_config(config)
-    store = open_store(config)
+    store = _open_store(ctx, config)
 
     async def main() -> None:
         stop = asyncio.Event()
@@ -371,7 +435,7 @@ def submit(
     config = _load_for_store(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
     matcher = Matcher(registry)
-    store = open_store(config)
+    store = _open_store(ctx, config)
     failed = False
     try:
         for target in targets:
@@ -410,7 +474,7 @@ def sweep(
     config = _load_for_store(ctx)
     configure_logging("WARNING")
     registry, _ = _load_registry(config.registry_path, _overlay(config))
-    store = open_store(config)
+    store = _open_store(ctx, config)
     runner = DnstwistRunner(store, Matcher(registry), registry, config)
     known = runner.targets()
     chosen = targets or known
@@ -447,7 +511,7 @@ def replay(
     """Re-ingest the discovery raw log (idempotent: nothing is duplicated)."""
     config = _load_for_store(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
-    store = open_store(config)
+    store = _open_store(ctx, config)
     try:
         since = time.time() - since_hours * 3600 if since_hours is not None else None
         stats = replay_events(store, Matcher(registry), since=since)
@@ -485,7 +549,7 @@ def analyze(
     except InvalidName as e:
         typer.echo(f"invalid domain: {escape_terminal(str(e))}", err=True)
         raise typer.Exit(2) from e
-    store = open_store(config)  # for the shared RDAP cache only
+    store = _open_store(ctx, config)  # for the shared RDAP cache only
     try:
         guard, fetcher = build_network(config)
         stages = AnalysisStages(store, registry, guard=guard, fetcher=fetcher)
@@ -521,6 +585,7 @@ def proxy(
     log_level: Annotated[str, typer.Option(help="Log level.")] = "INFO",
 ) -> None:
     """Run the egress proxy (inside its container; see docker/compose.yaml)."""
+    _refuse_root()
     from brandsentinel.net.netguard import DnsResolver, NetGuard, make_dns_resolver
     from brandsentinel.net.proxy import EgressProxy, parse_listen
 
@@ -566,6 +631,7 @@ def sandbox_check(
 ) -> None:
     """Run the sandbox preflight: account, rootless runtime and (with a direct-egress
     probe container) the sandbox network. Exits 1 if any check fails."""
+    _refuse_root()
     from brandsentinel.sandbox import preflight
     from brandsentinel.sandbox.runner import DockerCli, SandboxRunner
 
@@ -597,6 +663,7 @@ def sandbox_check(
 def sandbox_sweep(ctx: typer.Context) -> None:
     """Remove every sandbox container labelled with this instance (normally done
     automatically at startup, before job leases are recovered)."""
+    _refuse_root()
     from brandsentinel.sandbox.runner import DockerCli, SandboxError, SandboxRunner
 
     config = _load(ctx)
@@ -618,6 +685,7 @@ def sandbox_selftest(
     OCR, QR, bomb and format rejection, no network; browser: after the network
     check, Chromium's own sandbox, an unprivileged worker, and no direct route
     for a browser without a proxy). Exits 1 if any check fails."""
+    _refuse_root()
     from brandsentinel.sandbox import preflight
 
     if role not in ("media", "browser"):
@@ -708,7 +776,7 @@ def cases_list(
 
     f = _case_filter(priority, category, label, source, strength, status, since, limit)
     config = _load_for_store(ctx)
-    store = open_store(config)
+    store = _open_store(ctx, config)
     try:
         rows = list_cases(store.conn, f)
     finally:
@@ -740,7 +808,7 @@ def cases_show(
     from brandsentinel.triage.report import render_case_text
 
     config = _load_for_store(ctx)
-    store = open_store(config)
+    store = _open_store(ctx, config)
     try:
         report = load_case(store.conn, case_id)
     finally:
@@ -793,7 +861,7 @@ def cases_label(
         typer.echo(f"give --verdict and/or --question/--value; questions: {', '.join(QUESTIONS)}")
         raise typer.Exit(2)
     config = _load_for_store(ctx)
-    store = open_store(config)
+    store = _open_store(ctx, config)
     try:
         for q, v in pairs:
             record_label(store.conn, case_id, q, v, labelled_by=by)
@@ -831,7 +899,7 @@ def cases_rescore(
     if not case_ids and not all_cases:
         typer.echo("give case numbers or --all", err=True)
         raise typer.Exit(2)
-    store = open_store(config)
+    store = _open_store(ctx, config)
     try:
         scorer = CaseScorer(store.conn, registry, policy)
         ctx = AnalysisContext(scorer.lexicon, catalog)
@@ -882,7 +950,7 @@ def report(
         raise typer.Exit(2)
     config = _load_for_store(ctx)
     out_dir = out or config.reports_dir
-    store = open_store(config)
+    store = _open_store(ctx, config)
     try:
         cases = list_cases(store.conn, CaseFilter())
         wanted = case_ids or ([c.case_id for c in cases] if index else [])
@@ -926,7 +994,7 @@ def export_csv(
 
     f = _case_filter(priority, category, label, source, strength, status, since, limit)
     config = _load_for_store(ctx)
-    store = open_store(config)
+    store = _open_store(ctx, config)
     try:
         cases = list_cases(store.conn, f)
         # One case at a time: every bundle is not held in memory at once.
@@ -1044,7 +1112,7 @@ def registry_collect(
         _print_checks("media sandbox", report)
         raise typer.Exit(1)
     browser = _reference_browser(config, runner)
-    store = open_store(config)
+    store = _open_store(ctx, config)
     try:
         _, fetcher = build_network(config)
         collector = Collector(
@@ -1103,7 +1171,7 @@ def registry_corpus(ctx: typer.Context) -> None:
 
     config = _load_for_store(ctx)
     registry, _ = _load_registry(config.registry_path, _overlay(config))
-    store = open_store(config)
+    store = _open_store(ctx, config)
     try:
         corpus = load_corpus(store.conn, registry)
     finally:
