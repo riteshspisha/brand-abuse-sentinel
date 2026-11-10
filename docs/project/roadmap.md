@@ -13,8 +13,8 @@ Security remediation of the [2026-11-06 incident](status.md#incident-2026-11-06)
 | Item | Plan ref | Depends on | Status |
 |---|---|---|---|
 | **1. CLI guard:** every store-opening command refuses UID 0 and refuses to run without an explicit configuration or data directory, before any store is opened ([security model](../concepts/security.md#which-commands-enforce-it)) | incident remediation; [plan](../plans/2026-11-09-002-cli-root-and-config-guard-plan.md) | owner confirmation of the plan's two decisions (done) | implemented; not promoted (item 4) |
-| **2. Installation bytecode:** prevent bytecode writes by console scripts (checked-hash precompilation of the venv and the bundled interpreter, `-B` launchers) and verify the bytecode and launchers | incident remediation | 1 (same promotion) | in development, not merged |
-| 3. Account enforcement for a production store: refuse the code owner or a rootful-Docker user on a production store | incident remediation | 1; a decision on how a developer checkout opts out | not started |
+| **2. Installation bytecode:** prevent bytecode writes by console scripts (checked-hash precompilation of the venv and the bundled interpreter, `-B` launchers) and verify the bytecode and launchers | incident remediation | 1 (same promotion) | implemented; not promoted (item 4) |
+| **3. Production-store enforcement:** a root-owned anchor and a store marker identify the production store; only the service account with the approved absolute configuration and the installed code may open it; marked copies elsewhere are refused; store integrity for every store; root refused for Docker and listener commands; read-only `store check` ([security model](../concepts/security.md#production-store-enforcement)) | incident remediation; [plan](../plans/2026-11-10-001-feat-b3-production-store-enforcement-plan.md) | 1; owner decisions O2 (done) | developed on a branch; not merged or promoted |
 | 4. Promotion of 1–3: new wheel and image, gated promotion. Item 3 is a required gate: no live-production promotion without it | (operations) | 1, 2 and 3 | not started |
 | Production Brand Registry confirmation: official domains, payees, reference assets and pages | R6, U17 | the organization | open decision |
 | Instance lock so a sweep or check cannot remove another process's job containers | SP2 | sequenced after 1–2 (owner order: SP2, then M9) | not started |
@@ -41,9 +41,10 @@ Carried from the review findings and runbooks:
   See [Security model](../concepts/security.md#limits-and-residual-risks).
 - **Operations**
   - There is no supervision unit and no instance lock.
-  - Only `run` and `registry collect` check the account. The store-opening commands now
-    refuse root (the cause of the 2026-11-06 incident) once item 4 is promoted; the
-    non-store commands still run as root.
+  - Until item 4 is promoted, production checks the account only in `run` and
+    `registry collect`. After it, store commands refuse root (the cause of the 2026-11-06
+    incident) and open the production store only for the account (item 3); `version`,
+    `match`, `registry validate` and `eval` still run as root.
   - An explicit configuration with no `data_dir`, or a relative one, resolves against the
     current directory.
   - Every store open writes: it creates missing files, applies migrations and sweeps

@@ -87,11 +87,22 @@ commands such as `status` and `cases list`**, follows these rules:
   non-store commands still run as root. Only `run` and
   `registry collect` refuse an unsuitable non-root account
   ([which commands enforce it](../concepts/security.md#which-commands-enforce-it)).
+  From the release that includes production-store enforcement, every store command
+  opens the production store only for the account, and `sandbox check`,
+  `sandbox selftest`, `sandbox sweep` and `proxy` refuse root
+  ([production-store enforcement](../concepts/security.md#production-store-enforcement)).
 - **With the installed configuration passed explicitly:** `-c` with the **absolute** path
   of the installed `service.yaml`. Until the guard is installed, a command with no
   configuration source uses `./data` in the current directory and creates a store there.
   After it, such a command refuses to run, but `$BRANDSENTINEL_CONFIG` or `$BRANDSENTINEL_DATA_DIR` satisfy that
-  guard, and only an absolute `-c` satisfies this rule.
+  guard, and only an absolute `-c` satisfies this rule. From the release with
+  production-store enforcement, the CLI enforces it: the approved invocation is
+  `brandsentinel -c /opt/brandsentinel/etc/service.yaml …` as the account, with
+  `BRANDSENTINEL_CONFIG`, `BRANDSENTINEL_DATA_DIR`, `PYTHONPATH`, `PYTHONHOME`,
+  `PYTHONUSERBASE` and `PYTHONSTARTUP` unset, through the installed launcher (not
+  `python -m` from a writable directory). Anything else is refused with the failed checks
+  named. `brandsentinel store check` with the same arguments runs every check without
+  opening the store.
 - **Assume the command writes.** Opening a store can:
     - create the data directory and the database;
     - reset the directory to mode 0700;
@@ -134,7 +145,14 @@ refuses a newer store (`SchemaTooNew`).
     explicitly approved operation.
 - **Trials on copies.** Supervised trials can run on a byte copy of a recovery point in
   its own directory, with every network-facing stage and the sandbox off. The live store
-  and the recovery point are only read as bytes.
+  and the recovery point are only read as bytes. From the release with production-store
+  enforcement, a copy of the marked live store is refused wherever it is opened
+  (`noncanonical_production_store`); a trial on representative data, including a schema
+  check before a migration, needs a separately approved workflow that preserves the
+  production classification. Removing the marker is not such a workflow. Copies made
+  before the live store was marked carry no marker and are not a sanctioned trial route.
+- **Copies, never hard links.** A recovery point or snapshot copies the database files.
+  A hard-linked database makes the store refuse to open (`store_integrity`).
 
 ## Failure handling built into the application
 

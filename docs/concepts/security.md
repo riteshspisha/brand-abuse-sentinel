@@ -252,12 +252,13 @@ These are known and accepted for the current maturity. They are not hidden defec
   browser sandbox.
 - **Egress is attributable.** Fetches and renders come from the host's network. There is no
   VPN or anonymizing egress and no per-destination rate limit.
-- **No account enforcement outside `run` and `registry collect`.** The store-opening
-  commands refuse UID 0 and a missing configuration source, but any non-root account can
-  run them against a store it can write to, and the non-store commands still run as root
-  (see [Which commands enforce it](#which-commands-enforce-it)). This is **not accepted**:
-  it is an open security-engineering follow-up. Until it lands, production CLI use beyond
-  that guard is restricted by procedure only.
+- **Production-store enforcement is not installed.** The anchor, the account and
+  configuration policy, store integrity and the root refusal for Docker and listener
+  commands are in the repository on a development branch, not merged or promoted
+  ([Production-store enforcement](#production-store-enforcement)). Until they are, the
+  installed CLI checks the account only in `run` and `registry collect`, and production
+  CLI use is restricted by procedure. Even then they are accident controls: they do not
+  stop a deliberate service account, root, or code without them.
 - **No instance lock (SP2).** A concurrent `sandbox sweep`, `sandbox check` or a second
   process of the same instance can remove another process's running job containers. This
   blocks unattended operation (M9).

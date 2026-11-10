@@ -46,14 +46,21 @@ Requirement IDs such as `R37`, `KTD13`, `AE18` or `U19` in code comments refer t
 3. **Containers are rootless and locked down**: `--cap-drop ALL`, `no-new-privileges`,
    read-only root, limits, `--pull never`, labelled per instance (`sandbox/runner.py`).
    Every store-opening command refuses effective UID 0 and a missing configuration
-   source (`cli.py: _load_for_store`), with no override. This is in the code here and
-   **not yet installed in production**, and it does not check for the service account. Only `run` and `registry
-   collect` also check the account. `run` refuses to start as the code owner or with
-   rootful Docker access (unless `runtime.allow_developer_account` is set, development
-   only). Its sandbox stages, and `registry collect` outside lab mode, also need clean
-   checks with no override. **The non-store commands still run as root, and any non-root
-   account can open a store it can write to**
-   ([docs/concepts/security.md](docs/concepts/security.md#which-commands-enforce-it)).
+   source (`cli.py: _load_for_store`), with no override. It then decides, before anything
+   under the data directory is touched, whether the store is the production store named
+   by the root-owned anchor `/etc/brandsentinel/production.yaml` (or carries the store
+   marker), and opens the production store only for the service account with the
+   approved absolute `-c`, no store variable and the installed code
+   (`store/identity.py`, `store/policy.py`). Marked copies elsewhere are refused; every
+   store's database files and walked directories must not be links. `sandbox check`,
+   `sandbox selftest`, `sandbox sweep` and `proxy` refuse root. All of this is in the
+   code here and **not yet installed in production**. These are accident controls for
+   the account, not a boundary against it or root; file permissions are the boundary
+   between accounts. `run` still refuses to start as the code owner or with rootful
+   Docker access on a development store (unless `runtime.allow_developer_account` is
+   set, development only), and its sandbox stages, and `registry collect` outside lab
+   mode, still need clean checks with no override
+   ([docs/concepts/security.md](docs/concepts/security.md#production-store-enforcement)).
 4. **Observe only.** BrandSentinel never submits forms, logs in, pays or contacts a
    suspect site except to fetch it. The browser stops non-GET requests.
 5. **Scoring is deterministic and explainable.** Every point cites evidence refs. Context
@@ -233,8 +240,11 @@ gated tooling.
 
 ## 10. Known traps
 
-- Only `run` and `registry collect` check the account. The guard refuses root for
-  store-opening commands only, and runs after import. Bytecode-write prevention (checked-hash
+- On a development store, only `run` and `registry collect` check the account; the
+  production checks apply only to the store the anchor names. The guards run after import.
+  The installed venv's CLI on a host with no anchor refuses every store command
+  (`anchor_missing`): develop from the checkout. `brandsentinel store check` runs every
+  check without opening a store. Bytecode-write prevention (checked-hash
   precompilation and `-B` launchers, `scripts/service-account/harden-bytecode.sh`) is in the
   repository and **not installed in production**. It covers console scripts only and does not
   make the installation immutable. A command that succeeds tells you nothing about

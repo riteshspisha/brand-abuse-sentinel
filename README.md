@@ -116,11 +116,11 @@ See [Testing and security validation](docs/development/testing.md).
   the validating egress proxy.
 - Production runs under a dedicated unprivileged account with its own rootless Docker
   daemon. Every command that opens a store refuses to run as root or without an explicit
-  configuration (in the repository, not yet installed in production). `brandsentinel run`
-  also refuses rootful Docker access. Other store-opening commands (including `submit`,
-  `status` and `cases`) accept any non-root account and non-store commands still run as
-  root, so production use is still restricted by procedure:
-  [which commands enforce it](docs/concepts/security.md#which-commands-enforce-it).
+  configuration, and opens the production store (named by a root-owned anchor) only for
+  that account with the approved configuration; marked copies elsewhere are refused.
+  Commands that act on Docker or open a listener refuse root. All of this is in the
+  repository and not yet installed in production, so production use is still restricted
+  by procedure: [which commands enforce it](docs/concepts/security.md#which-commands-enforce-it).
 - Stored artifacts are inert (content-addressed, mode 0600, never executed). Reports
   escape everything and use a strict CSP.
 

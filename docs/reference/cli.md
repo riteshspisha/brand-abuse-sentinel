@@ -12,15 +12,17 @@ Every command accepts the global option `-c/--config PATH` (before the command n
 the configuration file. Without it, `$BRANDSENTINEL_CONFIG` is used, then the built-in
 defaults (which put the data directory at `./data`). `$BRANDSENTINEL_DATA_DIR` overrides
 `data_dir` from either source. Commands that open a store act on the configured
-`data_dir`, and refuse to run as root or with none of those three (a guard not yet
-installed in production, which does not check for the service account), so always pass
-an explicit `-c` outside a scratch checkout.
+`data_dir`, and refuse to run as root or with none of those three, so always pass an
+explicit `-c` outside a scratch checkout. They open the production store named by the
+root-owned anchor only for the service account with the approved configuration, and
+refuse marked copies of it elsewhere; `store check` runs these checks without opening
+anything. `sandbox check`, `sandbox selftest`, `sandbox sweep` and `proxy` refuse root.
+None of this is installed in production yet.
 
 **Commands that open a store write to it, including inspection commands** such as
 `status` and `cases list`. They create a missing store, apply migrations and sweep
-orphan blobs ([Storage](../concepts/storage.md)). **Only `run` and `registry collect`
-check the account**. The other store-opening commands accept any non-root account, and
-commands that do not open a store still run as root
+orphan blobs ([Storage](../concepts/storage.md)). On a development store, **only `run`
+and `registry collect` check the account**
 ([Security model](../concepts/security.md#which-commands-enforce-it)). Production use is
 owner-operated, as the service account
 ([Deployment](../operations/deployment.md#production-cli-operations)).

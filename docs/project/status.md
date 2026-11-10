@@ -89,8 +89,8 @@ source in every store-opening command, is implemented and **not yet promoted**: 
 still runs without it. These are still open, as the first work items on the
 [Roadmap](roadmap.md):
 
-- bytecode-write prevention (precompiled bytecode and `-B` launchers, so a root run of a console script does not write bytecode into the code tree): developed on a branch, **not merged or promoted**, and not installation immutability;
-- enforce the service account on a production store.
+- bytecode-write prevention (precompiled bytecode and `-B` launchers, so a root run of a console script does not write bytecode into the code tree): merged, **not promoted**, and not installation immutability;
+- production-store enforcement (the anchor, the store marker, the account and approved-configuration policy, store integrity, root refusal for Docker and listener commands, `store check`): developed on a local branch, **not merged or promoted**.
 
 Until all of them ship, the
 [production CLI rules](../operations/deployment.md#production-cli-operations) are
@@ -104,9 +104,11 @@ live `run` with enrichment on will carry them out and contact that case's host.
 - BrandSentinel has not run live collection unattended, and has no soak result.
 - No real-world detection accuracy has been measured.
 - No advisory model is integrated.
-- The CLI does not enforce the service account for every command: only `run` and
-  `registry collect` check it ([security model](../concepts/security.md#which-commands-enforce-it)).
-  The guard against root and a missing configuration is not installed in production.
+- Production does not enforce the service account for every command: only `run` and
+  `registry collect` check it there. Production-store enforcement
+  ([security model](../concepts/security.md#production-store-enforcement)) is developed,
+  not merged or installed, and the guard against root and a missing configuration is not
+  installed in production either.
 - No network-facing stage has been trialled in production after the M8 promotion.
 - The production Brand Registry has no maintainer-confirmed official domains, payees or
   reference assets.

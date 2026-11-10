@@ -82,10 +82,23 @@ Key properties:
 - The optional CertStream firehose (unmatched certificates, off by default) has its own
   byte and age caps. It pauses below `rawlog.min_free_bytes` free disk.
 
+## Before a store opens
+
+Every store-opening command first decides, from metadata only, whether the store is the
+production store named by the root-owned anchor `/etc/brandsentinel/production.yaml`, or
+carries the store marker `BRANDSENTINEL-STORE`. A production store is opened only at its
+exact path, by the service account with the approved configuration, and is never created.
+Every store, development included, is refused when its database, WAL, shared-memory or
+journal file is a symlink or hard link, or when `raw/`, `artifacts/` and the directories
+inside them that the store writes and sweeps, `cache/` or `reports/` is a symlink. The
+store layer repeats these checks before it creates, migrates or sweeps anything. Details
+and limits: [production-store enforcement](security.md#production-store-enforcement).
+
 ## Backup and recovery
 
 There is no built-in backup command. A consistent backup is a copy of the whole
-`data_dir` taken while no BrandSentinel process has the store open. Verify it by content
+`data_dir` taken while no BrandSentinel process has the store open. Copy the files;
+never hard-link the database. Verify it by content
 hashes and metadata, not by opening it, because opening sweeps orphans. The procedure
 used for production, a sealed recovery point, is owner-operated and described in
 [Deployment and recovery](../operations/deployment.md#recovery).
