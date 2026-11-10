@@ -136,3 +136,4 @@ nav:
           - M8 analyst render: residual-review-findings/feat-m8-analyst-render.md
           - CLI root and configuration guard: residual-review-findings/fix-cli-root-config-guard.md
           - B2 installation bytecode: residual-review-findings/fix-install-bytecode-hardening.md
+          - B3 production-store enforcement: residual-review-findings/feat-b3-production-store-enforcement.md

@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 
@@ -136,16 +136,28 @@ def _load_for_store(ctx: typer.Context) -> Config:
     try:
         decision = policy.authorize(config, source)
     except StoreRefused as e:
-        typer.echo(f"{_REFUSE_STORE}: {', '.join(e.checks)}", err=True)
-        raise typer.Exit(2) from e
+        _refuse_store(e.checks)
+    except OSError:  # a failure to look (a deleted working directory, I/O): fail closed
+        _refuse_store(("unclassifiable",))
     ctx.obj["store_decision"] = decision
     return config
 
 
+def _refuse_store(checks: tuple[str, ...]) -> NoReturn:
+    typer.echo(f"{_REFUSE_STORE}: {', '.join(checks)}", err=True)
+    raise typer.Exit(2)
+
+
 def _open_store(ctx: typer.Context, config: Config):
-    """Open the store with the authorization `_load_for_store` produced (B3 R15)."""
+    """Open the store with the authorization `_load_for_store` produced (B3 R15). The
+    store layer repeats the checks; its refusal is the same named exit 2."""
     decision = ctx.obj.get("store_decision")
-    return open_store(config, authorization=decision.authorization if decision else None)
+    try:
+        return open_store(config, authorization=decision.authorization if decision else None)
+    except StoreRefused as e:
+        _refuse_store(e.checks)
+    except OSError:
+        _refuse_store(("unclassifiable",))
 
 
 @store_app.command("check")

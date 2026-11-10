@@ -392,3 +392,43 @@ def test_unknown_variables_are_still_refused(monkeypatch, tmp_path):
 
 def test_identity_helpers_are_shared_with_the_policy():
     assert policy.StoreRefused is identity.StoreRefused
+
+
+def test_the_configuration_is_opened_exactly_once(tmp_path, monkeypatch):
+    """Review finding: a non-blocking open, close and blocking reopen of a FIFO could
+    close a descriptor twice, or lose the FIFO's writer and hang. One open only."""
+    import brandsentinel.config as config_module
+
+    path = _write(tmp_path / "c.yaml", {})
+    fifo = tmp_path / "pipe.yaml"
+    os.mkfifo(fifo)
+    real_open = os.open
+    opened = []
+
+    def counting_open(p, flags, *args):
+        opened.append(str(p))
+        return real_open(p, flags, *args)
+
+    monkeypatch.setattr(config_module.os, "open", counting_open)
+    load_config_once(path)
+    assert opened == [str(path)]
+
+    import threading
+
+    t = threading.Thread(target=lambda: fifo.write_bytes(b"{}\n"))
+    t.start()
+    load_config_once(fifo)
+    t.join(5)
+    assert not t.is_alive()
+    assert opened == [str(path), str(fifo)]
+
+
+def test_an_unreadable_sys_path_entry_is_kept_unresolved(tmp_path, monkeypatch):
+    blocked = tmp_path / "blocked"
+    (blocked / "inner").mkdir(parents=True)
+    blocked.chmod(0)
+    try:
+        got = policy.resolved_sys_path([str(blocked / "inner")], cwd=tmp_path)
+    finally:
+        blocked.chmod(0o700)
+    assert got == [blocked / "inner"]

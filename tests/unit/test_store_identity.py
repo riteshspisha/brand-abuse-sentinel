@@ -317,14 +317,14 @@ def test_candidates_include_the_prefix_of_the_package_directory(tmp_path, monkey
     """`PYTHONHOME` or another interpreter changes `sys.prefix`, not where the code is."""
     prefix, package = _fake_install(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "elsewhere"))
-    monkeypatch.setattr(identity, "_package_dir", lambda: package)
+    monkeypatch.setattr(identity, "package_dir", lambda: package)
     assert prefix / "INSTALL" in REAL_CANDIDATES()
 
 
 def test_a_checkout_has_no_candidate_with_a_record(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "checkout" / ".venv"))
     monkeypatch.setattr(
-        identity, "_package_dir", lambda: tmp_path / "checkout" / "src" / "brandsentinel"
+        identity, "package_dir", lambda: tmp_path / "checkout" / "src" / "brandsentinel"
     )
     monkeypatch.setattr(identity, "TRUSTED_UID", ME)
     monkeypatch.setattr(identity, "install_record_candidates", REAL_CANDIDATES)
@@ -686,3 +686,76 @@ def test_the_identity_module_calls_no_write_api():
 
 def test_mode_bits_used_in_the_tests_mean_what_they_say():
     assert stat.S_IWGRP == 0o020 and stat.S_IWOTH == 0o002
+
+
+# --- a symlink followed by '..' (review finding: lexical collapse disagreed with the kernel)
+
+
+def _dotdot_into(store: Path, tmp_path: Path) -> Path:
+    """<tmp>/other/lnk/.. where lnk -> <store>/raw: the kernel resolves it to <store>."""
+    (store / "raw").mkdir(parents=True, exist_ok=True)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "lnk").symlink_to(store / "raw")
+    return Path(f"{other}/lnk/..")
+
+
+def test_a_symlink_then_dotdot_into_the_live_store_is_production(host, tmp_path):
+    host.write_anchor()
+    host.make_store()
+    path = _dotdot_into(host.store, tmp_path)
+    assert os.path.samefile(path, host.store)  # what the kernel opens
+    c = identity.classify(path, identity.load_anchor())
+    assert c.production and not c.canonical
+
+
+def test_a_symlink_then_dotdot_into_a_marked_copy_is_production(tmp_path):
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    (copy / identity.MARKER_NAME).write_text(MARKER)
+    path = _dotdot_into(copy, tmp_path)
+    c = identity.classify(path, None)
+    assert c.production and c.signal == "marker"
+
+
+# --- review findings: every failure to look fails closed with a name -------------------
+
+
+def test_an_unreadable_directory_in_the_chain_is_unsafe(host, monkeypatch):
+    host.write_anchor()
+    real = os.lstat
+
+    def denied(path, *a, **k):
+        if Path(path) == host.etc:
+            raise PermissionError(13, "denied")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(identity.os, "lstat", denied)
+    assert _refused(identity.load_anchor) == ("anchor_unsafe",)
+
+
+def test_an_anchor_outside_the_chain_root_is_unsafe(host, monkeypatch, tmp_path):
+    monkeypatch.setattr(identity, "ANCHOR_PATH", tmp_path / "elsewhere" / "production.yaml")
+    assert _refused(identity.load_anchor) == ("anchor_unsafe",)
+
+
+def test_a_read_error_on_the_anchor_is_unsafe(host, monkeypatch):
+    host.write_anchor()
+
+    def broken(fd, n):
+        raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(identity.os, "read", broken)
+    assert _refused(identity.load_anchor) == ("anchor_unsafe",)
+
+
+def test_a_deeply_nested_anchor_is_unsafe(host):
+    host.write_anchor("[" * 20000 + "\ncomplete: true\n")
+    assert _refused(identity.load_anchor) == ("anchor_unsafe",)
+
+
+def test_a_deeply_nested_marker_is_unclassifiable(tmp_path):
+    s = tmp_path / "s"
+    s.mkdir()
+    (s / identity.MARKER_NAME).write_text("[" * 4000)
+    assert _refused(identity.classify, s, None) == ("unclassifiable",)

@@ -57,7 +57,7 @@ class Live:
         monkeypatch.setattr(identity, "CHAIN_ROOT", root)
         monkeypatch.setattr(identity, "ANCHOR_PATH", self.anchor)
         monkeypatch.setattr(identity, "TRUSTED_UID", ME)
-        monkeypatch.setattr(identity, "_package_dir", lambda: self.package)
+        monkeypatch.setattr(identity, "package_dir", lambda: self.package)
         monkeypatch.setattr(
             policy, "resolved_sys_path", lambda _entries, cwd: [self.prefix / "venv" / "bin"]
         )
@@ -232,7 +232,7 @@ def _python_path(live, monkeypatch):
 
 
 def _checkout_code(live, monkeypatch):
-    monkeypatch.setattr(identity, "_package_dir", lambda: REPO / "src" / "brandsentinel")
+    monkeypatch.setattr(identity, "package_dir", lambda: REPO / "src" / "brandsentinel")
     return ["-c", str(live.config)], ["code_not_installed"]
 
 
@@ -436,3 +436,48 @@ def test_the_proxy_containers_never_run_as_root():
             if "proxy" in command:
                 user = str(service.get("user", users[-1]))
                 assert user not in ("root", "0") and not user.startswith("0:"), (compose, name)
+
+
+# --- review findings: refusals are named exit-2 refusals, never tracebacks -------------
+
+
+def test_a_refusal_from_the_store_layer_is_a_named_refusal(live, monkeypatch):
+    """The store layer repeats the checks; a store swapped after the policy is refused."""
+    from brandsentinel.store.identity import StoreRefused
+
+    def refuse(_data_dir, _authorization):
+        raise StoreRefused(("store_not_authorized",))
+
+    monkeypatch.setattr("brandsentinel.store.guard_open", refuse)
+    result = _invoke("-c", str(live.config), "status")
+    _refused_with(result, "store_not_authorized")
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+
+
+def test_a_deleted_working_directory_is_a_named_refusal(live, monkeypatch, tmp_path):
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    result = _invoke("-c", str(live.config), "store", "check")
+    _refused_with(result, "unclassifiable")
+
+
+def test_an_os_error_while_deciding_is_a_named_refusal(live, monkeypatch):
+    def broken(*_a, **_k):
+        raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(identity, "classify", broken)
+    _refused_with(_invoke("-c", str(live.config), "status"), "unclassifiable")
+
+
+def test_an_unstattable_live_store_for_the_account_is_unclassifiable(live, monkeypatch):
+    real = os.stat
+
+    def denied(path, *a, **k):
+        if Path(path) == live.store:
+            raise PermissionError(13, "denied")
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(policy.os, "stat", denied)
+    _refused_with(_invoke("-c", str(live.config), "store", "check"), "unclassifiable")

@@ -47,7 +47,7 @@ class Host:
         monkeypatch.setattr(identity, "CHAIN_ROOT", self.root)
         monkeypatch.setattr(identity, "ANCHOR_PATH", self.anchor)
         monkeypatch.setattr(identity, "TRUSTED_UID", ME)
-        monkeypatch.setattr(identity, "_package_dir", lambda: self.package)
+        monkeypatch.setattr(identity, "package_dir", lambda: self.package)
 
     def write_config(self, data_dir: Path) -> None:
         self.config.write_text(yaml.safe_dump({"data_dir": str(data_dir)}))
@@ -133,7 +133,7 @@ def test_a_symlink_in_the_store_path_is_a_violation(host, tmp_path, capsys):
 
 
 def test_code_outside_the_prefix_is_a_violation(host, monkeypatch, capsys):
-    monkeypatch.setattr(identity, "_package_dir", lambda: REPO / "src" / "brandsentinel")
+    monkeypatch.setattr(identity, "package_dir", lambda: REPO / "src" / "brandsentinel")
     host.mark()
     assert _main(host, "--marker") == 1
     assert "FAIL  package_installed" in capsys.readouterr().out
@@ -174,3 +174,24 @@ def test_the_checker_writes_nothing(host):
 def test_validate_sh_runs_the_checker_with_the_marker():
     text = (REPO / "scripts" / "service-account" / "validate.sh").read_text()
     assert "check_anchor.py" in text and "--marker" in text
+
+
+@pytest.mark.parametrize("variable", ["BRANDSENTINEL_CONFIG", "BRANDSENTINEL_DATA_DIR"])
+def test_store_variables_make_the_check_incomplete(host, monkeypatch, variable, capsys):
+    """Review finding: load_config honours them, so the comparison would not be the
+    installed service.yaml's."""
+    host.mark()
+    monkeypatch.setenv(variable, str(host.store.parent / "other"))
+    assert _main(host, "--marker") == 2
+
+
+def test_validate_sh_fails_the_run_when_the_checker_fails():
+    text = (REPO / "scripts" / "service-account" / "validate.sh").read_text()
+    call = [
+        line
+        for line in text.splitlines()
+        if "check_anchor.py" in line and "venv/bin/python" in line
+    ]
+    assert len(call) == 1 and "--marker" in call[0] and "-I -B" in call[0]
+    assert 'fail "production anchor and store marker' in text
+    assert 'ANCHOR_STATUS" -eq 0' in text

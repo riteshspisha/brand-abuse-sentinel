@@ -145,3 +145,17 @@ def test_installed_code_without_an_anchor_still_opens_from_a_library(tmp_path, m
     assert identity.running_from_installation()
     store = open_store(_config(tmp_path / "scratch"))
     store.close()
+
+
+def test_a_symlink_then_dotdot_cannot_reach_the_production_store(live, tmp_path):
+    """Review finding: a lexically collapsed path must not hide the store it opens."""
+    (live / "raw").mkdir(parents=True)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "lnk").symlink_to(live / "raw")
+    sneaky = Path(f"{other}/lnk/..")
+    before = _tree(tmp_path)
+    with pytest.raises(StoreRefused) as e:
+        open_store(_config(sneaky))
+    assert e.value.checks == ("noncanonical_production_store",)
+    assert _tree(tmp_path) == before

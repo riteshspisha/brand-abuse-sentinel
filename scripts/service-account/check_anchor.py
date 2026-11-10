@@ -54,7 +54,7 @@ def check(prefix: Path, *, marker: bool) -> list[tuple[str, bool]]:
     results.append(
         ("config_matches_anchor", load_config(anchor.config_path).data_dir == anchor.store_path)
     )
-    package = identity._package_dir()
+    package = identity.package_dir()
     results.append(("package_installed", _under(package, anchor.install_prefix.resolve() / "venv")))
     if marker:
         try:
@@ -69,6 +69,10 @@ def main(argv: list[str]) -> int:
     args = [a for a in argv if a != "--marker"]
     if len(args) != 1:
         print("usage: check_anchor.py <prefix> [--marker]", file=sys.stderr)
+        return 2
+    # load_config honours these, so the comparison would not be the installed file's.
+    if os.environ.get("BRANDSENTINEL_CONFIG") or os.environ.get("BRANDSENTINEL_DATA_DIR"):
+        print("INCOMPLETE  store variables are set: unset them", file=sys.stderr)
         return 2
     try:
         results = check(Path(args[0]), marker="--marker" in argv)

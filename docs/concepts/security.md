@@ -144,8 +144,9 @@ development store, an explicit source that leaves a relative location (a file wi
 In the repository, not yet installed in production (B3, plan
 `docs/plans/2026-11-10-001-feat-b3-production-store-enforcement-plan.md`). After the CLI
 guard, a store command reads its configuration once and decides, **before anything under
-the data directory is read, created, migrated or swept**, whether the store is the
-production store and whether this process may open it. Every refusal exits 2 with
+the data directory is created, migrated or swept**, whether the store is the production
+store and whether this process may open it. Deciding reads only metadata and the store
+marker. Every refusal exits 2 with
 `refusing to open a store:` followed by stable check names, and prints no path or value.
 
 - **The anchor.** A root-owned file, `/etc/brandsentinel/production.yaml`, outside the
@@ -157,8 +158,9 @@ production store and whether this process may open it. Every refusal exits 2 wit
   every store command (`anchor_missing`); a checkout falls back to the marker.
 - **Classification.** A data directory at, under or above the anchor's store path is
   production, decided from the configured path alone, so the account's 0700 home is
-  never searched. A path that resolves there, the same directory by device and inode,
-  or a directory holding the store marker is production too. Only the anchor's exact
+  never searched. A path that resolves there (symlinks and `..` resolved as the kernel
+  does), the same directory by device and inode (only when this process can reach the
+  live store), or a directory holding the store marker is production too. Only the anchor's exact
   store path may be used: a production-class store anywhere else, including a marked
   byte copy, is refused for everyone (`noncanonical_production_store`).
 - **The production policy,** at the canonical store only: the effective and real UID
@@ -200,6 +202,12 @@ boundary against a deliberate service account or root:
   after a store is opened, during a long `run`.
 - **Tests read the host.** In-process tests never read the real anchor; tests that
   start the CLI as a subprocess (the offline demo, the lab demo) do.
+- **One anchor governs the host.** Once it is installed, a malformed or unsafe anchor
+  (a wrong mode, a comment after `complete: true`, reordered keys) refuses every store
+  command on the host, development included, and installed code with no anchor refuses
+  them all too. A deliberate account that can mount over `/etc/brandsentinel` in a
+  user namespace can hide the anchor from a checkout; the marker then still classifies
+  the live store, unless it was removed too.
 
 The guard and these checks do **not** make a root run safe, and **running a command is
 still not evidence that the account is right**. They run inside the command, after the

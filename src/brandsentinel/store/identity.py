@@ -146,6 +146,8 @@ def load_anchor() -> Anchor | None:
         ):
             raise _unsafe()
         data = _read_capped(fd, MAX_ANCHOR_BYTES)
+    except OSError as e:
+        raise _unsafe() from e
     finally:
         os.close(fd)
     if data is None:
@@ -177,7 +179,7 @@ def _parse_anchor(data: bytes) -> Anchor:
     try:
         text = data.decode("utf-8")
         loaded = yaml.safe_load(text)
-    except (UnicodeDecodeError, yaml.YAMLError) as e:
+    except (UnicodeDecodeError, yaml.YAMLError, RecursionError) as e:
         raise _unsafe() from e
     lines = [line for line in text.splitlines() if line.strip()]
     # The sentinel must be the last line, so a write cut short is refused.
@@ -199,7 +201,7 @@ def _parse_anchor(data: bytes) -> Anchor:
 # --- running from an installation ------------------------------------------------------
 
 
-def _package_dir() -> Path:
+def package_dir() -> Path:
     import brandsentinel
 
     return Path(brandsentinel.__file__).resolve().parent
@@ -211,7 +213,7 @@ def install_record_candidates() -> list[Path]:
     (<P>/venv/lib/pythonX.Y/site-packages/brandsentinel -> <P>), which `PYTHONHOME` or
     another interpreter cannot move."""
     out = [Path(sys.prefix).parent / "INSTALL"]
-    package = _package_dir()
+    package = package_dir()
     parents = package.parents
     if (
         len(parents) > 4
@@ -247,8 +249,9 @@ def _related(path: Path, store: Path) -> bool:
 
 
 def _absolute(data_dir: Path) -> Path:
-    raw = data_dir if data_dir.is_absolute() else Path.cwd() / data_dir
-    return Path(os.path.normpath(raw))
+    """The path as the kernel will resolve it: absolute, but '..' is kept, because
+    `link/..` is the link target's parent, not the link's directory."""
+    return data_dir if data_dir.is_absolute() else Path.cwd() / data_dir
 
 
 def _inspect_ancestors(path: Path) -> None:
@@ -286,7 +289,7 @@ def _read_marker(directory: Path) -> bool:
         os.close(fd)
     try:
         loaded = yaml.safe_load((data or b"").decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError) as e:
+    except (UnicodeDecodeError, yaml.YAMLError, RecursionError) as e:
         raise StoreRefused(("unclassifiable",)) from e
     if data is None or loaded != _MARKER:
         raise StoreRefused(("unclassifiable",))
@@ -298,7 +301,9 @@ def classify(data_dir: Path, anchor: Anchor | None) -> Classification:
     path = _absolute(data_dir)
     if anchor is not None:
         store = anchor.store_path
-        if _related(path, store):  # lexical: no filesystem call at all
+        # Lexical: no filesystem call at all. Collapsing '..' here can only add a
+        # production verdict, never remove one: every later step uses `path` itself.
+        if _related(Path(os.path.normpath(path)), store):
             return Classification(True, "anchor path", str(data_dir) == str(store))
     _inspect_ancestors(path)
     if anchor is not None:

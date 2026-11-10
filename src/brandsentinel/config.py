@@ -678,26 +678,16 @@ def _lstat_parent(path: Path) -> os.stat_result | None:
 
 
 def _read_once(path: Path) -> tuple[str, os.stat_result]:
-    """Read the file through one descriptor and return the metadata of that descriptor.
-    A FIFO or other non-regular source is read as before (a blocking open); the
-    recorded metadata still says what it was."""
+    """Read the file through exactly one descriptor, opened as `load_config` opens it
+    (blocking, so a FIFO waits for its writer as before), and return that descriptor's
+    metadata. It is never reopened: a reopen could read a different file, or lose a
+    FIFO's writer."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
-    except OSError as e:
-        raise ConfigError(f"cannot read config {path}: {e}") from e
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            os.close(fd)
-            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
-        with os.fdopen(fd, "rb") as f:
-            fd = -1
+        with open(path, "rb", opener=lambda p, flags: os.open(p, flags | os.O_CLOEXEC)) as f:
+            st = os.fstat(f.fileno())
             data = f.read()
     except OSError as e:
         raise ConfigError(f"cannot read config {path}: {e}") from e
-    finally:
-        if fd >= 0:
-            os.close(fd)
     return data.decode("utf-8"), st
 
 

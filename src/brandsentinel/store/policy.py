@@ -174,8 +174,11 @@ def resolved_sys_path(entries: Sequence[str], *, cwd: Path) -> list[Path]:
         path = Path(entry) if entry else cwd
         if not path.is_absolute():
             path = cwd / path
-        if path.exists():
-            out.append(path.resolve())
+        try:
+            if path.exists():
+                out.append(path.resolve())
+        except OSError:
+            out.append(path)  # cannot be inspected: kept as given, so it must lie in the prefix
     return out
 
 
@@ -228,7 +231,7 @@ def authorize(config: Config, source: ConfigSourceFacts | None) -> Decision:
         account_uid=uid,
         account_ok=report.ok,
         account_warned=bool(report.warnings),
-        package_dir=identity._package_dir(),
+        package_dir=identity.package_dir(),
         sys_path=resolved_sys_path(sys.path, cwd=cwd),
         prefix=anchor.install_prefix.resolve(),
         store=store_stat,
