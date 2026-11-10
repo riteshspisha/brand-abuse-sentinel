@@ -7,6 +7,7 @@ from brandsentinel.config import Config
 from brandsentinel.store.blobs import BlobStore
 from brandsentinel.store.db import connect
 from brandsentinel.store.fsutil import ensure_private_dir
+from brandsentinel.store.identity import Authorization, guard_open
 from brandsentinel.store.jobs import JobQueue
 from brandsentinel.store.rawlog import RawLog, valid_source
 
@@ -62,7 +63,14 @@ class Store:
             self.conn.close()
 
 
-def open_store(config: Config) -> Store:
+def open_store(config: Config, *, authorization: Authorization | None = None) -> Store:
+    """Open (creating if needed) the store at `config.data_dir`.
+
+    First the identity checks (B3 R15): a production-class store needs the
+    authorization the CLI's production policy produced for it, is never created, and
+    every store's database files and walked directories must not be links. They run
+    before anything is created, migrated or swept. Raises `StoreRefused`."""
+    guard_open(config.data_dir, authorization)
     ensure_private_dir(config.data_dir)
     config.data_dir.chmod(0o700)
     store = Store(config=config, conn=connect(config.db_path))
