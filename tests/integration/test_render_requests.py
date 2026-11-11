@@ -4,6 +4,7 @@ against the local harness. A request binds to exactly one round, never bypasses
 the static fetch or the official-domain skip, and spends a daily budget that
 concurrent deciders cannot overspend."""
 
+import asyncio
 import json
 import threading
 import time
@@ -11,7 +12,7 @@ import time
 import pytest
 from tests.conftest import build_matcher, confirm_domain
 from tests.detection_support import lab_registry, seed_case
-from tests.integration.test_analysis_pipeline import run_until, runs
+from tests.integration.test_analysis_pipeline import fetch_settled, run_until, runs
 from tests.integration.test_render_pipeline import ScriptedBrowser, ok
 from tests.integration.test_render_pipeline import run as run_render
 from tests.security.harness import harness_stages
@@ -19,6 +20,7 @@ from tests.security.harness import harness_stages
 from brandsentinel.config import Config
 from brandsentinel.discovery.submit import SubmissionError, request_render, submit
 from brandsentinel.pipeline import scheduling
+from brandsentinel.pipeline.orchestrator import Orchestrator
 from brandsentinel.pipeline.stages import AnalysisStages, build_network
 from brandsentinel.registry.model import Registry
 from brandsentinel.sandbox import triggers
@@ -429,13 +431,39 @@ def test_a_requested_render_completes_with_reason_analyst_request(tmp_path):
 # --- rounds that can no longer decide (review follow-up) ---------------------------
 
 
-def test_a_round_fetched_without_a_decision_is_skipped_not_stranded(env, harness):
+@pytest.fixture
+def slow_job_completion(monkeypatch):
+    """Widen the window between a handler's commit and `jobs.complete()`: the lease
+    renewer takes 200 ms to stop once cancelled, and `_run_job` waits for it
+    before completing the job. A test that stops the orchestrator in that window
+    leaves the job `running`; these tests must give the same answer either way."""
+    real = Orchestrator._renew
+    delayed: list[int] = []
+
+    async def renew_then_stop_slowly(self, stage, job, work):
+        try:
+            await real(self, stage, job, work)
+        except asyncio.CancelledError:
+            delayed.append(job.id)
+            await asyncio.sleep(0.2)
+            raise
+
+    monkeypatch.setattr(Orchestrator, "_renew", renew_then_stop_slowly)
+    yield
+    # If the orchestrator stops cancelling the renewer this way, the fixture no
+    # longer widens anything; fail rather than pass without reproducing the window.
+    assert delayed, "slow_job_completion never delayed a renewer stop"
+
+
+def test_a_round_fetched_without_a_decision_is_skipped_not_stranded(
+    env, harness, slow_job_completion
+):
     """A case analyzed before M7 has a recorded round-0 fetch and no render
     decision: the request goes to the next recheck, which will decide."""
     store, stages, matcher, _ = env
     url = shell_url(harness)
     first = submit(store, matcher, url)
-    run_until(store, stages, lambda: runs(store, "fetch"))
+    run_until(store, stages, lambda: fetch_settled(store))
     store.conn.execute("DELETE FROM facts WHERE name = 'render_decision'")  # as before M7
     req = submit(store, matcher, url, render=True).render_request
     assert req.status == "requested" and req.round == 1 and req.due == rechecks(store)[0][1]
@@ -457,11 +485,13 @@ def test_rounds_whose_jobs_failed_for_good_are_refused_explicitly(env, harness):
     assert missing.status == "refused"
 
 
-def test_a_stale_request_for_a_dead_round_does_not_hide_a_later_one(env, harness):
+def test_a_stale_request_for_a_dead_round_does_not_hide_a_later_one(
+    env, harness, slow_job_completion
+):
     store, stages, matcher, _ = env
     url = shell_url(harness)
     first = submit(store, matcher, url)
-    run_until(store, stages, lambda: runs(store, "fetch"))
+    run_until(store, stages, lambda: fetch_settled(store))
     store.conn.execute("DELETE FROM facts WHERE name = 'render_decision'")
     with transaction(store.conn):  # a request left on round 0 by an older binding
         from brandsentinel.store.records import add_fact

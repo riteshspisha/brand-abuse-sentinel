@@ -342,9 +342,11 @@ def _ipv6_loopback_available() -> bool:
 def test_ipv6_target_connects_to_the_pinned_address(harness):
     import ipaddress
     import threading
-    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from http.server import BaseHTTPRequestHandler
 
-    class V6(HTTPServer):
+    from tests.security.harness import NoLookupHTTPServer
+
+    class V6(NoLookupHTTPServer):
         address_family = socket.AF_INET6
 
     class H(BaseHTTPRequestHandler):
