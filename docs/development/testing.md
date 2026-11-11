@@ -76,9 +76,54 @@ the same tests pass:
 |---|---|---|
 | `test_media_worker.py::test_ae12_decompression_bomb_is_rejected_quickly` | took 2.5 s, limit 2 s | wall-clock bound; also fails locally with CPU throttled to 30 % |
 | `test_cli.py::test_status_reports_sandbox_disabled_with_reasons` | no `FAIL endpoint` line | the runner has a reachable Docker daemon; the test assumes none |
-| `test_analysis_pipeline.py::test_unreachable_site_records_failure_after_last_attempt` | job still `running` | not diagnosed |
+| `test_analysis_pipeline.py::test_unreachable_site_records_failure_after_last_attempt` | job still `running` | diagnosed 2026-11-11: the stop-condition race below; fixed in the test |
 | `test_orchestrator.py::test_lease_is_renewed_while_waiting_for_the_domain_lock` | a second attempt ran | not diagnosed (timing) |
-| `test_render_requests.py::test_a_round_fetched_without_a_decision_is_skipped_not_stranded`, `::test_a_stale_request_for_a_dead_round_does_not_hide_a_later_one` | request stayed on round 0 | not diagnosed |
+| `test_render_requests.py::test_a_round_fetched_without_a_decision_is_skipped_not_stranded`, `::test_a_stale_request_for_a_dead_round_does_not_hide_a_later_one` | request stayed on round 0 | diagnosed 2026-11-11: the stop-condition race below; fixed in the tests |
 
 Fix these as test or code changes of their own, then add the suite to the workflow. Do
 not skip them or loosen their bounds to make CI green.
+
+**The stop-condition race (diagnosed 2026-11-11).** These three tests stopped the
+orchestrator as soon as the fetch stage's `stage_runs` row existed. That row commits
+inside the handler; the orchestrator then waits for the job's lease renewer to stop
+before it calls `jobs.complete()`. A stop in that window cancels the worker there, so
+the fetch job stays `running`. `request_render` counts a recorded round as live while
+its fetch job is `pending` or `running`, so the request binds to round 0 (the values
+observed above). A slow runner, or tracing, widens the window. Scope of the fix:
+
+- **Tests only.** They now stop on `fetch_settled()`
+  (`tests/integration/test_analysis_pipeline.py`): the fetch is recorded *and* no fetch
+  job for the round is `pending` or `running`. Assertions and timeouts are unchanged.
+- **Reproduced deterministically.** The two render-request tests run with
+  `slow_job_completion`, which delays the renewer's stop by 200 ms: with the old stop
+  condition both fail with the values above; with `fetch_settled` they pass.
+- **Product behaviour is unchanged.** In production the same window leaves a job
+  `running` until its lease expires; the job is then redelivered, and the stage
+  handlers write nothing twice (`test_redelivered_*` in
+  `tests/integration/test_analysis_pipeline.py`). On a job's final attempt, an
+  expired lease marks the job `failed` ("lease expired") even though its work was
+  recorded; that is not fixed here.
+- `test_orchestrator.py::test_lease_is_renewed_while_waiting_for_the_domain_lock` is a
+  different test and stays undiagnosed.
+
+## Name resolution in tests
+
+The offline suite never asks the host's resolver anything. `tests/conftest.py` installs
+`tests/resolver_tripwire.py` before collection. A dnspython resolver built from the
+host's configuration (`make_dns_resolver` with no nameservers) can still be built, but
+any query is refused before a socket opens. Name lookups through Python's `socket`
+functions (`getaddrinfo` and `gethostbyname*` for anything but an IP literal,
+`getfqdn` and `gethostbyaddr` always, `getnameinfo` unless numeric) are refused too.
+A refusal fails the test that made it, or the next test when it happened outside one,
+and a refusal after the last test, or a module holding an unwrapped copy of one of
+these functions, fails the run. Resolvers with explicit nameservers, such as the
+harness stub, are untouched.
+
+It cannot see lookups in subprocesses (the CLI subprocess tests, `uv`, containers), in
+native code that does not go through those Python functions, or a query a test sends
+itself over a socket (for example `dns.query.udp` to an explicit server), a hostname
+passed straight to a socket method such as `connect`, or a process-wide resolver
+replacement. `tests/resolver_tripwire.py` lists every gap. Those need a network boundary
+or a trace. To give a test DNS
+answers, inject a resolver: `StaticResolver` for `NetGuard`, or a double with
+dnspython's `resolve()` for `AnalysisStages(resolver=...)`.

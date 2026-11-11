@@ -333,7 +333,20 @@ def _handler(recorder: Recorder, bomb: bytes):
     return Handler
 
 
-class _Threaded(socketserver.ThreadingMixIn, http.server.HTTPServer):
+class NoLookupHTTPServer(http.server.HTTPServer):
+    """`HTTPServer` without the reverse lookup: the standard `server_bind` sets
+    `server_name` from `socket.getfqdn(host)`, which asks the host's resolver for
+    a PTR record of the bound address. Nothing here reads `server_name`, so it is
+    the bound address itself."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
+class _Threaded(socketserver.ThreadingMixIn, NoLookupHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 

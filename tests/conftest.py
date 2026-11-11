@@ -6,6 +6,43 @@ import pytest
 from brandsentinel.config import Config, SandboxSettings
 from brandsentinel.store import Store, open_store
 
+_tripwire_patch = pytest.MonkeyPatch()
+
+
+def pytest_configure(config):
+    """No in-process test asks the host's resolver anything (tests/resolver_tripwire.py
+    says what this covers and what it cannot see). Installed before collection."""
+    from tests import resolver_tripwire
+
+    resolver_tripwire.install(_tripwire_patch)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Trips after the last test, and functions bound before installation, still fail."""
+    from tests import resolver_tripwire
+
+    problems = [f"{t.kind}:{t.name} ({t.test})" for t in resolver_tripwire.unchecked()]
+    problems += [f"unwrapped alias {a}" for a in resolver_tripwire.aliases()]
+    if problems:
+        tw = session.config.get_terminal_writer()
+        tw.line()
+        tw.line("run failed by the resolver tripwire: " + "; ".join(problems), red=True)
+        # Turn a passing run into a failure; never mask an interrupt or an internal error.
+        if session.exitstatus in (pytest.ExitCode.OK, pytest.ExitCode.NO_TESTS_COLLECTED):
+            session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+def pytest_unconfigure(config):
+    _tripwire_patch.undo()
+
+
+@pytest.fixture(autouse=True)
+def _no_host_resolution():
+    from tests import resolver_tripwire
+
+    yield
+    resolver_tripwire.check_since_last()
+
 
 @pytest.fixture(scope="session")
 def _anchor_free_root(tmp_path_factory) -> Path:

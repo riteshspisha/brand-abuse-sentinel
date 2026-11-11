@@ -42,6 +42,22 @@ def runs(store, stage=None):
     return [tuple(r) for r in rows if stage is None or r[0] == stage]
 
 
+def fetch_settled(store, rnd=0):
+    """Round `rnd`'s fetch is recorded *and* no fetch job for that round is still
+    `pending` or `running` (the liveness `request_render` reads, by the dedupe key
+    `fetch:case:<id>:r<round>` built in `AnalysisStages`; every case in the store).
+    The `stage_runs` row commits inside the handler, before the orchestrator
+    completes the job, so stopping on the row alone can leave the job `running`
+    (a shutdown in that window strands it until its lease expires)."""
+    if not any(r[1] == rnd for r in runs(store, "fetch")):
+        return False
+    live = store.conn.execute(
+        "SELECT 1 FROM jobs WHERE dedupe_key LIKE ? AND status IN ('pending', 'running')",
+        (f"fetch:case:%:r{rnd}",),
+    ).fetchone()
+    return live is None
+
+
 def facts(store, name):
     return [
         (json.loads(r[0]), json.loads(r[1]))
@@ -128,7 +144,7 @@ def test_intermittent_site_is_retried_and_every_attempt_kept(env, harness):
 def test_unreachable_site_records_failure_after_last_attempt(env, harness):
     store, stages, matcher, _ = env
     submit(store, matcher, f"http://dead.harness.test:{harness.dead_port}/")
-    run_until(store, stages, lambda: runs(store, "fetch"))
+    run_until(store, stages, lambda: fetch_settled(store))  # the job's status is asserted
     assert runs(store, "fetch") == [("fetch", 0, "connect_error")]
     assert len(facts(store, "http_fetch_attempt")) == 2
     ((final, refs),) = facts(store, "http_fetch")

@@ -9,6 +9,8 @@ import json
 import logging
 from datetime import UTC, datetime
 
+import dns.name
+import dns.resolver
 import pytest
 from tests.detection_support import lab_registry
 from tests.integration.test_orchestrator import done_count, drain
@@ -16,6 +18,7 @@ from tests.integration.test_orchestrator import done_count, drain
 from brandsentinel.config import Config
 from brandsentinel.logging import configure_logging
 from brandsentinel.net.fetcher import FetchResult
+from brandsentinel.net.netguard import NetGuard, StaticResolver
 from brandsentinel.pipeline.orchestrator import Orchestrator, Stage, job_fields
 from brandsentinel.pipeline.stages import AnalysisStages, build_network
 from brandsentinel.store import open_store
@@ -85,6 +88,18 @@ class LeakyFetcher:
         )
 
 
+class NxdomainResolver:
+    """The enrich stage's DNS resolver, offline: every name is NXDOMAIN (what a
+    real resolver answers for `x.test`), with no I/O."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    async def resolve(self, host, rdtype, search=False):
+        self.calls.append((host, rdtype))
+        raise dns.resolver.NXDOMAIN(qnames=[dns.name.from_text(host)])
+
+
 def test_no_record_leaks_the_url_query_or_error_text_and_the_store_keeps_it(
     tmp_path, logbuf, monkeypatch
 ):
@@ -95,8 +110,14 @@ def test_no_record_leaks_the_url_query_or_error_text_and_the_store_keeps_it(
     store = open_store(config)
     try:
         registry = lab_registry()
-        guard, _ = build_network(config)
-        stages = AnalysisStages(store, registry, guard=guard, fetcher=LeakyFetcher())
+        # Only the network is faked, through the constructors' own parameters: the
+        # guard and the enrich stage's resolver answer NXDOMAIN without I/O, and
+        # RDAP goes through the fetcher, which never connects.
+        guard, _ = build_network(config, guard=NetGuard(config.net, StaticResolver({})))
+        resolver = NxdomainResolver()
+        stages = AnalysisStages(
+            store, registry, guard=guard, fetcher=LeakyFetcher(), resolver=resolver
+        )
 
         def bad_score(case_id):
             raise ValueError(f"cannot score {SECRET_URL}: PAGE-TEXT-MARKER")
@@ -130,6 +151,7 @@ def test_no_record_leaks_the_url_query_or_error_text_and_the_store_keeps_it(
         rows = store.conn.execute("SELECT stage, status, last_error FROM jobs").fetchall()
         store.close()
 
+    assert {host for host, _ in resolver.calls} == {"x.test"}  # enrich ran its DNS source
     assert_clean(logbuf, "lease_token")
     finished = one_start_and_finish_per_job(logbuf)
     assert {(r["stage"], r["outcome"]) for r in finished.values()} == {
