@@ -24,7 +24,7 @@ account checks pass cleanly, whatever host they run on.
 | M4 | At most one untrusted container on `bs_sandbox` | Runner network lease: exclusive `flock` per network in `$XDG_RUNTIME_DIR/brandsentinel/` across all processes and instances of the account (released by the kernel if a process dies); before create, any member other than the egress proxy (another job, an orphan, a manual container) refuses the run; after start, the job is killed if another untrusted container is attached. Preflight `single_untrusted_container` | `tests/security/test_network_lease.py`; `test_sp1_isolation.py` (manual and orphaned containers on the real network) |
 | M5 | Media workers have no network | `SandboxSpec(network="none")` takes no lease and joins nothing | `test_sp1_isolation.py::test_media_style_jobs_have_no_network_at_all` |
 | M6 | Hostile-content gate: sandbox stages run only when the account checks pass cleanly (no failure, no override); lab mode is exempt (synthetic content) | `_prepare_sandbox` (`dedicated_account`) | `tests/security/test_preflight.py` |
-| M7 | Image identity and provenance | Image built from the installed commit; ID and package-file manifest checked after streaming it to the account | `scripts/service-account/image_manifest.py`, `load-image.sh` |
+| M7 | Image identity and provenance | Image built from the installed commit. At build time the image's package, bytecode, metadata and dependency set are checked against the release wheel, the source and the lock. After streaming it to the account, its ID is checked against the build record and its package against the installation | `scripts/service-account/image_manifest.py`, `load-image.sh` |
 
 ### Defense in depth (not the boundary)
 
@@ -125,11 +125,20 @@ repeating steps 4-9.
 
    ```sh
    $ scripts/build-sandbox-image.sh
-   $ uv run python scripts/service-account/image_manifest.py \
-       --docker-host unix://$XDG_RUNTIME_DIR/docker.sock --source .
+   $ uv run python scripts/service-account/image_manifest.py --profile release \
+       --docker-host unix://$XDG_RUNTIME_DIR/docker.sock --source . \
+       --wheel <release wheel> --expect-wheel-sha256 <its recorded sha256>
    ```
 
-   Expect `"package_files_differing": []` and `"verdict": "ok"`; note `image_id`.
+   The release wheel is the approved build of this commit. The image installs its own
+   build, so the two must be byte-identical builds. Expect `"violations": []` and
+   `"verdict": "ok"` (exit 0; 1 is a mismatch, 2 an incomplete check). At this point
+   `binding.image_id` reads `NOT BOUND`: the result checks and identifies the image,
+   it does not approve it. Keep the exact wheel file, its sha256, `image_id`,
+   `manifest_sha256` and the whole result together in sealed build evidence outside
+   the repository. That record identifies the artifacts; the owner's approval of
+   them is a separate, recorded decision. The image ID is what later steps trust,
+   and the manifest digest only identifies this measurement.
 
 2. Create the account (home on the root filesystem, mode 0700, no login shell):
 
@@ -191,7 +200,19 @@ repeating steps 4-9.
    (One pipeline: the left side as the developer, the right side with sudo.)
    Expect the free space before and after, `Loaded image:
    brandsentinel-sandbox:local`, and the manifest with `"id_matches": true` and
-   `"verdict": "ok"`.
+   `"verdict": "ok"`. This check (`--profile load`) compares the image's package with
+   the installed source and package. It does not re-derive the dependency set, which
+   step 1 checked and the image ID binds. The image ID given to `load-image.sh` must
+   be taken from the sealed, approved build record of step 1; the script cannot tell
+   where it came from.
+
+   **Open gates (U3/U4).** `load-image.sh` loads and tags the image *before* the
+   check. A failed check (exit 1 or 2) stops the script, but the unverified image
+   stays loaded as `brandsentinel-sandbox:local`: a failure does not leave the
+   account's daemon unchanged. Do not continue, and treat the tag as untrusted until
+   the gate is resolved. The base image's own startup hooks (system site-packages,
+   standard library) are inventoried and hashed into the manifest but not judged;
+   they need a review on the real image.
 
 7. Install the production anchor (B3; root, write-then-rename into a root-only
    directory, so a reader sees the old file or the new one, never part of one):

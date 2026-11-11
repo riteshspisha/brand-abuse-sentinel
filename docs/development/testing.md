@@ -49,6 +49,7 @@ this page. Re-run them before relying on them.
 | runner limits: OOM, PIDs, wall time, output caps, orphans | `tests/security/test_runner_security.py`, `tests/integration/test_runner.py` |
 | media and browser worker limits | `tests/security/test_media_limits.py`, `tests/security/test_browser_limits.py` |
 | sandbox preflight | `tests/security/test_preflight.py` |
+| sandbox image contents: package, bytecode, metadata, dependencies, identity (`image_manifest.py`; Docker faked, the in-image script run for real) | `tests/unit/test_image_manifest.py` |
 | lab transport refusals | `tests/security/test_lab_transport.py` |
 | detection evasion (static extractors) | `tests/unit/test_detection_evasion.py` |
 
