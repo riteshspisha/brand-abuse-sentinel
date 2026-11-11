@@ -1,10 +1,11 @@
 #!/bin/sh
 # Start the service account's own rootless Docker daemon (SP1, R50).
 #
-# Run AS the `brandsentinel` account INSIDE its systemd user manager, e.g.:
-#   sudo systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-#     /opt/brandsentinel/src/scripts/service-account/setup-rootless.sh
-# (no login shell is needed; the manager sets XDG_RUNTIME_DIR and the cgroup).
+# Run AS the `brandsentinel` account, with its user manager's XDG_RUNTIME_DIR and
+# D-Bus address, through the launch chain in docs/runbooks/service-account.md
+# ("Running a command as the service account"):
+#   # as-account /opt/brandsentinel/src/scripts/service-account/setup-rootless.sh
+# No login shell is needed. The daemon itself is started by the user manager.
 #
 # Verifies the prerequisites first and changes nothing if one is missing. It
 # writes one user unit in the account's own home and starts it; nothing outside
@@ -19,7 +20,7 @@ ok() { echo "setup-rootless: ok: $*"; }
 [ "$(id -un)" = "$ACCOUNT" ] || die "run as $ACCOUNT (now $(id -un))"
 UID_=$(id -u)
 [ "${XDG_RUNTIME_DIR:-}" = "/run/user/$UID_" ] && [ -d "$XDG_RUNTIME_DIR" ] \
-    || die "XDG_RUNTIME_DIR is not /run/user/$UID_: run inside the user manager (systemd-run --user -M $ACCOUNT@)"
+    || die "XDG_RUNTIME_DIR is not /run/user/$UID_: use the launch chain in docs/runbooks/service-account.md"
 ok "user manager runtime dir $XDG_RUNTIME_DIR"
 
 case " $(id -nG) " in *" docker "*) die "$ACCOUNT is in the docker group" ;; esac

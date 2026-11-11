@@ -1,8 +1,11 @@
 #!/bin/sh
 # SP1 acceptance under the dedicated service account.
 #
-#   sudo systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-#     /opt/brandsentinel/src/scripts/service-account/validate.sh
+#   # as-account /opt/brandsentinel/src/scripts/service-account/validate.sh
+#
+# (the launch chain in docs/runbooks/service-account.md, "Running a command as the
+# service account": sudo first, an empty environment plus XDG_RUNTIME_DIR, the D-Bus
+# address and DOCKER_HOST)
 #
 # 0. the install completed, and its bytecode and launchers verify (check_bytecode.py);
 #    the production anchor and the store marker verify (check_anchor.py, B3);

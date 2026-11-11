@@ -91,6 +91,10 @@ commands such as `status` and `cases list`**, follows these rules:
   opens the production store only for the account, and `sandbox check`,
   `sandbox selftest`, `sandbox sweep` and `proxy` refuse root
   ([production-store enforcement](../concepts/security.md#production-store-enforcement)).
+- **Through the launch chain** in the
+  [service-account runbook](../runbooks/service-account.md#running-a-command-as-the-service-account):
+  sudo first, then an empty environment with only the account's runtime variables. Never
+  `systemd-run -M`, and never a session change before sudo.
 - **With the installed configuration passed explicitly:** `-c` with the **absolute** path
   of the installed `service.yaml`. Until the guard is installed, a command with no
   configuration source uses `./data` in the current directory and creates a store there.
@@ -151,6 +155,14 @@ refuses a newer store (`SchemaTooNew`).
   check before a migration, needs a separately approved workflow that preserves the
   production classification. Removing the marker is not such a workflow. Copies made
   before the live store was marked carry no marker and are not a sanctioned trial route.
+  **One narrow exception** is planned, not yet run: the B7 promotion's acceptance trial (G3 in
+  the [B7 plan](../plans/2026-11-10-002-chore-b7-production-promotion-plan.md)). It is one
+  trial, on a byte copy of the unchanged, unmarked recovery point taken before B7, run after
+  the code cutover and before the live store is marked. It runs as an identity that the file
+  permissions keep out of the account's home and the backups, so the live store is
+  unreachable. Every access is also recorded, and the stores are verified unchanged afterwards.
+  It runs no `run`. It needs its own authorization, and it does not extend to any other copy
+  or trial.
 - **Copies, never hard links.** A recovery point or snapshot copies the database files.
   A hard-linked database makes the store refuse to open (`store_integrity`).
 

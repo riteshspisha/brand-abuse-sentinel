@@ -56,7 +56,8 @@ account checks pass cleanly, whatever host they run on.
 ## Prerequisites
 
 - Linux with cgroup v2 and `user@.service` delegating `cpu memory pids`
-  (systemd default on Arch); systemd >= 248 for `systemd-run --user -M user@`.
+  (systemd default on Arch), and lingering enabled so that the account's user
+  manager runs without a login.
 - `rootlesskit`, `slirp4netns`, `newuidmap`/`newgidmap` (file capabilities or
   setuid), Docker CLI 29.9 with the compose plugin.
 - At least 8 GiB free on the filesystem holding `/var/lib` (measured use: image
@@ -73,6 +74,52 @@ account checks pass cleanly, whatever host they run on.
 
 `$` lines run as the developer, unprivileged. `#` lines need sudo and are run by
 the operator after review. `U` is the service account's UID.
+
+### Running a command as the service account
+
+Every `#` step that runs something as the account uses one launch chain, written
+below as `# as-account <command> [arguments]`:
+
+```sh
+$ U=$(id -u brandsentinel)          # no privilege needed
+# sudo -u brandsentinel -- env -i -C /var/lib/brandsentinel \
+    PATH=/usr/local/bin:/usr/bin:/bin HOME=/var/lib/brandsentinel LANG=C.UTF-8 \
+    XDG_RUNTIME_DIR=/run/user/$U DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$U/bus \
+    DOCKER_HOST=unix:///run/user/$U/docker.sock \
+    <command> [arguments]
+```
+
+- **It replaces `systemd-run --user -M brandsentinel@`.** That command creates a
+  transient unit in the account's user manager on every call. The M8 promotion and
+  the isolated-copy trials stopped using it, because those units change the host
+  unit inventory that the production snapshot compares.
+- **sudo comes first.** sudo keeps its cached credential per terminal and session.
+  Anything that changes the session before sudo (`setsid`, a new process group)
+  loses it ([operational lessons](../operations/deployment.md#operational-lessons-recorded)).
+  If a step needs a new session, create it after sudo, as the account.
+- **`env -i` starts from an empty environment.** `BRANDSENTINEL_CONFIG`,
+  `BRANDSENTINEL_DATA_DIR`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONUSERBASE` and
+  `PYTHONSTARTUP` are therefore unset, as the production-store policy requires.
+- **`-C /var/lib/brandsentinel`** gives the command a working directory the account
+  owns, not the operator's.
+- **The variables reach the account's runtimes.** `XDG_RUNTIME_DIR` and
+  `DBUS_SESSION_BUS_ADDRESS` reach its lingering user manager (`systemctl --user`),
+  and `DOCKER_HOST` reaches its rootless daemon. `setup-rootless.sh`, `load-image.sh`
+  and `validate.sh` refuse to start without `XDG_RUNTIME_DIR`.
+- **No user namespace (`unshare`, `bwrap`) around installed code.** Inside one,
+  root-owned files appear as the overflow UID, so the production-store checks refuse
+  with `anchor_unsafe`.
+- **Probe the chain once** with a harmless command, `# as-account id`, before a
+  sequence that depends on it.
+
+Verification record: the M8 promotion's acceptance (P5) ran `validate.sh` this way
+(*operator-reported*). No other step of this runbook is recorded through this chain yet.
+
+This sequence is a **first installation**. Promoting a new release over an existing
+installation and live store follows the gated order in the
+[B7 promotion plan](../plans/2026-11-10-002-chore-b7-production-promotion-plan.md):
+anchor, then code, then marker, then validation. It runs in the owner's kit, not by
+repeating steps 4-9.
 
 1. Build the image from the commit and record its identity (developer):
 
@@ -127,8 +174,7 @@ the operator after review. `U` is the service account's UID.
 5. Start the account's rootless dockerd (inside its user manager):
 
    ```sh
-   # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-       /opt/brandsentinel/src/scripts/service-account/setup-rootless.sh
+   # as-account /opt/brandsentinel/src/scripts/service-account/setup-rootless.sh
    ```
 
    Expect `ok:` lines for the runtime dir, not in `docker`, no rootful socket,
@@ -139,8 +185,7 @@ the operator after review. `U` is the service account's UID.
 
    ```sh
    $ docker --host unix://$XDG_RUNTIME_DIR/docker.sock save brandsentinel-sandbox:local | \
-   #   systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-         /opt/brandsentinel/src/scripts/service-account/load-image.sh <image_id from step 1>
+   #   as-account /opt/brandsentinel/src/scripts/service-account/load-image.sh <image_id from step 1>
    ```
 
    (One pipeline: the left side as the developer, the right side with sudo.)
@@ -156,8 +201,7 @@ the operator after review. `U` is the service account's UID.
    # install -o root -g root -m 0644 /opt/brandsentinel/src/config/production-anchor.yaml \
        /etc/brandsentinel/.production.yaml.new
    # mv /etc/brandsentinel/.production.yaml.new /etc/brandsentinel/production.yaml
-   # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-       /opt/brandsentinel/venv/bin/python -I -B \
+   # as-account /opt/brandsentinel/venv/bin/python -I -B \
        /opt/brandsentinel/src/scripts/service-account/check_anchor.py /opt/brandsentinel
    ```
 
@@ -170,15 +214,13 @@ the operator after review. `U` is the service account's UID.
    copies; it is not an identity, and removing it is not an approved procedure:
 
    ```sh
-   # systemd-run --user -M brandsentinel@ --wait --pipe --collect sh -c \
+   # as-account sh -c \
        'printf "brandsentinel_store: 1\nclass: production\n" > /var/lib/brandsentinel/data/.marker.new \
         && chmod 0444 /var/lib/brandsentinel/data/.marker.new \
         && mv /var/lib/brandsentinel/data/.marker.new /var/lib/brandsentinel/data/BRANDSENTINEL-STORE'
-   # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-       /opt/brandsentinel/venv/bin/python -I -B \
+   # as-account /opt/brandsentinel/venv/bin/python -I -B \
        /opt/brandsentinel/src/scripts/service-account/check_anchor.py /opt/brandsentinel --marker
-   # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-       /opt/brandsentinel/venv/bin/brandsentinel -c /opt/brandsentinel/etc/service.yaml store check
+   # as-account /opt/brandsentinel/venv/bin/brandsentinel -c /opt/brandsentinel/etc/service.yaml store check
    ```
 
    Expect only `PASS` lines, then `store class: production (anchor path)` and
@@ -188,8 +230,7 @@ the operator after review. `U` is the service account's UID.
 
    ```sh
    $ docker --host unix://$XDG_RUNTIME_DIR/docker.sock compose -f docker/lab.compose.yaml stop
-   # systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-       /opt/brandsentinel/src/scripts/service-account/validate.sh
+   # as-account /opt/brandsentinel/src/scripts/service-account/validate.sh
    $ docker --host unix://$XDG_RUNTIME_DIR/docker.sock compose -f docker/lab.compose.yaml start
    ```
 
@@ -214,8 +255,7 @@ Touches only the `brandsentinel` account, `/var/lib/brandsentinel`,
 `/opt/brandsentinel` and `/etc/brandsentinel`:
 
 ```sh
-# systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-    systemctl --user disable --now docker-rootless.service   # its daemon and containers
+# as-account systemctl --user disable --now docker-rootless.service   # its daemon and containers
 # loginctl disable-linger brandsentinel
 # loginctl terminate-user brandsentinel                      # that user's processes only
 # userdel --remove brandsentinel                              # home, mail spool, subuid/subgid lines
@@ -232,7 +272,7 @@ the host, keep the anchor: it is what classifies that store as production.
 the `rm` after it removes what remains. Partial rollback:
 
 - image only: `docker image rm brandsentinel-sandbox:local` in the account's
-  daemon (via `systemd-run --user -M brandsentinel@ ...`), then
+  daemon (via `as-account docker image rm ...`), then
   `docker image prune --force` there;
 - reinstall only: `rm -rf --one-file-system /opt/brandsentinel` and repeat step 4.
 

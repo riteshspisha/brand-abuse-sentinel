@@ -17,7 +17,7 @@ def test_every_declaration_of_the_release_version_agrees():
     project = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]["version"]
     lock = tomllib.loads((REPO / "uv.lock").read_text())
     (locked,) = [p["version"] for p in lock["package"] if p["name"] == "brandsentinel"]
-    assert project == brandsentinel.__version__ == locked == "0.2.0"
+    assert project == brandsentinel.__version__ == locked == "0.2.1"
     out = CliRunner().invoke(app, ["version"])
     assert out.exit_code == 0 and out.output.strip() == project
 

@@ -40,7 +40,7 @@ uv run brandsentinel match sadhguru.org.verify-login.xyz fakeisha.info odisha.go
 
 Expected:
 
-- `version` prints `0.2.0`.
+- `version` prints `0.2.1`.
 - `registry validate` prints counts by status and ends with `ok`. It warns once that the
   legacy exclusion `abhishek` can never apply. Note `suppressing domains none`: the
   committed registry has no maintainer-confirmed domains yet, so nothing is suppressed as

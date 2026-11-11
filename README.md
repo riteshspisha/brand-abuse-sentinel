@@ -73,7 +73,7 @@ which Linux routes to loopback and macOS does not by default. macOS is untested.
 
 ```sh
 uv sync                                   # creates .venv from uv.lock (with the dev group)
-uv run brandsentinel version              # 0.2.0
+uv run brandsentinel version              # 0.2.1
 uv run brandsentinel registry validate    # the committed Brand Registry
 uv run brandsentinel match sadhguru.org.verify-login.xyz odisha.gov.in save-soil.shop
 uv run pytest -m "not docker and not lab and not models"
