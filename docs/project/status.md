@@ -90,7 +90,11 @@ still runs without it. These are still open, as the first work items on the
 [Roadmap](roadmap.md):
 
 - bytecode-write prevention (precompiled bytecode and `-B` launchers, so a root run of a console script does not write bytecode into the code tree): merged, **not promoted**, and not installation immutability;
-- production-store enforcement (the anchor, the store marker, the account and approved-configuration policy, store integrity, root refusal for Docker and listener commands, `store check`): developed on a local branch, **not merged or promoted**.
+- production-store enforcement (the anchor, the store marker, the account and approved-configuration policy, store integrity, root refusal for Docker and listener commands, `store check`): merged (#23), **not promoted**.
+
+All three are in version 0.2.1, the release candidate for their promotion (backlog item B7,
+[plan](../plans/2026-11-10-002-chore-b7-production-promotion-plan.md)). 0.2.1 has not been
+built, installed or promoted; production runs 0.2.0.
 
 Until all of them ship, the
 [production CLI rules](../operations/deployment.md#production-cli-operations) are
@@ -106,8 +110,8 @@ live `run` with enrichment on will carry them out and contact that case's host.
 - No advisory model is integrated.
 - Production does not enforce the service account for every command: only `run` and
   `registry collect` check it there. Production-store enforcement
-  ([security model](../concepts/security.md#production-store-enforcement)) is developed,
-  not merged or installed, and the guard against root and a missing configuration is not
+  ([security model](../concepts/security.md#production-store-enforcement)) is merged,
+  not installed, and the guard against root and a missing configuration is not
   installed in production either.
 - No network-facing stage has been trialled in production after the M8 promotion.
 - The production Brand Registry has no maintainer-confirmed official domains, payees or

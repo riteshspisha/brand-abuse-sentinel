@@ -565,6 +565,7 @@ No BrandSentinel command runs against a real store, `/opt/brandsentinel`, `/etc/
 
 - I1-style trials ran installed code on byte copies of the store. Once B3 is installed and the store is marked, such a trial is refused. Trials on marked copies, including a Gate-4-style schema check before a future migration, wait for the separately approved trial workflow.
 - Copies made before marking are development-class (M21). They are not a sanctioned trial route.
+  - *Amendment (2026-11-11, B7 U2):* one exception is defined: the B7 acceptance trial (G3 in `docs/plans/2026-11-10-002-chore-b7-production-promotion-plan.md`). It is one trial (no `run`) on a byte copy of the unchanged, unmarked pre-B7 recovery point, after the code cutover and before marking. It runs as an identity that file permissions keep away from the live store, under that plan's execution contract and its own authorization. B3's classification rules, O2-C and the marker rules are unchanged.
 - T1–T5 tooling gains two rules: never remove a marker, and record any trial on an unmarked pre-B7 copy as such.
 
 **Operator invocation:** `brandsentinel -c /opt/brandsentinel/etc/service.yaml …` as the account. These must be unset: `BRANDSENTINEL_CONFIG`, `BRANDSENTINEL_DATA_DIR`, `PYTHONPATH`, `PYTHONHOME`, `PYTHONUSERBASE` and `PYTHONSTARTUP`. Use the installed launcher, not `python -m` from a writable directory. Those are the only checked inputs besides the account and the files.

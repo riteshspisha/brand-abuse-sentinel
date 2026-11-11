@@ -143,13 +143,12 @@ branch) is still to be run by an operator; see "Service-account re-validation".
 ## Service-account re-validation
 
 The SP1 procedure (`docs/runbooks/service-account.md`, steps 1, 4, 6 and 7)
-re-run from this branch's commit, then, as the account:
+re-run from this branch's commit, then, as the account (`as-account` is the launch chain in
+[service-account.md](service-account.md#running-a-command-as-the-service-account)):
 
 ```sh
-# systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-    /opt/brandsentinel/venv/bin/brandsentinel -c /opt/brandsentinel/etc/service.yaml sandbox selftest media
-# systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-    /opt/brandsentinel/venv/bin/brandsentinel -c /opt/brandsentinel/etc/service.yaml registry collect
+# as-account /opt/brandsentinel/venv/bin/brandsentinel -c /opt/brandsentinel/etc/service.yaml sandbox selftest media
+# as-account /opt/brandsentinel/venv/bin/brandsentinel -c /opt/brandsentinel/etc/service.yaml registry collect
 ```
 
 `validate.sh` runs `-m "security or docker"`, which now includes the media

@@ -9,4 +9,4 @@ import sys
 if os.geteuid() == 0:
     sys.dont_write_bytecode = True
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

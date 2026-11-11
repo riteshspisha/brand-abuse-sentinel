@@ -3,8 +3,9 @@
 # verify its identity (SP1).
 #
 #   docker --host unix://$XDG_RUNTIME_DIR/docker.sock save brandsentinel-sandbox:local | \
-#     sudo systemd-run --user -M brandsentinel@ --wait --pipe --collect \
-#       /opt/brandsentinel/src/scripts/service-account/load-image.sh sha256:<expected id>
+#     as-account /opt/brandsentinel/src/scripts/service-account/load-image.sh sha256:<expected id>
+#
+# (as-account: the launch chain in docs/runbooks/service-account.md)
 #
 # Streaming: no temporary copy of the image is written anywhere. Refuses to start
 # with less than MIN_FREE_GIB free on the daemon's filesystem (measured need:
