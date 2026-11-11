@@ -164,7 +164,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
 - **KTD8: refusals are exercised only through `store check`,** against the live path, with a manifest after every case.
 - **KTD9: build at the canonical view, then exchange.** The design is specified in full under "Cutover topology", and the U2 design review demonstrated its mechanics on a scratch analog.
   - **Build:** the developer builds inside a private mount namespace in which the canonical path is a bind mount of a staging directory, a sibling of `/opt/brandsentinel` on the same filesystem. The rest of `/opt` is masked, so every embedded path is the final one.
-  - **Seal:** before anything else, the build namespace and every writer must be gone (N1). Then root takes ownership and checks KTD3 (a)-(d).
+  - **Seal:** first the N1 detection check (no live build process or open reference into staging; N1 does not prove that no mount reference persists). Then root takes ownership, which is the write barrier, and checks KTD3 (a)-(d). The sealed content manifest is re-taken after the exchange and at G9.
   - **Exchange:** one `renameat2(RENAME_EXCHANGE)` (`mv -T --exchange`) swaps the trees. Then M8 is renamed to its aside name.
   - **Result:** at every instant the canonical path names a complete tree, with the same pinned launcher. This is **path** atomicity. It does not keep the Docker service up (see "Path atomicity is not service availability").
   - **This replaces the M8 kit's install-in-place window.** Whether `install.sh` runs unchanged in the namespace is unproven until U4 (K11).
@@ -296,7 +296,10 @@ unshare --user --map-current-user --keep-caps --mount --propagation private --ne
 - the canonical tree untouched during the build.
 
 **Seal (root), only after N1:**
-- **N1:** no process remains in the build's mount namespace (its recorded `mnt:` inode, scanned across `/proc/*/ns/mnt`), and no process holds an open file under the staging tree (scanned by device and inode across `/proc/*/fd`). The review demonstrated why: a bind mount alive in another namespace does **not** block the host's rename, and a late write through it lands in the moved tree.
+- **N1 (a detection check, at scan time):** no process is in the build's mount namespace (its recorded `mnt:` inode, scanned across `/proc/*/ns/mnt`), and no process references the staging tree by device and inode through an open descriptor, its working directory, its root or a memory mapping (`/proc/*/fd`, `cwd`, `root`, `map_files`). The review showed why: a bind mount alive in another namespace does **not** block the host's rename, and a late write through it lands in the moved tree.
+  - **N1 does not prove** that no mount reference persists. A mount namespace can outlive its processes when an nsfs bind mount or a descriptor held by an unrelated process pins it, and a bind mount can exist elsewhere. A process scan sees neither. N1 does not prove the absence of every writable path either.
+  - **The write barrier is the seal.** After `chown -R root:root` and `chmod -R go-w`, a surviving non-root mount reference gives no new write access, because opens are checked against root ownership. Only descriptors opened before the seal keep write access, and N1 sees them only while their holder is alive.
+  - **The residual is caught after the fact.** The sealed content manifest (KTD3 b) is re-taken after the exchange and at G9 and must be unchanged. A difference is a STOP.
 - Then `chown -R root:root` and `chmod -R go-w`, followed by KTD3 (a)-(d) on the staging tree. Layer (b) compares raw bytes with the canonical-view rehearsal, and also checks that the staging name appears in no file.
 
 **Exchange prerequisites:**
@@ -361,7 +364,7 @@ The harness runs in a user namespace on a tmpfs `/opt`, with `--map-auto` and `s
 | W4 | staged launcher hash ≠ pin: stop before the exchange |
 | W5 | a stubbed unit report with a changed `MainPID`, `NRestarts` or `ActiveState`, or a changed proxy container ID: exit 4 with the state printed |
 | W6 | a sentinel planted in the "real" tree and in a sibling: never read by the build |
-| N1 | a namespace kept alive holding the bind, or a process holding a writable file descriptor in staging: seal refused |
+| N1 | (a) a live process in the build namespace, or one holding a writable descriptor, working directory or mapping into staging: seal refused. (b) a namespace pinned with **no** process (an nsfs bind mount or a descriptor held elsewhere): recorded as **not detected** by N1. After the seal, a write through it by a new open fails (root ownership), and a write through a descriptor opened before the seal is caught by the post-exchange manifest re-check |
 | N2 | the host mount table shows no build mount during or after the build |
 | N3 | the canonical path inside equals the staging directory outside (device and inode); staging on another device: refused |
 | N4 | no file contains the staging name; every shebang and `pyvenv.cfg` names the canonical path; the raw manifest equals the canonical-view rehearsal's |
