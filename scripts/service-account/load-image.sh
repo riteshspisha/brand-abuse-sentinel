@@ -5,6 +5,10 @@
 #   docker --host unix://$XDG_RUNTIME_DIR/docker.sock save brandsentinel-sandbox:local | \
 #     as-account /opt/brandsentinel/src/scripts/service-account/load-image.sh sha256:<expected id>
 #
+# The expected ID must come from the sealed, approved build record (runbook step 1).
+# The image is loaded and tagged before it is verified: a failed check exits non-zero
+# but leaves the unverified image tagged (an open U3/U4 gate; see the runbook).
+#
 # (as-account: the launch chain in docs/runbooks/service-account.md)
 #
 # Streaming: no temporary copy of the image is written anywhere. Refuses to start
@@ -29,4 +33,5 @@ FREE_AFTER=$(df --output=avail -k "$ROOT" | tail -1 | tr -d ' ')
 echo "load-image: used $(((FREE_KIB - FREE_AFTER) / 1024)) MiB; $((FREE_AFTER / 1024 / 1024)) GiB free"
 
 "$PREFIX/venv/bin/python" "$PREFIX/src/scripts/service-account/image_manifest.py" \
-    --docker-host "$SOCK" --source "$PREFIX/src" --expect-id "$EXPECTED"
+    --profile load --docker-host "$SOCK" --source "$PREFIX/src" --installed "$PREFIX" \
+    --expect-id "$EXPECTED"
