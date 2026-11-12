@@ -206,13 +206,26 @@ repeating steps 4-9.
    be taken from the sealed, approved build record of step 1; the script cannot tell
    where it came from.
 
-   **Open gates (U3/U4).** `load-image.sh` loads and tags the image *before* the
-   check. A failed check (exit 1 or 2) stops the script, but the unverified image
-   stays loaded as `brandsentinel-sandbox:local`: a failure does not leave the
-   account's daemon unchanged. Do not continue, and treat the tag as untrusted until
-   the gate is resolved. The base image's own startup hooks (system site-packages,
-   standard library) are inventoried and hashed into the manifest but not judged;
-   they need a review on the real image.
+   `load-image.sh` refuses a malformed ID before loading. It also refuses a stream that
+   loaded any image other than the expected one, and then checks that image by its ID,
+   whatever tag it carries.
+
+   **Open gates (U3/U4).** Loading is not transactional: `docker load` applies the
+   stream's tags *before* the check, and verifying by ID does not change that. This
+   first-installation command streams `:local`, so a failed check (exit 1 or 2) leaves
+   `:local` naming the rejected image. The script warns about it, but sandbox preflight
+   checks only that the tag exists. **Promotion blocker:** a failure must not expose an
+   unapproved image to sandbox execution. For a B7 promotion, stream under a release
+   tag (plan G1) and retag `:local` only after a pass (G5). The final loading strategy
+   is reconciled in U3/U4.
+
+   Also open for the real image:
+   - startup hooks outside the environment (system site-packages, the standard library,
+     later layers) are inventoried and hashed into the manifest but not judged;
+   - the image's Entrypoint, Cmd, PATH and variable names are reported (`config`), not
+     judged.
+
+   Both need inspection and approval in U3.
 
 7. Install the production anchor (B3; root, write-then-rename into a root-only
    directory, so a reader sees the old file or the new one, never part of one):

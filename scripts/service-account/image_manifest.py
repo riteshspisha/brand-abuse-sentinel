@@ -1,8 +1,13 @@
 """Identity, provenance and contents of the sandbox image (SP1; B7 PR-2).
 
-Checks an image on one Docker endpoint against references kept outside it. One
-network-less container run (`--network none --pull never`) measures the image; every
-comparison happens here.
+Checks an image on one Docker endpoint against references kept outside it. The image
+is inspected first: an image whose ID is not `--expect-id`, or whose config sets a
+dynamic loader variable, is reported and never run. Otherwise one container run,
+addressed by the inspected ID and locked down like the sandbox runner's containers
+(`--network none --pull never --read-only --cap-drop ALL`, no-new-privileges, limits,
+a unique name, removed on timeout, Ctrl-C, SIGTERM or SIGHUP), measures the image;
+every comparison happens here. Exit 2 also covers usage errors; a signal ends the run
+with 128 + its number.
 
     # Build time, developer: the evidence recorded for a release.
     python image_manifest.py --profile release \
@@ -26,19 +31,27 @@ Checked against the references:
   must itself equal `<source>/src/brandsentinel`;
 - bytecode: every `__pycache__` entry is the bytecode of a package source for the
   image's interpreter, nothing else. Each one's header matches its source, and its
-  code objects equal `compile(source, in-image path)` (the B2 method), with every
-  nested `co_filename` equal to the in-image path, because code equality ignores it;
+  code objects equal `compile(source, in-image path)` field by field, including the
+  raw instruction stream (`==` ignores co_qualname and co_stacksize, and `co_code`
+  hides specialized opcodes); every nested `co_filename` is the in-image path; and
+  nothing follows the code object in the file;
 - metadata: exactly one `brandsentinel-*.dist-info`. Every file of the reference's
   dist-info except `RECORD` (`METADATA`, `WHEEL`, `entry_points.txt`, ...) is
   byte-equal in the image. Installer-written files are excluded and listed, and the
   image `RECORD`'s package entries must match the measured hashes;
-- import path: measured under `-S`, so no startup hook runs first. `brandsentinel`
-  resolves to the virtual environment's copy; there is no user site-packages
-  directory; the environment's site-packages holds no startup hook (`*.pth`,
-  `sitecustomize`, `usercustomize`); and the image config sets no Python variable
-  besides `PYTHONDONTWRITEBYTECODE` and `PYTHONUNBUFFERED`. Startup hooks of the
-  base image (system site-packages, the standard library) are hashed into the
-  manifest and listed as excluded, not judged;
+- import path: measured under `-S`, so no startup hook runs first. Over the runtime
+  search order (the standard library, then the environment, user and system site
+  directories), `brandsentinel` resolves to the virtual environment's copy, and every
+  other importable top-level name of the environment resolves to its single entry
+  there (nothing earlier on the path, no second entry with the same import name);
+  there is no user site-packages directory; every top-level entry of the environment's
+  site directories belongs to a distribution there by its RECORD, and the package's
+  own RECORD claims nothing outside it; the environment holds no startup hook
+  (`*.pth`, `sitecustomize`, `usercustomize`); the image has no `/etc/ld.so.preload`
+  and its config sets no `LD_*` variable and no unreviewed `PYTHON*` variable
+  (only `PYTHONDONTWRITEBYTECODE` and `PYTHONUNBUFFERED` are allowed). Startup hooks
+  outside the environment (the base image or a later layer) are hashed into the
+  manifest and listed as excluded, bound only by the image ID, not judged;
 - dependencies (release profile): the distributions the image resolves equal the
   exact pins of `uv export --frozen --offline --no-dev --extra sandbox` of the
   source, after evaluating their markers in the image's environment; each comes from
@@ -68,8 +81,10 @@ decision, recorded with the wheel's sha256, the image ID, the manifest digest an
 result in sealed build evidence kept outside the repository. `load` must be given the
 image ID from that record; this tool cannot tell where an argument came from.
 
-Trust: the image ID is the anchor. It names the image config and so every layer's
-content. The measurement runs the image's own interpreter, so it shows that the
+Trust: the image ID is the anchor. It is a digest that binds the image's config and
+every layer's content (with the containerd image store, through the manifest).
+Checking it against `--expect-id` proves the image is the one named; it does not prove
+that the name was approved. The measurement runs the image's own interpreter, so it shows that the
 image matches the references, but it cannot vouch for an image it measures.
 The measured image is addressed by the ID that was compared, never by the tag.
 `manifest_sha256`, a digest of the measured inventory without the creation time or
@@ -78,16 +93,20 @@ image, not across rebuilds. It is never trusted in
 place of the image ID. Not checked: the contents of dependency files (pip enforced
 their wheel hashes at build time; afterwards only the image ID binds them), the
 base image's system packages beyond their names and versions, and launchers in the
-image's `bin/`.
+image's `bin/`, Entrypoint, Cmd or PATH (reported for the U3 review), and the RECORD
+files used for ownership, which the image itself provides (bound by the image ID).
+Report text that comes from the image is escaped and truncated.
 
 Assumptions proven only against stand-ins, to be verified on the real image (U3):
 pip installed the package under `sysconfig` purelib of the environment's own scheme
 and compiled timestamp bytecode at that path; `site.venv()`/`site.getsitepackages()`
 behave on the image's Ubuntu interpreter as upstream (system dist-packages from
 `--system-site-packages`); pip installed every pin into the environment rather than
-reusing a system distribution; the base image sets no other `PYTHON*` variable; and
-the base image's system startup hooks are known and acceptable (reviewed, not judged
-here).
+reusing a system distribution, and its RECORDs own every top-level entry; the base
+image sets no other `PYTHON*` and no `LD_*` variable; the measurement fits the
+container limits; the image ID survives `docker save | docker load` between daemons
+(containerd image store); and the base image's system startup hooks are known and
+acceptable (reviewed, not judged here).
 """
 
 import argparse
@@ -96,8 +115,11 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
+import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import zipfile
@@ -128,6 +150,7 @@ RULES = {
     "bytecode_source_invalid": "the source does not compile",
     "bytecode_body_differs": "the bytecode was not compiled from this source",
     "bytecode_filename_differs": "the bytecode was compiled for another path",
+    "bytecode_trailing_data": "the bytecode file has data after its code object",
     "dist_info_count": "not exactly one brandsentinel dist-info",
     "metadata_missing": "a reference dist-info file is missing from the image",
     "metadata_modified": "an image dist-info file differs from the reference",
@@ -136,7 +159,10 @@ RULES = {
     "package_shadowed": "brandsentinel does not resolve to the environment's copy",
     "startup_hook": "a startup hook (.pth, sitecustomize, usercustomize) in the environment",
     "user_site": "a user site-packages directory that every process would import from",
-    "image_environment": "the image config sets a Python variable that changes imports",
+    "image_environment": "the image config sets an unreviewed PYTHON* variable",
+    "image_loader_environment": "the image config sets a dynamic loader variable (LD_*)",
+    "site_unowned": "a site-packages entry no installed distribution's RECORD owns",
+    "dependency_shadowed": "an importable name of the environment resolves to another entry",
     "dependency_missing": "a pinned dependency is not installed",
     "dependency_version": "a dependency's version differs from its pin",
     "dependency_outside_venv": "a pinned dependency resolves outside the environment",
@@ -155,13 +181,25 @@ INSTALLER_FILES = {
 # Python variables an image config may set: neither changes what is imported.
 IMAGE_ENV_ALLOWED = {"PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED"}
 TIMEOUT_SECONDS = 600
+CLEANUP_TIMEOUT_SECONDS = 60
+MAX_LISTED = 1000  # violations and exclusions listed in a report; the total is always given
+# The measurement container gets the sandbox runner's lockdown (sandbox/runner.py).
+MEASURE_FLAGS = (
+    "--rm", "--pull", "never", "--network", "none", "--read-only",
+    "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=16m",  # noqa: S108 - container path
+    "--cap-drop", "ALL", "--security-opt", "no-new-privileges=true",
+    "--memory", "1g", "--memory-swap", "1g", "--cpus", "1", "--pids-limit", "64",
+    "--ipc", "private", "--ulimit", "core=0", "--ulimit", "nofile=1024:1024",
+    "--no-healthcheck", "--workdir", "/tmp",  # noqa: S108 - container path
+    "--label", "brandsentinel.role=image-manifest",
+)  # fmt: skip
 # Distributions in the image's environment that do not come from the lock.
 SEEDED = {"pip": "seeded into the environment by python3 -m venv (ensurepip)"}
 
 # Runs in the image, under its own interpreter. It must not import brandsentinel.
 INSIDE = r"""
-import hashlib, importlib.machinery, importlib.metadata, importlib.util, json, marshal, os
-import platform, site, stat, sys, sysconfig, types
+import csv, hashlib, importlib.machinery, importlib.metadata, importlib.util, io, json
+import marshal, os, platform, site, stat, sys, sysconfig, types
 
 def digest(path):
     h = hashlib.sha256()
@@ -181,6 +219,28 @@ def codes(code):
     for const in code.co_consts:
         if isinstance(const, types.CodeType):
             yield from codes(const)
+
+# Code equality (==) ignores co_filename, co_qualname, co_stacksize and more, so the
+# stored and compiled trees are compared field by field (co_filename separately).
+FIELDS = ("co_argcount", "co_posonlyargcount", "co_kwonlyargcount", "co_nlocals",
+          "co_stacksize", "co_flags", "co_code", "co_names", "co_varnames", "co_freevars",
+          "co_cellvars", "co_name", "co_qualname", "co_firstlineno", "co_linetable",
+          "co_exceptiontable", "_co_code_adaptive")
+# co_code is de-optimized on read: it hides specialized and superinstruction opcodes
+# stored in the file. _co_code_adaptive is the raw instruction stream (3.11+); a
+# faithful file holds base opcodes with zeroed caches, as compile() produces.
+
+def same_const(a, b):
+    if type(a) is not type(b): return False
+    if isinstance(a, types.CodeType): return same_code(a, b)
+    if isinstance(a, tuple): return len(a) == len(b) and all(map(same_const, a, b))
+    if isinstance(a, frozenset): return a == b and sorted(map(repr, a)) == sorted(map(repr, b))
+    if isinstance(a, (float, complex)): return repr(a) == repr(b)
+    return a == b
+
+def same_code(a, b):
+    return (all(getattr(a, f, None) == getattr(b, f, None) for f in FIELDS)
+            and same_const(a.co_consts, b.co_consts))
 
 def judge(src, pyc):
     try:
@@ -210,16 +270,18 @@ def judge(src, pyc):
         if data[8:16] != importlib.util.source_hash(source): return "hash_mismatch", mode
     else:
         return "bad_flags", None
+    body = io.BytesIO(data[16:])
     try:
-        stored = marshal.loads(data[16:])
+        stored = marshal.load(body)  # consumes exactly one object
     except Exception:
         return "bad_body", mode
     if not isinstance(stored, types.CodeType): return "bad_body", mode
+    if body.tell() != len(data) - 16: return "trailing_data", mode
     try:
         expected = compile(source, src, "exec", dont_inherit=True, optimize=0)
     except (SyntaxError, ValueError):
         return "source_invalid", mode
-    if stored != expected: return "body_differs", mode
+    if not same_code(stored, expected): return "body_differs", mode
     if any(c.co_filename != src for c in codes(stored)): return "filename_differs", mode
     return "ok", mode
 
@@ -264,14 +326,26 @@ def main():
         raise RuntimeError("the interpreter is not a virtual environment's")
     site_dir = sysconfig.get_paths()["purelib"]
     root = os.path.join(site_dir, "brandsentinel")
+    venv_root = os.path.realpath(sys.prefix)
+    def in_venv(path):
+        real = os.path.realpath(path)
+        return real == venv_root or real.startswith(venv_root + os.sep)
     system = sys.base_prefix in site.PREFIXES  # include-system-site-packages = true
     user_site = site.getusersitepackages() if system else None  # venv without system: off
-    system_sites = [p for p in site.getsitepackages() if os.path.isdir(p)
-                    and os.path.realpath(p) != os.path.realpath(site_dir)]
-    search = ([user_site] if user_site and os.path.isdir(user_site) else []) + [site_dir]
+    sites = [p for p in site.getsitepackages() if os.path.isdir(p)]
+    venv_sites = [site_dir] + [p for p in sites if in_venv(p)
+                               and os.path.realpath(p) != os.path.realpath(site_dir)]
+    system_sites = [p for p in sites if not in_venv(p)]
+    # site.venv() adds the environment's site-packages before the user site (3.12).
+    search = list(venv_sites)
+    search += [user_site] if user_site and os.path.isdir(user_site) else []
     search += system_sites
-    spec = importlib.machinery.PathFinder.find_spec("brandsentinel", search)
+    # The runtime order: the interpreter's own entries (under -I -S, exactly the
+    # standard library), then what site.main() adds.
+    runtime = list(sys.path) + search
+    spec = importlib.machinery.PathFinder.find_spec("brandsentinel", runtime)
     located = [os.path.abspath(p) for p in (spec.submodule_search_locations or [])] if spec else []
+    origin = os.path.abspath(spec.origin) if spec and spec.origin else None
     package, bytecode = {}, {}
     if os.path.isdir(root) and not os.path.islink(root):
         package = tree(root, errors)
@@ -302,23 +376,76 @@ def main():
             record = None
     names = ("sitecustomize.py", "usercustomize.py", "sitecustomize", "usercustomize")
     hooks = []
-    for d in [site_dir] + system_sites:
+    for d in venv_sites + system_sites:
         for n in sorted(os.listdir(d)):
             if n.endswith(".pth") or n in names:
-                hooks.append(hook(os.path.join(d, n), d == site_dir, errors))
+                hooks.append(hook(os.path.join(d, n), d in venv_sites, errors))
     seen = {h["path"] for h in hooks}
     for module in ("sitecustomize", "usercustomize"):
-        found = importlib.machinery.PathFinder.find_spec(module, sys.path + search)
+        found = importlib.machinery.PathFinder.find_spec(module, runtime)
         if found and found.origin and found.origin not in seen:
-            hooks.append(hook(found.origin, found.origin.startswith(site_dir + os.sep), errors))
+            hooks.append(hook(found.origin, in_venv(found.origin), errors))
     distributions = []
     for entry in search:
-        found = [{"name": d.metadata["Name"] or "", "version": d.version or "",
-                  "path": os.path.abspath(entry),
-                  "in_venv": os.path.abspath(entry) == os.path.abspath(site_dir)}
-                 for d in importlib.metadata.distributions(path=[entry])]
+        found = []
+        for d in importlib.metadata.distributions(path=[entry]):
+            name, version = d.metadata["Name"], d.version
+            if not name or not version:
+                errors.append("unreadable distribution metadata in " + entry)
+                continue
+            found.append({"name": name, "version": version, "path": os.path.abspath(entry),
+                          "in_venv": entry in venv_sites})
         # the search order decides which copy wins; within one entry, sort (listdir order)
         distributions += sorted(found, key=lambda d: (d["name"].lower(), d["version"]))
+    # Every top-level entry of the environment's site directories must belong to a
+    # distribution there, by the first component of a path in its RECORD (files, so
+    # directories, namespace packages, extension modules and __pycache__ included).
+    # A distribution without a RECORD owns nothing, not even its own dist-info.
+    unowned = []
+    for d in venv_sites:
+        owned = set()
+        for dist in importlib.metadata.distributions(path=[d]):
+            # The RECORD text itself: Distribution.files would stat every entry.
+            for row in csv.reader(io.StringIO(dist.read_text("RECORD") or "")):
+                parts = row[0].replace("\\", "/").split("/") if row and row[0] else []
+                if parts and parts[0] and ".." not in parts:
+                    owned.add(parts[0])
+        unowned += [os.path.join(d, n) for n in sorted(os.listdir(d)) if n not in owned]
+    # Whoever owns them, every importable top-level name of the environment must resolve,
+    # over the runtime order, to its single entry there: a module planted earlier on the
+    # path (standard library, user site) or a second entry with the same import name
+    # (a package beside a module, an extension beside a .py) would shadow it.
+    suffixes = sorted(importlib.machinery.all_suffixes(), key=len, reverse=True)
+    def import_name(name, path):
+        if os.path.isdir(path) and not os.path.islink(path):
+            stem = name
+        else:
+            stem = next((name[: -len(x)] for x in suffixes if name.endswith(x)), None)
+        return stem if stem and stem.isidentifier() else None
+    entries = {}
+    for d in venv_sites:
+        for n in sorted(os.listdir(d)):
+            if n == "__pycache__" or n.endswith((".dist-info", ".egg-info", ".pth")):
+                continue
+            stem = import_name(n, os.path.join(d, n))
+            if stem:
+                entries.setdefault(stem, []).append(os.path.join(d, n))
+    shadowed = []
+    for stem, paths in sorted(entries.items()):
+        found = importlib.machinery.PathFinder.find_spec(stem, runtime)
+        where = None
+        if found is not None:
+            where = found.origin if found.origin not in (None, "namespace") else None
+            if where is None and found.submodule_search_locations:
+                where = list(found.submodule_search_locations)[0]
+        target = os.path.dirname(where) if where and os.path.basename(where).startswith(
+            "__init__.") else where
+        if (len(paths) > 1 or not target
+                or os.path.realpath(target) != os.path.realpath(paths[0])):
+            shadowed.append({"name": stem, "entries": paths, "resolved": where})
+    preload = "/etc/ld.so.preload"
+    ld_so_preload = hook(preload, False, errors).get("sha256", "unreadable") if os.path.lexists(
+        preload) else None
     env = {
         "implementation_name": sys.implementation.name,
         "implementation_version": platform.python_version(),
@@ -335,7 +462,10 @@ def main():
     print(json.dumps({
         "python": {"version": platform.python_version(), "cache_tag": sys.implementation.cache_tag,
                    "magic": importlib.util.MAGIC_NUMBER.hex()},
-        "site": site_dir, "located": located, "package": package, "bytecode": bytecode,
+        "site": site_dir, "located": located, "origin": origin, "package": package,
+        "bytecode": bytecode, "unowned": unowned, "shadowed": shadowed,
+        "ld_so_preload": ld_so_preload,
+        "interpreter": {"prefix": sys.prefix, "executable": sys.executable},
         "dist_info": dist_info, "record": record, "startup_hooks": hooks,
         "user_site": user_site if user_site and os.path.exists(user_site) else None,
         "distributions": distributions, "marker_environment": env, "errors": errors,
@@ -352,24 +482,29 @@ class Incomplete(Exception):
     """The inspection cannot be completed; nothing can be concluded."""
 
 
-def run_command(argv: list[str], cwd: Path | None = None) -> str:
+def run_command(argv: list[str], cwd: Path | None = None, timeout: int = TIMEOUT_SECONDS) -> str:
     return subprocess.run(  # noqa: S603 - fixed argv
-        argv, check=True, capture_output=True, text=True, cwd=cwd, timeout=TIMEOUT_SECONDS
+        argv, check=True, capture_output=True, text=True, cwd=cwd, timeout=timeout
     ).stdout
 
 
+def docker_binary() -> str:
+    return shutil.which("docker") or "/usr/bin/docker"
+
+
 def docker(host: str, *args: str) -> str:
-    binary = shutil.which("docker") or "/usr/bin/docker"
     try:
-        return run_command([binary, "--host", host, *args]).strip()
+        return run_command([docker_binary(), "--host", host, *args]).strip()
     except (OSError, subprocess.SubprocessError) as error:
         raise Incomplete(f"docker {args[0]} failed: {_detail(error)}") from None
 
 
 def _detail(error: Exception) -> str:
     stderr = getattr(error, "stderr", None)
+    if isinstance(stderr, bytes):  # TimeoutExpired keeps bytes
+        stderr = stderr.decode("utf-8", "replace")
     text = (stderr or str(error)).strip().splitlines()
-    return text[-1][:200] if text else type(error).__name__
+    return bounded(text[-1], 200) if text else type(error).__name__
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -512,18 +647,29 @@ def expected_pins(source: Path) -> list[tuple[str, str, str | None]]:
     return pins
 
 
+def bounded(text: object, limit: int = 300) -> str:
+    """Image-controlled text, made printable (ASCII escapes) and cut to `limit`."""
+    shown = ascii(str(text))[1:-1]
+    return shown if len(shown) <= limit else shown[:limit] + "...(truncated)"
+
+
 class Report:
     def __init__(self) -> None:
         self.violations: list[dict[str, str]] = []
         self.excluded: list[dict[str, str]] = []
+        self.totals = {"violations": 0, "excluded": 0}
 
     def violation(self, rule: str, path: str) -> None:
         if rule not in RULES:
             raise ValueError(rule)
-        self.violations.append({"rule": rule, "path": path})
+        self.totals["violations"] += 1
+        if len(self.violations) < MAX_LISTED:
+            self.violations.append({"rule": rule, "path": bounded(path)})
 
     def exclude(self, path: str, reason: str) -> None:
-        self.excluded.append({"path": path, "reason": reason})
+        self.totals["excluded"] += 1
+        if len(self.excluded) < MAX_LISTED:
+            self.excluded.append({"path": bounded(path), "reason": reason})
 
 
 def compare_payload(measured: dict, reference: Reference, report: Report) -> int:
@@ -605,8 +751,16 @@ def _check_record(measured: dict, report: Report) -> None:
         report.violation("record_mismatch", "RECORD (missing)")
         return
     listed = {}
+    dist_info = next(iter(measured["dist_info"]), "")
     for row in csv.reader(io.StringIO(text)):
-        if row and row[0].startswith(PACKAGE + "/") and "/__pycache__/" not in row[0]:
+        if not row:
+            continue
+        # The package's RECORD may claim only its package, its dist-info and launchers
+        # (../ rows): any other row would let it "own" an unrelated site entry.
+        top = row[0].replace("\\", "/").split("/")[0]
+        if top not in (PACKAGE, dist_info, ".."):
+            report.violation("record_mismatch", row[0])
+        elif top == PACKAGE and "/__pycache__/" not in row[0]:
             listed[row[0][len(PACKAGE) + 1 :]] = row[1] if len(row) > 1 else ""
     payload = {
         rel: e.get("sha256")
@@ -626,26 +780,44 @@ def _record_hash_hex(sha_hex: str) -> str:
 
 def check_import_path(measured: dict, report: Report) -> None:
     root = measured["site"].rstrip("/") + "/" + PACKAGE
-    if measured["located"] != [root]:
-        report.violation("package_shadowed", ", ".join(measured["located"]) or "not found")
+    if measured["located"] != [root] or measured["origin"] != root + "/__init__.py":
+        found = measured["origin"] or ", ".join(measured["located"]) or "not found"
+        report.violation("package_shadowed", found)
     if measured["user_site"]:
         report.violation("user_site", measured["user_site"])
+    for path in measured["unowned"]:
+        report.violation("site_unowned", path)
+    for item in measured["shadowed"]:
+        report.violation(
+            "dependency_shadowed",
+            f"{item['name']}: {', '.join(item['entries'])} -> {item['resolved'] or 'not found'}",
+        )
+    if measured["ld_so_preload"] is not None:
+        report.violation("image_loader_environment", "/etc/ld.so.preload")
     for hook in measured["startup_hooks"]:
         if hook["in_venv"]:
             report.violation("startup_hook", hook["path"])
         else:
             report.exclude(
                 hook["path"],
-                "base image startup hook: runs in every process; recorded in the manifest, "
-                "bound by the base image digest and the image ID, not judged",
+                "startup hook outside the virtual environment (base image or a later layer): "
+                "runs in every process; recorded in the manifest; bound only by the image ID; "
+                "not judged (reviewed on the real image, U3)",
             )
 
 
-def check_image_config(config: dict, report: Report) -> None:
+def check_image_config(config: dict, report: Report) -> bool:
+    """Judge the image config's environment. Returns True when it sets a dynamic loader
+    variable: such an image is not run at all, not even for the measurement."""
+    loader = False
     for item in config.get("Env") or []:
         name = item.split("=", 1)[0]
-        if name.startswith("PYTHON") and name not in IMAGE_ENV_ALLOWED:
+        if name.startswith("LD_"):
+            report.violation("image_loader_environment", name)
+            loader = True
+        elif name.startswith("PYTHON") and name not in IMAGE_ENV_ALLOWED:
             report.violation("image_environment", name)
+    return loader
 
 
 def compare_dependencies(measured: dict, pins: list, report: Report) -> int:
@@ -701,24 +873,61 @@ def manifest_digest(measured: dict) -> str:
         "dist_info": measured["dist_info"],
         "startup_hooks": measured["startup_hooks"],
         "user_site": measured["user_site"],
+        "origin": measured["origin"],
+        "unowned": measured["unowned"],
+        "shadowed": measured["shadowed"],
+        "ld_so_preload": measured["ld_so_preload"],
+        "interpreter": measured["interpreter"],
         "distributions": measured["distributions"],
     }
     canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
     return sha256_bytes(canonical.encode())
 
 
+def remove_container(host: str, name: str) -> str | None:
+    """Best-effort `docker rm -f`. Returns None when the container is gone, else why not."""
+    try:
+        argv = [docker_binary(), "--host", host, "rm", "-f", name]
+        run_command(argv, timeout=CLEANUP_TIMEOUT_SECONDS)
+    except subprocess.CalledProcessError as error:
+        if "no such container" in _detail(error).lower():
+            return None  # it exited and --rm removed it
+        return _detail(error)
+    except (OSError, subprocess.SubprocessError) as error:
+        return _detail(error)
+    return None
+
+
 def measure(host: str, image: str) -> dict:
+    name = f"brandsentinel-image-manifest-{os.getpid()}-{secrets.token_hex(4)}"
     # -S: no .pth file or sitecustomize may run before it is inventoried.
-    out = docker(host, "run", "--rm", "--pull", "never", "--network", "none",
-                 "--entrypoint", "python3", image, "-I", "-S", "-B", "-c", INSIDE)  # fmt: skip
+    argv = ["run", "--name", name, *MEASURE_FLAGS,
+            "--entrypoint", "python3", image, "-I", "-S", "-B", "-c", INSIDE]  # fmt: skip
+    try:
+        out = docker(host, *argv)
+    except BaseException as error:
+        # A timeout or an interruption kills the docker client, not the container.
+        problem = remove_container(host, name)
+        if problem is not None:
+            reason = (
+                f"the measurement did not finish and its container {name} could not be "
+                f"removed ({bounded(problem, 200)}); it may still be running"
+            )
+            if isinstance(error, Exception):
+                raise Incomplete(reason) from None
+            print(f"image_manifest: {reason}", file=sys.stderr)
+        raise
     try:
         measured = json.loads(out)
     except ValueError:
         raise Incomplete("the in-image measurement did not return JSON") from None
+    if not isinstance(measured, dict):
+        raise Incomplete("the in-image measurement did not return an object")
     if "fatal" in measured:
-        raise Incomplete(f"the in-image measurement failed: {measured['fatal']}")
+        raise Incomplete(f"the in-image measurement failed: {bounded(measured['fatal'], 200)}")
     if measured["errors"]:
-        raise Incomplete("the in-image measurement could not read: " + measured["errors"][0])
+        problem = bounded(measured["errors"][0], 200)
+        raise Incomplete(f"the in-image measurement could not read: {problem}")
     if not measured["bytecode"]:
         raise Incomplete("no package source was inspected in the image")
     return measured
@@ -731,12 +940,36 @@ def verify(a: argparse.Namespace) -> tuple[dict, int]:
         inspected = json.loads(
             docker(a.docker_host, "image", "inspect", "--format", "{{json .}}", a.image)
         )
-        result["image_id"], result["created"] = inspected["Id"], inspected.get("Created")
+        image_id = inspected["Id"]
+        if not isinstance(image_id, str):
+            raise TypeError
+        result["image_id"] = bounded(image_id, 80)
+        result["created"] = bounded(inspected.get("Created"), 64)
         config = inspected.get("Config") or {}
-    except (ValueError, KeyError, TypeError):
+        env = [str(e) for e in (config.get("Env") or [])][:200]
+    except (ValueError, KeyError, TypeError, AttributeError):
         raise Incomplete("docker image inspect did not return the image") from None
-    result["config"] = {k: config.get(k) for k in ("User", "Entrypoint", "Cmd")}
-    check_image_config(config, report)
+    # Reported for the U3 review, not judged; every value is image-controlled.
+    result["config"] = {
+        k: bounded(json.dumps(config.get(k)), 500) for k in ("User", "Entrypoint", "Cmd")
+    }
+    result["config"]["path"] = next(
+        (bounded(e.split("=", 1)[1], 500) for e in env if e.startswith("PATH=")), None
+    )
+    result["config"]["env_names"] = sorted(bounded(e.split("=", 1)[0], 100) for e in env)
+    loader = check_image_config({"Env": env}, report)
+    result["binding"] = binding(a)
+    if a.expect_id:
+        result["expected_id"] = a.expect_id
+        result["id_matches"] = result["image_id"] == a.expect_id
+        if not result["id_matches"]:
+            report.violation("image_id_mismatch", result["image_id"])
+    if loader or result.get("id_matches") is False:
+        # Never run an image that is not the expected one, or whose config would preload
+        # code into the measurement itself.
+        result["measured"] = False
+        return finish(result, report)
+    result["measured"] = True
     dockerfile = a.source / "docker" / "Dockerfile.sandbox"
     base = (
         re.search(r"^FROM\s+(\S+)", dockerfile.read_text(), re.M) if dockerfile.is_file() else None
@@ -764,7 +997,9 @@ def verify(a: argparse.Namespace) -> tuple[dict, int]:
             report.violation("reference_mismatch", rel)
 
     measured = measure(a.docker_host, result["image_id"])  # the ID compared, never the tag
-    result["python"] = measured["python"]
+    result["python"] = {k: bounded(v, 100) for k, v in measured["python"].items()}
+    result["interpreter"] = {k: bounded(v, 300) for k, v in measured["interpreter"].items()}
+    result["site"] = bounded(measured["site"], 300)
     checks, compared = {}, {}
     compared["payload_files"] = compare_payload(measured, reference, report)
     compared["bytecode_files"] = compare_bytecode(measured, report)
@@ -778,13 +1013,17 @@ def verify(a: argparse.Namespace) -> tuple[dict, int]:
 
     manifest = manifest_digest(measured)
     result["manifest_sha256"] = manifest
-    if a.expect_id:
-        result["expected_id"] = a.expect_id
-        result["id_matches"] = result["image_id"] == a.expect_id
-        if not result["id_matches"]:
-            report.violation("image_id_mismatch", result["image_id"])
     checks["image_id"] = "compared" if a.expect_id else "not bound (no --expect-id)"
-    result["binding"] = {
+    if a.expect_wheel_sha256 and wheel_sha != a.expect_wheel_sha256:
+        report.violation("wheel_sha256_mismatch", str(wheel_sha))
+    if a.expect_manifest_sha256 and manifest != a.expect_manifest_sha256:
+        report.violation("manifest_sha256_mismatch", manifest)
+    result.update(checks=checks, compared=compared)
+    return finish(result, report)
+
+
+def binding(a: argparse.Namespace) -> dict:
+    return {
         "image_id": "bound to --expect-id"
         if a.expect_id
         else "NOT BOUND: this result identifies the image; it does not approve it",
@@ -796,14 +1035,13 @@ def verify(a: argparse.Namespace) -> tuple[dict, int]:
         else "reported, not compared",
         "approval": "none: approval is the owner's, recorded in sealed build evidence",
     }
-    if a.expect_wheel_sha256 and wheel_sha != a.expect_wheel_sha256:
-        report.violation("wheel_sha256_mismatch", str(wheel_sha))
-    if a.expect_manifest_sha256 and manifest != a.expect_manifest_sha256:
-        report.violation("manifest_sha256_mismatch", manifest)
 
-    result.update(checks=checks, compared=compared, excluded=report.excluded)
+
+def finish(result: dict, report: Report) -> tuple[dict, int]:
+    result["excluded"] = report.excluded
     result["violations"] = report.violations
-    ok = not report.violations
+    result["totals"] = report.totals
+    ok = report.totals["violations"] == 0
     result["verdict"] = "ok" if ok else "MISMATCH"
     return result, 0 if ok else 1
 
@@ -838,8 +1076,14 @@ def parse(argv: list[str]) -> argparse.Namespace:
     return a
 
 
+def _terminate(signum: int, frame: object) -> None:
+    raise SystemExit(128 + signum)  # unwinds through measure()'s container cleanup
+
+
 def main(argv: list[str] | None = None) -> int:
     a = parse(sys.argv[1:] if argv is None else argv)
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _terminate)
     try:
         result, code = verify(a)
     except Incomplete as reason:
