@@ -1,13 +1,16 @@
 """Identity, provenance and contents of the sandbox image (SP1; B7 PR-2).
 
 Checks an image on one Docker endpoint against references kept outside it. The image
-is inspected first: an image whose ID is not `--expect-id`, or whose config sets a
-dynamic loader variable, is reported and never run. Otherwise one container run,
-addressed by the inspected ID and locked down like the sandbox runner's containers
-(`--network none --pull never --read-only --cap-drop ALL`, no-new-privileges, limits,
-a unique name, removed on timeout, Ctrl-C, SIGTERM or SIGHUP), measures the image;
-every comparison happens here. Exit 2 also covers usage errors; a signal ends the run
-with 128 + its number.
+is inspected first: an image whose ID is malformed or not `--expect-id`, or whose
+config sets a dynamic loader variable anywhere in its environment, is reported and
+never run. Otherwise one container run, addressed by the inspected ID and locked down
+like the sandbox runner's containers (`--network none --pull never --read-only
+--cap-drop ALL`, no-new-privileges, limits, a unique name), measures the image; every
+comparison happens here. After a timeout, Ctrl-C, SIGTERM or SIGHUP the container is
+removed with `docker rm -f`, best effort: a failed removal is named in the INCOMPLETE
+report after a timeout, and on stderr only after a signal (a signal ends the run with
+128 + its number and prints no report). Exit 2 also covers usage errors and a report
+that could not be written.
 
     # Build time, developer: the evidence recorded for a release.
     python image_manifest.py --profile release \
@@ -42,14 +45,20 @@ Checked against the references:
 - import path: measured under `-S`, so no startup hook runs first. Over the runtime
   search order (the standard library, then the environment, user and system site
   directories), `brandsentinel` resolves to the virtual environment's copy, and every
-  other importable top-level name of the environment resolves to its single entry
-  there (nothing earlier on the path, no second entry with the same import name);
-  there is no user site-packages directory; every top-level entry of the environment's
-  site directories belongs to a distribution there by its RECORD, and the package's
-  own RECORD claims nothing outside it; the environment holds no startup hook
-  (`*.pth`, `sitecustomize`, `usercustomize`); the image has no `/etc/ld.so.preload`
-  and its config sets no `LD_*` variable and no unreviewed `PYTHON*` variable
-  (only `PYTHONDONTWRITEBYTECODE` and `PYTHONUNBUFFERED` are allowed). Startup hooks
+  other top-level name of the environment the path-based finder can load (a directory,
+  or a file with an import suffix, whose name has no dot; identifier or not) resolves
+  to its single entry there (nothing earlier on the path, no second entry with the
+  same import name); there is no user site-packages directory; every top-level entry
+  of the environment's site directories is a real directory or regular file (no
+  symlink, no special file) and belongs to a distribution there by its RECORD, and
+  the package's own RECORD claims only its package, its dist-info and `../` launcher
+  rows; the environment holds no startup hook (`*.pth`, `sitecustomize`,
+  `usercustomize`); the image has no `/etc/ld.so.preload` (checked by the image's own
+  interpreter, so only as trustworthy as it is); and every entry of its config's
+  environment is a `NAME=value` string, no name is set twice, none is `LD_*`, and
+  no `PYTHON*` variable is set but `PYTHONDONTWRITEBYTECODE` and `PYTHONUNBUFFERED`.
+  The report lists the first 200 variable names, the total and whether it was cut;
+  every entry is judged. Startup hooks
   outside the environment (the base image or a later layer) are hashed into the
   manifest and listed as excluded, bound only by the image ID, not judged;
 - dependencies (release profile): the distributions the image resolves equal the
@@ -87,8 +96,9 @@ Checking it against `--expect-id` proves the image is the one named; it does not
 that the name was approved. The measurement runs the image's own interpreter, so it shows that the
 image matches the references, but it cannot vouch for an image it measures.
 The measured image is addressed by the ID that was compared, never by the tag.
-`manifest_sha256`, a digest of the measured inventory without the creation time or
-host paths, identifies a measurement for the release record. It is stable for one
+`manifest_sha256`, a digest of the measured inventory (not of the image config, the
+creation time or the host's marker environment) identifies a measurement for the
+release record. It is stable for one
 image, not across rebuilds. It is never trusted in
 place of the image ID. Not checked: the contents of dependency files (pip enforced
 their wheel hashes at build time; afterwards only the image ID binds them), the
@@ -111,6 +121,7 @@ acceptable (reviewed, not judged here).
 
 import argparse
 import base64
+import contextlib
 import csv
 import hashlib
 import io
@@ -159,10 +170,11 @@ RULES = {
     "package_shadowed": "brandsentinel does not resolve to the environment's copy",
     "startup_hook": "a startup hook (.pth, sitecustomize, usercustomize) in the environment",
     "user_site": "a user site-packages directory that every process would import from",
-    "image_environment": "the image config sets an unreviewed PYTHON* variable",
+    "image_environment": "the image config sets an unreviewed PYTHON* variable or a name twice",
     "image_loader_environment": "the image config sets a dynamic loader variable (LD_*)",
     "site_unowned": "a site-packages entry no installed distribution's RECORD owns",
     "dependency_shadowed": "an importable name of the environment resolves to another entry",
+    "site_not_regular": "a top-level site-packages entry is a symlink or a special file",
     "dependency_missing": "a pinned dependency is not installed",
     "dependency_version": "a dependency's version differs from its pin",
     "dependency_outside_venv": "a pinned dependency resolves outside the environment",
@@ -181,6 +193,7 @@ INSTALLER_FILES = {
 # Python variables an image config may set: neither changes what is imported.
 IMAGE_ENV_ALLOWED = {"PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED"}
 TIMEOUT_SECONDS = 600
+ENV_REPORTED = 200  # environment names listed in a report; all of them are judged
 CLEANUP_TIMEOUT_SECONDS = 60
 MAX_LISTED = 1000  # violations and exclusions listed in a report; the total is always given
 # The measurement container gets the sandbox runner's lockdown (sandbox/runner.py).
@@ -238,8 +251,22 @@ def same_const(a, b):
     if isinstance(a, (float, complex)): return repr(a) == repr(b)
     return a == b
 
+def slot_names(code):
+    # The order of the local, cell and free slots (co_varnames, co_cellvars and
+    # co_freevars give membership, not this interleaving). The slot kinds themselves are
+    # not exposed to Python.
+    name_of = code._varname_from_oparg  # checked to exist in main(); 3.11+
+    names = []
+    for i in range(1 << 16):
+        try:
+            names.append(name_of(i))
+        except (IndexError, ValueError):
+            return names
+    return object()  # implausibly many slots: never equal, so never a pass
+
 def same_code(a, b):
     return (all(getattr(a, f, None) == getattr(b, f, None) for f in FIELDS)
+            and slot_names(a) == slot_names(b)
             and same_const(a.co_consts, b.co_consts))
 
 def judge(src, pyc):
@@ -313,6 +340,9 @@ def main():
     # Runs under -S, so no .pth file or sitecustomize has executed: the site
     # directories are derived here, in the order site.main() would add them.
     errors = []
+    if not hasattr(compile("", "", "exec"), "_varname_from_oparg"):
+        # without it the slot order cannot be compared: incomplete, never skipped
+        errors.append("this interpreter does not expose the code slot order")
     # site.venv() reads pyvenv.cfg and sets sys.prefix and site.PREFIXES. It also adds
     # the site-packages, which would run .pth files, so that step is stubbed out. It
     # must run before sysconfig computes (and caches) any path.
@@ -417,19 +447,31 @@ def main():
     # (a package beside a module, an extension beside a .py) would shadow it.
     suffixes = sorted(importlib.machinery.all_suffixes(), key=len, reverse=True)
     def import_name(name, path):
-        if os.path.isdir(path) and not os.path.islink(path):
+        # What the path-based finder can load under this name: a directory (followed
+        # through a symlink, as the finder does) or a file with an import suffix. Any
+        # name without a dot is loadable through importlib, identifier or not; a dotted
+        # name would mean a submodule, which a top-level entry cannot be.
+        if os.path.isdir(path):
             stem = name
         else:
             stem = next((name[: -len(x)] for x in suffixes if name.endswith(x)), None)
-        return stem if stem and stem.isidentifier() else None
-    entries = {}
+        return stem if stem and "." not in stem else None
+    entries, irregular = {}, []
     for d in venv_sites:
         for n in sorted(os.listdir(d)):
+            path = os.path.join(d, n)
+            try:
+                mode = os.lstat(path).st_mode
+            except OSError:
+                errors.append("cannot inspect: " + path)
+                continue
+            if not (stat.S_ISDIR(mode) or stat.S_ISREG(mode)):
+                irregular.append(path)  # pip installs neither symlinks nor special files
             if n == "__pycache__" or n.endswith((".dist-info", ".egg-info", ".pth")):
                 continue
-            stem = import_name(n, os.path.join(d, n))
+            stem = import_name(n, path)
             if stem:
-                entries.setdefault(stem, []).append(os.path.join(d, n))
+                entries.setdefault(stem, []).append(path)
     shadowed = []
     for stem, paths in sorted(entries.items()):
         found = importlib.machinery.PathFinder.find_spec(stem, runtime)
@@ -464,6 +506,7 @@ def main():
                    "magic": importlib.util.MAGIC_NUMBER.hex()},
         "site": site_dir, "located": located, "origin": origin, "package": package,
         "bytecode": bytecode, "unowned": unowned, "shadowed": shadowed,
+        "irregular": irregular,
         "ld_so_preload": ld_so_preload,
         "interpreter": {"prefix": sys.prefix, "executable": sys.executable},
         "dist_info": dist_info, "record": record, "startup_hooks": hooks,
@@ -482,9 +525,14 @@ class Incomplete(Exception):
     """The inspection cannot be completed; nothing can be concluded."""
 
 
-def run_command(argv: list[str], cwd: Path | None = None, timeout: int = TIMEOUT_SECONDS) -> str:
+def run_command(argv: list[str], cwd: Path | None = None, timeout: int | None = None) -> str:
     return subprocess.run(  # noqa: S603 - fixed argv
-        argv, check=True, capture_output=True, text=True, cwd=cwd, timeout=timeout
+        argv,
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        timeout=TIMEOUT_SECONDS if timeout is None else timeout,
     ).stdout
 
 
@@ -500,6 +548,8 @@ def docker(host: str, *args: str) -> str:
 
 
 def _detail(error: Exception) -> str:
+    if isinstance(error, subprocess.TimeoutExpired):  # str() starts with the whole argv
+        return f"timed out after {error.timeout} s"
     stderr = getattr(error, "stderr", None)
     if isinstance(stderr, bytes):  # TimeoutExpired keeps bytes
         stderr = stderr.decode("utf-8", "replace")
@@ -787,6 +837,8 @@ def check_import_path(measured: dict, report: Report) -> None:
         report.violation("user_site", measured["user_site"])
     for path in measured["unowned"]:
         report.violation("site_unowned", path)
+    for path in measured["irregular"]:
+        report.violation("site_not_regular", path)
     for item in measured["shadowed"]:
         report.violation(
             "dependency_shadowed",
@@ -806,12 +858,33 @@ def check_import_path(measured: dict, report: Report) -> None:
             )
 
 
-def check_image_config(config: dict, report: Report) -> bool:
-    """Judge the image config's environment. Returns True when it sets a dynamic loader
-    variable: such an image is not run at all, not even for the measurement."""
+def image_environment(config: dict) -> list[tuple[str, str]]:
+    """Every entry of the image config's Env as (name, value), in order. An entry that is
+    not a `NAME=value` string makes the inspection incomplete, never a pass."""
+    raw = config.get("Env")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise Incomplete("the image config's Env is not a list")
+    env = []
+    for item in raw:
+        name, sep, value = item.partition("=") if isinstance(item, str) else ("", "", "")
+        if not sep or not name:
+            raise Incomplete(f"the image config has a malformed Env entry: {bounded(item, 100)}")
+        env.append((name, value))
+    return env
+
+
+def check_image_config(env: list[tuple[str, str]], report: Report) -> bool:
+    """Judge every entry of the image config's environment. Returns True when it sets a
+    dynamic loader variable: such an image is not run at all, not even for the
+    measurement. A name set twice is ambiguous and a mismatch."""
     loader = False
-    for item in config.get("Env") or []:
-        name = item.split("=", 1)[0]
+    seen: set[str] = set()
+    for name, _ in env:
+        if name in seen:
+            report.violation("image_environment", f"{name} (set more than once)")
+        seen.add(name)
         if name.startswith("LD_"):
             report.violation("image_loader_environment", name)
             loader = True
@@ -876,6 +949,7 @@ def manifest_digest(measured: dict) -> str:
         "origin": measured["origin"],
         "unowned": measured["unowned"],
         "shadowed": measured["shadowed"],
+        "irregular": measured["irregular"],
         "ld_so_preload": measured["ld_so_preload"],
         "interpreter": measured["interpreter"],
         "distributions": measured["distributions"],
@@ -941,23 +1015,26 @@ def verify(a: argparse.Namespace) -> tuple[dict, int]:
             docker(a.docker_host, "image", "inspect", "--format", "{{json .}}", a.image)
         )
         image_id = inspected["Id"]
-        if not isinstance(image_id, str):
+        config = inspected.get("Config")
+        config = {} if config is None else config  # only a missing config is empty
+        if not isinstance(image_id, str) or not isinstance(config, dict):
             raise TypeError
-        result["image_id"] = bounded(image_id, 80)
         result["created"] = bounded(inspected.get("Created"), 64)
-        config = inspected.get("Config") or {}
-        env = [str(e) for e in (config.get("Env") or [])][:200]
     except (ValueError, KeyError, TypeError, AttributeError):
         raise Incomplete("docker image inspect did not return the image") from None
-    # Reported for the U3 review, not judged; every value is image-controlled.
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+        raise Incomplete(f"the daemon reported a malformed image ID: {bounded(image_id, 80)}")
+    result["image_id"] = image_id
+    env = image_environment(config)  # all of it; only the report below is cut short
     result["config"] = {
         k: bounded(json.dumps(config.get(k)), 500) for k in ("User", "Entrypoint", "Cmd")
     }
-    result["config"]["path"] = next(
-        (bounded(e.split("=", 1)[1], 500) for e in env if e.startswith("PATH=")), None
-    )
-    result["config"]["env_names"] = sorted(bounded(e.split("=", 1)[0], 100) for e in env)
-    loader = check_image_config({"Env": env}, report)
+    paths = [value for name, value in env if name == "PATH"]
+    result["config"]["path"] = bounded(paths[-1], 500) if paths else None
+    result["config"]["env_total"] = len(env)
+    result["config"]["env_truncated"] = len(env) > ENV_REPORTED
+    result["config"]["env_names"] = [bounded(name, 100) for name, _ in env[:ENV_REPORTED]]
+    loader = check_image_config(env, report)
     result["binding"] = binding(a)
     if a.expect_id:
         result["expected_id"] = a.expect_id
@@ -1094,7 +1171,15 @@ def main(argv: list[str] | None = None) -> int:
                   "incomplete": [f"internal error: {type(error).__name__}: {str(error)[:200]}"],
                   "verdict": "INCOMPLETE"}  # fmt: skip
         code = 2
-    print(json.dumps(result, indent=2))
+    if sys.stdout is None:  # started with no stdout: the caller gets no report
+        return 2
+    try:
+        print(json.dumps(result, indent=2), flush=True)
+    except (OSError, ValueError):  # the caller did not get the report: never a pass
+        # let the interpreter's own final flush succeed, so the exit code stays 2
+        with contextlib.suppress(OSError, ValueError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 2
     return code
 
 

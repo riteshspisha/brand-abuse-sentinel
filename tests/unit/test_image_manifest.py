@@ -10,6 +10,7 @@ import base64
 import csv
 import dis
 import hashlib
+import importlib.machinery
 import importlib.util
 import io
 import json
@@ -38,12 +39,33 @@ def _load():
 
 
 im = _load()
+REAL_RUN_COMMAND = im.run_command  # before any fixture replaces it
 
 FILES = {
     "__init__.py": b'"""The package."""\n',
     # Two LOAD_CONSTs in a row (a superinstruction target) and a BINARY_OP.
     "cli.py": b"def app(x=0):\n    return min(100, 1) + x\n",
     "store/__init__.py": b"",
+    # Code shapes the field-by-field comparison must cover: a closure, keyword-only
+    # arguments, an exception table, an assert, tuple/-0.0/frozenset constants, and
+    # interleaved local and cell slots.
+    "store/ops.py": (
+        b"def outer(a, /, b=0, *, key=1):\n"
+        b"    total = (1, (2, 3))\n"
+        b"    neg = -0.0\n"
+        b"    def inner():\n"
+        b"        return a + key\n"
+        b"    try:\n"
+        b"        assert a >= 0, 'negative'\n"
+        b"        return inner() if a in {'x', 'y'} or a else (total, neg, b)\n"
+        b"    except ZeroDivisionError:\n"
+        b"        return None\n"
+    ),
+    "store/slots.py": (
+        b"def f():\n    aa = 'safe'\n    bb = 'other'\n    cc = 'cell'\n"
+        b"    gg = lambda: cc\n"
+        b"    return sorted((k, type(v).__name__) for k, v in locals().items())\n"
+    ),
     "store/migrations/0001.sql": b"create table t (x);\n",
     "report/page.html.j2": b"<p>{{ x }}</p>\n",
     "sandbox/chromium-seccomp.json": b'{"defaultAction": "SCMP_ACT_ERRNO"}\n',
@@ -121,6 +143,9 @@ def fake_base(tmp: Path) -> Path:
     return base
 
 
+_UNSET = object()
+
+
 class World:
     """A source tree, a release wheel, an image stand-in and an installation."""
 
@@ -182,6 +207,7 @@ class World:
         (self.prefix / "INSTALL").write_text(f"commit: x\nwheel_sha256: {self.wheel_sha}\n")
         self.docker_calls: list[list[str]] = []
         self.created = "2026-11-11T00:00:00Z"
+        self.config_override = _UNSET  # replaces the whole image config when set
         self.run_error: BaseException | None = None  # raised by `docker run`
         self.rm_error: BaseException | None = None  # raised by `docker rm -f`
 
@@ -230,6 +256,8 @@ class World:
             if args[:2] == ["image", "inspect"]:
                 assert args[2:4] == ["--format", "{{json .}}"]
                 config = {"Env": self.config_env, "User": "pwuser", "Entrypoint": None}
+                if self.config_override is not _UNSET:
+                    config = self.config_override
                 return json.dumps({"Id": IMAGE_ID, "Created": self.created, "Config": config})
             if args[0] == "rm":
                 if self.rm_error is not None:
@@ -643,6 +671,7 @@ CASES = {
     "record_mismatch": lambda w: (
         _rewrite_record(w, lambda rows: [r for r in rows if r[0] != "brandsentinel/cli.py"]) or {}
     ),
+    "site_not_regular": lambda w: (w.site / "linked").symlink_to(w.tmp) or {},
     "dependency_shadowed": lambda w: (
         (w.site / "dep_a").mkdir() or ((w.site / "dep_a" / "__init__.py").write_text("") and {})
     ),
@@ -959,11 +988,12 @@ def test_the_manifest_digest_covers_the_whole_inventory():
         "dist_info": {"d": 1}, "startup_hooks": [], "user_site": None, "origin": "/s/b",
         "unowned": [], "distributions": [], "marker_environment": {"k": 1}, "record": "r",
         "errors": [], "located": ["/s/b"], "shadowed": [], "ld_so_preload": None,
+        "irregular": [],
         "interpreter": {"prefix": "/p"},
     }  # fmt: skip
     digest = im.manifest_digest(measured)
     covered = {"python", "site", "package", "bytecode", "dist_info", "startup_hooks",
-               "user_site", "origin", "unowned", "distributions", "shadowed",
+               "user_site", "origin", "unowned", "distributions", "shadowed", "irregular",
                "ld_so_preload", "interpreter"}  # fmt: skip
     for key in measured:
         changed = dict(measured, **{key: {"changed": True}})
@@ -1004,22 +1034,26 @@ shift 2  # --host <sock>
 case "$1" in
   info) echo "$STUB_ROOT" ;;
   load) cat >/dev/null; printf '%b' "$STUB_LOAD_OUT"; exit "${STUB_LOAD_RC:-0}" ;;
-  image) eval "echo \$STUB_ID_$(echo "$5" | tr -c 'a-zA-Z0-9\n' _)" ;;
+  image) [ "${STUB_INSPECT_RC:-0}" -eq 0 ] || exit "$STUB_INSPECT_RC"
+         eval "echo \$STUB_ID_$(echo "$5" | tr -c 'a-zA-Z0-9\n' _)" ;;
 esac
 """
 STUB_PYTHON = r"""#!/bin/sh
 echo "python $*" >> "$STUB_LOG"
+for arg in "$@"; do printf '%s\0' "$arg"; done > "$STUB_ARGV"
 exit "$STUB_RC"
 """
 
 
 def _load_image(tmp: Path, expected: str, rc: int = 0, loaded_id: str | None = None,
                 local_id: str = "", load_out: str | None = None, load_rc: int = 0,
+                inspect_rc: int = 0, drop_verifier: bool = False,
                 ) -> tuple[subprocess.CompletedProcess, list[str]]:  # fmt: skip
     prefix = tmp / "prefix"
     (prefix / "venv" / "bin").mkdir(parents=True)
-    (prefix / "src" / "scripts" / "service-account").mkdir(parents=True)
-    (prefix / "src" / "scripts" / "service-account" / "image_manifest.py").write_text("")
+    (prefix / "src" / "scripts" / "service-account").mkdir(parents=True, exist_ok=True)
+    if not drop_verifier:
+        (prefix / "src" / "scripts" / "service-account" / "image_manifest.py").write_text("")
     python = prefix / "venv" / "bin" / "python"
     python.write_text(STUB_PYTHON)
     python.chmod(0o755)
@@ -1039,7 +1073,8 @@ def _load_image(tmp: Path, expected: str, rc: int = 0, loaded_id: str | None = N
         "XDG_RUNTIME_DIR": str(tmp), "STUB_LOG": str(log), "STUB_ROOT": str(tmp),
         "STUB_RC": str(rc), key(ref): loaded_id or expected,
         "STUB_LOAD_OUT": f"Loaded image: {ref}\\n" if load_out is None else load_out,
-        "STUB_LOAD_RC": str(load_rc),
+        "STUB_LOAD_RC": str(load_rc), "STUB_INSPECT_RC": str(inspect_rc),
+        "STUB_ARGV": str(tmp / "argv"),
         key("brandsentinel-sandbox:local"): local_id,
     }  # fmt: skip
     done = subprocess.run(  # noqa: S603 - fixed argv, test-built stubs
@@ -1313,3 +1348,578 @@ def test_sigterm_during_the_measurement_removes_its_container(world, capsys):
             signal.signal(sig, handler)
     assert exit_.value.code == 128 + signal.SIGTERM
     assert len(_rm_calls(world)) == 1
+
+
+# Round-4 review remediation (R4-1 to R4-6) ---------------------------------------------
+
+
+def _padded(position: int, variable: str) -> list[str]:
+    env = [f"PAD_{i}=x" for i in range(max(position, 1) + 50)]
+    env.insert(position, variable)
+    return env
+
+
+@pytest.mark.parametrize("profile", ["release", "load"])
+@pytest.mark.parametrize("position", [0, 199, 200, 250])
+def test_a_loader_variable_anywhere_in_the_environment_stops_the_run(
+    position, profile, world, capsys
+):
+    """R4-1: every entry is judged; only the report is cut at ENV_REPORTED."""
+    world.config_env = _padded(position, "LD_PRELOAD=/usr/lib/evil.so")
+    code, report = verify(world, capsys, profile=profile)
+    assert code == 1 and "image_loader_environment" in rules(report)
+    assert report["measured"] is False and _runs(world) == []
+    assert report["config"]["env_total"] == len(world.config_env)
+    assert report["config"]["env_truncated"] is (len(world.config_env) > im.ENV_REPORTED)
+    assert len(report["config"]["env_names"]) == min(len(world.config_env), im.ENV_REPORTED)
+
+
+@pytest.mark.parametrize("profile", ["release", "load"])
+@pytest.mark.parametrize("position", [0, 199, 200, 250])
+def test_a_python_variable_anywhere_in_the_environment_is_a_mismatch(
+    position, profile, world, capsys
+):
+    world.config_env = _padded(position, "PYTHONPATH=/srv/override")
+    code, report = verify(world, capsys, profile=profile)
+    assert code == 1 and rules(report) == {"image_environment"}
+    assert any(v["path"] == "PYTHONPATH" for v in report["violations"])
+
+
+def test_a_variable_set_twice_is_a_mismatch(world, capsys):
+    world.config_env += ["PATH=/opt/decoy/bin"]
+    code, report = verify(world, capsys)
+    assert (
+        code == 1
+        and {"path": "PATH (set more than once)", "rule": "image_environment"}
+        in (report["violations"])
+    )
+    assert report["config"]["path"] == "/opt/decoy/bin"  # the effective (last) value
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        ["NOEQUALS"],
+        ["=value"],
+        [42],
+        [None],
+        "PATH=/usr/bin",
+        {"PATH": "/usr/bin"},
+        {},
+        "",
+        0,
+        False,
+    ],
+    ids=[
+        "no-equals",
+        "empty-name",
+        "not-a-string",
+        "none-entry",
+        "env-is-a-string",
+        "env-is-a-dict",
+        "empty-dict",
+        "empty-string",
+        "zero",
+        "false",
+    ],
+)
+def test_a_malformed_environment_is_incomplete_never_a_pass(env, world, capsys):
+    world.config_env = env
+    code, report = verify(world, capsys)
+    assert (code, report["verdict"]) == (2, "INCOMPLETE") and _runs(world) == []
+
+
+@pytest.mark.parametrize(
+    "image_id",
+    ["sha256:" + "AB" * 32, "sha256:" + "ab" * 31, "ab" * 32, "sha256:" + "ab" * 32 + "\n"],
+    ids=["upper", "short", "unprefixed", "newline"],
+)
+def test_a_malformed_daemon_image_id_is_incomplete(image_id, world, capsys, monkeypatch):
+    """R4-6: the inspected ID is format-checked before it is used, bound or not."""
+    original = world.runner
+
+    def runner(argv, cwd=None, timeout=None):
+        out = original(argv, cwd, timeout)
+        if argv[3:5] == ["image", "inspect"]:
+            return json.dumps(dict(json.loads(out), Id=image_id))
+        return out
+
+    monkeypatch.setattr(im, "run_command", runner)
+    code, report = verify(world, capsys)
+    assert (code, report["verdict"]) == (2, "INCOMPLETE") and _runs(world) == []
+    assert "malformed image ID" in report["incomplete"][0]
+
+
+@pytest.mark.parametrize(
+    "expected",
+    [IMAGE_ID[:-1] + "c", "sha256:" + "ba" + "ab" * 31],
+    ids=["last-nibble", "first-byte"],
+)
+def test_a_near_miss_expected_id_never_runs(expected, world, capsys):
+    code, report = verify(world, capsys, profile="load", expect_id=expected)
+    assert code == 1 and rules(report) == {"image_id_mismatch"} and _runs(world) == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [IMAGE_ID.upper().replace("SHA256", "sha256"), IMAGE_ID[7:], IMAGE_ID + "0",
+     IMAGE_ID + "\n", " " + IMAGE_ID],
+    ids=["upper", "unprefixed", "long", "newline", "leading-space"],
+)  # fmt: skip
+def test_a_malformed_expected_id_is_refused(value):
+    argv = ["--profile", "load", "--docker-host", "h", "--source", "s", "--installed", "p",
+            "--expect-id", value]  # fmt: skip
+    with pytest.raises(SystemExit) as exit_:
+        im.parse(argv)
+    assert exit_.value.code == 2
+
+
+def test_a_symlinked_dependency_package_shadowed_from_the_stdlib(base_world, capsys):
+    """R4-2: the round-4 reproduction. A symlinked top-level package is refused, and its
+    name is still resolution-checked (the finder follows the symlink)."""
+    w = base_world
+    real = w.tmp / "elsewhere" / "dep_a"
+    real.mkdir(parents=True)
+    (real / "__init__.py").write_text("VERSION = '1.0'\n")
+    (w.site / "dep_a.py").unlink()
+    (w.site / "dep_a").symlink_to(real, target_is_directory=True)
+    d = w.site / "dep_a-1.0.dist-info"
+    write_record(d / "RECORD", {f"{d.name}/METADATA": (d / "METADATA").read_bytes(),
+                                "dep_a/__init__.py": b"VERSION = '1.0'\n"})  # fmt: skip
+    (w.base_lib / "dep_a.py").write_text("WHO = 'planted'\n")
+    code, report = verify(w, capsys)
+    assert code == 1
+    assert {"site_not_regular", "dependency_shadowed"} <= rules(report), report["violations"]
+
+
+@pytest.mark.parametrize("kind", ["file-symlink", "dangling-symlink", "fifo"])
+def test_top_level_special_entries_are_refused(kind, world, capsys):
+    target = world.site / "dep_a.py"
+    entry = world.site / "special.py"
+    if kind == "file-symlink":
+        entry.symlink_to(target)
+    elif kind == "dangling-symlink":
+        entry.symlink_to(world.tmp / "nowhere.py")
+    else:
+        os.mkfifo(entry)
+    code, report = verify(world, capsys)
+    assert code == 1 and "site_not_regular" in rules(report)
+
+
+def test_a_non_identifier_module_name_is_resolution_checked(base_world, capsys):
+    """R4-4: importlib loads `odd-name` from odd-name.py; it is checked like any name."""
+    w = base_world
+    d = dist(w.site, "odd-name", "1.0", module=False)
+    (w.site / "odd-name.py").write_text("OK = True\n")
+    (w.site / "1abc__mypyc.cpython-312-x86_64-linux-gnu.so").write_bytes(b"\x7fELF")  # owned
+    mypyc = "1abc__mypyc.cpython-312-x86_64-linux-gnu.so"
+    write_record(d / "RECORD", {f"{d.name}/METADATA": (d / "METADATA").read_bytes(),
+                                "odd-name.py": b"OK = True\n", mypyc: b"\x7fELF"})  # fmt: skip
+    pins = PINS + "odd-name==1.0\n"
+    original = w.runner
+    im.run_command = lambda argv, cwd=None, timeout=None: (
+        pins if Path(argv[0]).name == "uv" else original(argv, cwd, timeout)
+    )
+    code, report = verify(w, capsys)
+    assert (code, report["violations"]) == (0, [])  # a faithful odd name passes
+    (w.base_lib / "odd-name.py").write_text("OK = False\n")
+    code, report = verify(w, capsys)
+    assert code == 1 and "dependency_shadowed" in rules(report)
+
+
+def _rewrite_code(w: World, rel: str, change) -> tuple:
+    """Rewrite the .pyc of `rel` with `change(module_code)`; return (genuine, tampered)."""
+    path = w.pkg / rel
+    pyc = path.parent / "__pycache__" / f"{path.stem}.{TAG}.pyc"
+    raw = pyc.read_bytes()
+    module = marshal.loads(raw[16:])  # noqa: S302 - a test-built file
+    tampered = change(module)
+    pyc.write_bytes(raw[:16] + marshal.dumps(tampered))
+    return module, tampered
+
+
+def _function(module, name):
+    return next(c for c in module.co_consts if hasattr(c, "co_code") and c.co_name == name)
+
+
+def _replace_function(module, name, **fields):
+    target = _function(module, name)
+    consts = tuple(c.replace(**fields) if c is target else c for c in module.co_consts)
+    return module.replace(co_consts=consts)
+
+
+def _outer_change(field):
+    def change(module):
+        outer = _function(module, "outer")
+        value = {
+            "co_exceptiontable": b"",
+            "co_posonlyargcount": 0,
+            "co_kwonlyargcount": 0,
+            "co_argcount": outer.co_argcount - 1,
+            "co_cellvars": (*reversed(outer.co_cellvars), "extra"),
+            "co_names": (*outer.co_names, "extra"),
+            "co_firstlineno": outer.co_firstlineno + 1,
+            "co_flags": outer.co_flags ^ 0x20,
+        }[field]
+        return _replace_function(module, "outer", **{field: value})
+
+    return change
+
+
+@pytest.mark.parametrize(
+    "field",
+    # co_nlocals is not here: the interpreter derives it from co_varnames and refuses a
+    # code object where they disagree, so it cannot be forged on its own.
+    ["co_exceptiontable", "co_posonlyargcount", "co_kwonlyargcount", "co_argcount",
+     "co_cellvars", "co_names", "co_firstlineno", "co_flags"],
+)  # fmt: skip
+def test_behaviourally_significant_code_fields_are_compared(field, world, capsys):
+    try:
+        _rewrite_code(world, "store/ops.py", _outer_change(field))
+    except ValueError as error:  # the interpreter refuses that combination outright
+        pytest.fail(f"cannot build the damaged code for {field}: {error}")
+    code, report = verify(world, capsys)
+    assert code == 1 and "bytecode_body_differs" in rules(report), report["violations"]
+
+
+def test_a_free_variable_change_in_a_nested_closure_is_compared(world, capsys):
+    def change(module):
+        outer = _function(module, "outer")
+        inner = next(c for c in outer.co_consts if hasattr(c, "co_code"))
+        consts = tuple(inner.replace(co_freevars=tuple(reversed(inner.co_freevars)))
+                       if c is inner else c for c in outer.co_consts)  # fmt: skip
+        return _replace_function(module, "outer", co_consts=consts)
+
+    _rewrite_code(world, "store/ops.py", change)
+    code, report = verify(world, capsys)
+    assert code == 1 and "bytecode_body_differs" in rules(report)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [((1, (2, 3)), (1, (2,))), (-0.0, 0.0), (frozenset({"x", "y"}), frozenset({"x"}))],
+    ids=["tuple-length", "negative-zero", "frozenset"],
+)
+def test_constant_rules_are_compared(old, new, world, capsys):
+    def change(module):
+        outer = _function(module, "outer")
+        assert any(type(c) is type(old) and repr(c) == repr(old) for c in outer.co_consts)
+        consts = tuple(new if type(c) is type(old) and repr(c) == repr(old) else c
+                       for c in outer.co_consts)  # fmt: skip
+        return _replace_function(module, "outer", co_consts=consts)
+
+    _rewrite_code(world, "store/ops.py", change)
+    code, report = verify(world, capsys)
+    assert code == 1 and "bytecode_body_differs" in rules(report)
+
+
+def test_bytecode_compiled_with_optimization_is_refused(world, capsys):
+    """An optimized compile drops the assert: the code differs from optimize=0."""
+    src = world.pkg / "store" / "ops.py"
+    py_compile.compile(str(src), cfile=str(src.parent / "__pycache__" / f"ops.{TAG}.pyc"),
+                       optimize=1, doraise=True)  # fmt: skip
+    code, report = verify(world, capsys)
+    assert code == 1 and "bytecode_body_differs" in rules(report)
+
+
+def test_reordered_local_and_cell_slots_are_detected(world, capsys):
+    """R4-3: a forged slot layout changes locals() yet keeps every exposed field."""
+    path = world.pkg / "store" / "slots.py"
+    pyc = path.parent / "__pycache__" / f"slots.{TAG}.pyc"
+    data = pyc.read_bytes()
+    blob = marshal.dumps(marshal.loads(data[16:]), 2)  # noqa: S302 - a test-built file
+    names = marshal.dumps(("aa", "bb", "gg", "cc"), 2)
+    kinds = marshal.dumps(bytes([0x20, 0x20, 0x20, 0x40]), 2)
+    assert blob.count(names) == 1 and blob.count(kinds) == 1
+    forged = blob.replace(names, marshal.dumps(("aa", "bb", "cc", "gg"), 2)).replace(
+        kinds, marshal.dumps(bytes([0x20, 0x20, 0x40, 0x20]), 2)
+    )
+    genuine, tampered = {}, {}
+    exec(marshal.loads(data[16:]), genuine)  # noqa: S102, S302 - the test's own fixture
+    exec(marshal.loads(forged), tampered)  # noqa: S102, S302
+    assert genuine["f"]() != tampered["f"]()  # behaviour changes
+    pyc.write_bytes(data[:16] + forged)
+    code, report = verify(world, capsys)
+    assert code == 1 and "bytecode_body_differs" in rules(report)
+
+
+def test_valid_closure_and_exception_bytecode_passes(world, capsys):
+    """R4-3 positive: genuine py_compile output for every fixture shape is accepted,
+    in timestamp and hash modes."""
+    for mode in (py_compile.PycInvalidationMode.TIMESTAMP,
+                 py_compile.PycInvalidationMode.CHECKED_HASH):  # fmt: skip
+        for rel in ("store/ops.py", "store/slots.py"):
+            py_compile.compile(str(world.pkg / rel), doraise=True, invalidation_mode=mode)
+        code, report = verify(world, capsys)
+        assert (code, report["violations"]) == (0, [])
+
+
+# The real command runner, the subprocess boundary and signals ------------------------
+
+
+def _stub(tmp: Path, name: str, body: str) -> Path:
+    path = tmp / "bin" / name
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return path
+
+
+def test_the_real_runner_enforces_its_timeout(tmp_path):
+    slow = _stub(tmp_path, "slow", "sleep 5\n")
+    with pytest.raises(subprocess.TimeoutExpired):
+        im.run_command([str(slow)], timeout=1)
+
+
+def test_the_real_runner_raises_on_a_failing_command(tmp_path):
+    bad = _stub(tmp_path, "bad", "echo boom >&2; exit 3\n")
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        im.run_command([str(bad)])
+    assert error.value.returncode == 3 and "boom" in error.value.stderr
+
+
+def test_a_failing_real_docker_is_incomplete(tmp_path, monkeypatch):
+    docker = _stub(tmp_path, "docker", 'echo "Error: daemon unreachable" >&2; exit 1\n')
+    monkeypatch.setattr(im, "docker_binary", lambda: str(docker))
+    with pytest.raises(im.Incomplete, match="daemon unreachable"):
+        im.docker("unix:///x.sock", "image", "inspect", "x")
+
+
+@pytest.mark.parametrize(
+    ("body", "result"),
+    [("exit 0\n", None), ('echo "Error: No such container: c" >&2; exit 1\n', None),
+     ('echo "Error: daemon unreachable" >&2; exit 1\n', "daemon unreachable"),
+     ("sleep 5\n", "timed out")],
+    ids=["removed", "already-gone", "daemon-down", "hangs"],
+)  # fmt: skip
+def test_real_container_removal_reports_failures(body, result, tmp_path, monkeypatch):
+    docker = _stub(tmp_path, "docker", body)
+    monkeypatch.setattr(im, "docker_binary", lambda: str(docker))
+    monkeypatch.setattr(im, "CLEANUP_TIMEOUT_SECONDS", 1)
+    problem = im.remove_container("unix:///x.sock", "c")
+    assert problem is None if result is None else result in problem
+
+
+def test_a_hung_real_measurement_times_out_and_removes_its_container(tmp_path, monkeypatch):
+    log = tmp_path / "docker.log"
+    docker = _stub(tmp_path, "docker", f'echo "$*" >> {log}\ncase "$3" in run) sleep 5;; esac\n')
+    monkeypatch.setattr(im, "docker_binary", lambda: str(docker))
+    monkeypatch.setattr(im, "TIMEOUT_SECONDS", 1)
+    with pytest.raises(im.Incomplete, match="timed out"):
+        im.measure("unix:///x.sock", IMAGE_ID)
+    calls = log.read_text().splitlines()
+    name = calls[0].split("--name ")[1].split()[0]
+    assert calls[-1].endswith(f"rm -f {name}")
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP], ids=["SIGTERM", "SIGHUP"])
+@pytest.mark.parametrize("cleanup_fails", [False, True], ids=["removed", "removal-fails"])
+def test_a_signal_during_the_measurement_removes_or_reports_its_container(
+    signum, cleanup_fails, world, capsys
+):
+    before = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+    for sig in before:
+        signal.signal(sig, _unhandled)
+    if cleanup_fails:
+        world.rm_error = subprocess.CalledProcessError(1, ["docker"], stderr="daemon unreachable")
+    original = world.runner
+
+    def runner(argv, cwd=None, timeout=None):
+        if argv[3] == "run":
+            os.kill(os.getpid(), signum)
+        return original(argv, cwd, timeout)
+
+    im.run_command = runner
+    argv = ["--profile", "release", "--docker-host", "unix:///fake.sock", "--source",
+            str(world.source), "--wheel", str(world.wheel), "--expect-wheel-sha256",
+            world.wheel_sha]  # fmt: skip
+    try:
+        with pytest.raises(SystemExit) as exit_:
+            im.main(argv)
+    finally:
+        for sig, handler in before.items():
+            signal.signal(sig, handler)
+    assert exit_.value.code == 128 + signum and len(_rm_calls(world)) == 1
+    captured = capsys.readouterr()
+    assert ("may still be running" in captured.err) is cleanup_fails
+    assert '"verdict"' not in captured.out  # no report on a signal
+
+
+def test_a_report_that_cannot_be_written_is_never_a_pass(world, capsys, monkeypatch):
+    def broken(*args, **kwargs):
+        raise BrokenPipeError
+
+    monkeypatch.setattr("builtins.print", broken)
+    argv = ["--profile", "release", "--docker-host", "unix:///fake.sock", "--source",
+            str(world.source), "--wheel", str(world.wheel), "--expect-wheel-sha256",
+            world.wheel_sha]  # fmt: skip
+    assert im.main(argv) == 2
+
+
+# load-image.sh: inspection failure and argument forwarding ---------------------------
+
+
+def test_load_image_refuses_when_inspection_fails(tmp_path):
+    done, log = _load_image(tmp_path, IMAGE_ID, inspect_rc=1)
+    assert done.returncode == 1 and "cannot inspect brandsentinel-sandbox:b7" in done.stderr
+    assert not any(line.startswith("python") for line in log)
+
+
+def test_load_image_forwards_exactly_the_verified_arguments(tmp_path):
+    done, _ = _load_image(tmp_path, IMAGE_ID)
+    assert done.returncode == 0, done.stderr
+    argv = (tmp_path / "argv").read_bytes().split(b"\0")[:-1]
+    argv = [a.decode() for a in argv]
+    prefix = tmp_path / "prefix"
+    assert argv[:3] == ["-I", "-B", str(prefix / "src/scripts/service-account/image_manifest.py")]
+    a = im.parse(argv[3:])
+    assert (a.profile, a.image, a.expect_id) == ("load", IMAGE_ID, IMAGE_ID)
+    assert (a.source, a.installed) == (prefix / "src", prefix)
+    assert a.docker_host == f"unix://{tmp_path}/docker.sock"
+
+
+# Round-5 follow-ups --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "PYTHONINSPECT", "PYTHONSAFEPATH",
+     "PYTHONNOUSERSITE", "PYTHONPATH", "PYTHON"],
+)  # fmt: skip
+def test_every_unreviewed_python_variable_is_a_mismatch(name, world, capsys):
+    world.config_env.append(f"{name}=1")
+    code, report = verify(world, capsys)
+    assert code == 1 and {"rule": "image_environment", "path": name} in report["violations"]
+
+
+def test_a_loader_variable_set_twice_is_both_rejected_and_never_run(world, capsys):
+    world.config_env += ["LD_PRELOAD=", "LD_PRELOAD=/x.so=y"]
+    code, report = verify(world, capsys)
+    assert code == 1 and report["measured"] is False and _runs(world) == []
+    assert {"image_loader_environment", "image_environment"} <= rules(report)
+
+
+@pytest.mark.parametrize("config", [[], False, "x"], ids=["list", "false", "string"])
+def test_an_image_config_that_is_not_an_object_is_incomplete(config, world, capsys):
+    world.config_override = config
+    code, report = verify(world, capsys)
+    assert (code, report["verdict"]) == (2, "INCOMPLETE") and _runs(world) == []
+
+
+def test_a_missing_image_config_is_an_empty_one(world, capsys):
+    world.config_override = None
+    code, report = verify(world, capsys)
+    assert (code, report["violations"]) == (0, [])
+    assert report["config"]["env_total"] == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("owned.dist-info", 2), ("owned.pth", 2), ("__pycache__", 1)],
+)
+def test_symlinked_skipped_kinds_are_never_a_pass(name, expected, world, capsys):
+    """The lstat check runs before the dist-info/.pth/__pycache__ skip. A symlinked
+    dist-info is also read as a distribution with no metadata, and a .pth symlinked to a
+    directory cannot be hashed: both make the inspection incomplete instead."""
+    (world.site / name).symlink_to(world.tmp)
+    code, report = verify(world, capsys)
+    assert code == expected and report["verdict"] != "ok"
+    if code == 1:
+        assert "site_not_regular" in rules(report)
+
+
+EXT = importlib.machinery.EXTENSION_SUFFIXES[0]
+
+
+def _owned_module(w: World, name: str, files: dict[str, bytes]) -> None:
+    d = dist(w.site, name, "1.0", module=False)
+    for rel, data in files.items():
+        (w.site / rel).parent.mkdir(parents=True, exist_ok=True)
+        (w.site / rel).write_bytes(data)
+    write_record(d / "RECORD", {f"{d.name}/METADATA": (d / "METADATA").read_bytes(), **files})
+    original = w.runner
+    pins = PINS + f"{name}==1.0\n"
+    im.run_command = lambda argv, cwd=None, timeout=None: (
+        pins if Path(argv[0]).name == "uv" else original(argv, cwd, timeout)
+    )
+
+
+def test_an_extension_module_shadowed_from_the_stdlib_is_detected(base_world, capsys):
+    _owned_module(base_world, "fastmod", {f"fastmod{EXT}": b"\x7fELF"})
+    code, report = verify(base_world, capsys)
+    assert (code, report["violations"]) == (0, [])  # control: the owned extension passes
+    (base_world.base_lib / "fastmod.py").write_text("")
+    code, report = verify(base_world, capsys)
+    assert code == 1 and "dependency_shadowed" in rules(report)
+
+
+@pytest.mark.parametrize(
+    "files",
+    [{"dupmod.py": b"", f"dupmod{EXT}": b"\x7fELF"},
+     {"dupmod.py": b"", "dupmod/mod.py": b""}],
+    ids=["module-and-extension", "module-and-namespace-dir"],
+)  # fmt: skip
+def test_two_owned_entries_with_one_import_name_are_detected(files, world, capsys):
+    _owned_module(world, "dupmod", files)
+    code, report = verify(world, capsys)
+    assert code == 1 and "dependency_shadowed" in rules(report), report["violations"]
+
+
+def test_the_lock_export_runs_in_the_source_tree(world, tmp_path, monkeypatch):
+    """The real runner, with a stub uv that only answers from the source directory."""
+    uv = _stub(tmp_path, "uv", f'[ "$(pwd)" = "{world.source}" ] && echo "dep-a==9.9"\n')
+    monkeypatch.setattr(im, "run_command", REAL_RUN_COMMAND)
+    monkeypatch.setattr(im.shutil, "which", lambda name: str(uv) if name == "uv" else None)
+    assert im.expected_pins(world.source) == [("dep-a", "9.9", None)]
+
+
+def test_long_and_hostile_environment_names_are_bounded(world, capsys):
+    world.config_env = ["X" * 10000 + "\x1b=1"]
+    code, report = verify(world, capsys)
+    (name,) = report["config"]["env_names"]
+    assert code == 0 and len(name) < 130 and "\x1b" not in name
+
+
+def _script_main(tmp: Path, world_source: Path) -> str:
+    """A process running the verifier's main() whose inspection is INCOMPLETE."""
+    return (
+        "import importlib.util, subprocess, sys\n"
+        f"spec = importlib.util.spec_from_file_location('m', {str(SCRIPT)!r})\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "def fail(argv, cwd=None, timeout=None):\n"
+        "    raise subprocess.CalledProcessError(1, argv, stderr='no daemon')\n"
+        "m.run_command = fail\n"
+        f"sys.exit(m.main(['--profile', 'release', '--docker-host', 'h', '--source', "
+        f"{str(world_source)!r}, '--wheel', 'w', '--expect-wheel-sha256', {'ab' * 32!r}]))\n"
+    )
+
+
+@pytest.mark.parametrize("stdout", ["closed", "full"])
+def test_a_report_nobody_receives_exits_2_in_a_real_process(stdout, world, tmp_path):
+    script = tmp_path / "run.py"
+    script.write_text(_script_main(tmp_path, world.source))
+    redirect = ">&-" if stdout == "closed" else ">/dev/full"
+    done = subprocess.run(  # noqa: S603 - fixed argv, test-built script
+        ["/bin/sh", "-c", f'"{sys.executable}" "{script}" {redirect}'],
+        capture_output=False, stderr=subprocess.DEVNULL, check=False,
+    )  # fmt: skip
+    assert done.returncode == 2
+
+
+def test_load_image_refuses_before_any_docker_call(tmp_path):
+    done, log = _load_image(tmp_path, "ab" * 32)  # unprefixed
+    assert done.returncode == 1 and log == []
+
+
+def test_load_image_refuses_without_a_verifier_before_any_docker_call(tmp_path):
+    done, log = _load_image(tmp_path, IMAGE_ID, drop_verifier=True)
+    assert done.returncode == 1 and "no verifier" in done.stderr and log == []
+
+
+def test_every_load_image_docker_call_names_the_account_daemon(tmp_path):
+    done, log = _load_image(tmp_path, IMAGE_ID)
+    assert done.returncode == 0
+    docker_calls = [line for line in log if not line.startswith("python")]
+    assert docker_calls and all(
+        line.startswith(f"--host unix://{tmp_path}/docker.sock ") for line in docker_calls
+    )

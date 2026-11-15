@@ -24,7 +24,7 @@ account checks pass cleanly, whatever host they run on.
 | M4 | At most one untrusted container on `bs_sandbox` | Runner network lease: exclusive `flock` per network in `$XDG_RUNTIME_DIR/brandsentinel/` across all processes and instances of the account (released by the kernel if a process dies); before create, any member other than the egress proxy (another job, an orphan, a manual container) refuses the run; after start, the job is killed if another untrusted container is attached. Preflight `single_untrusted_container` | `tests/security/test_network_lease.py`; `test_sp1_isolation.py` (manual and orphaned containers on the real network) |
 | M5 | Media workers have no network | `SandboxSpec(network="none")` takes no lease and joins nothing | `test_sp1_isolation.py::test_media_style_jobs_have_no_network_at_all` |
 | M6 | Hostile-content gate: sandbox stages run only when the account checks pass cleanly (no failure, no override); lab mode is exempt (synthetic content) | `_prepare_sandbox` (`dedicated_account`) | `tests/security/test_preflight.py` |
-| M7 | Image identity and provenance | Image built from the installed commit. At build time the image's package, bytecode, metadata and dependency set are checked against the release wheel, the source and the lock. After streaming it to the account, its ID is checked against the build record and its package against the installation | `scripts/service-account/image_manifest.py`, `load-image.sh` |
+| M7 | Image identity and provenance | Image built from the installed commit. At build time the image's package, bytecode, metadata and dependency set are checked against the release wheel, the source and the lock. After streaming it to the account, its ID is checked against the build record and its package against the installation. Loading is not transactional: a rejected image stays loaded and tagged (open promotion gate, step 6) | `scripts/service-account/image_manifest.py`, `load-image.sh` |
 
 ### Defense in depth (not the boundary)
 
@@ -222,8 +222,10 @@ repeating steps 4-9.
    Also open for the real image:
    - startup hooks outside the environment (system site-packages, the standard library,
      later layers) are inventoried and hashed into the manifest but not judged;
-   - the image's Entrypoint, Cmd, PATH and variable names are reported (`config`), not
-     judged.
+   - the image's Entrypoint, Cmd and PATH are reported (`config`), not judged. Every
+     variable of its environment is judged (a malformed environment is incomplete; a
+     name set twice, any `LD_*` and any unreviewed `PYTHON*` is a mismatch), and the
+     report lists the first 200 names with the total.
 
    Both need inspection and approval in U3.
 

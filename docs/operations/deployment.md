@@ -35,7 +35,9 @@ public file in the repository. In outline:
    inside its user manager.
 4. **Load the image.** Stream it into the account's daemon and verify its id
    ([`load-image.sh`](../../scripts/service-account/load-image.sh)). There is no
-   temporary copy, and enough free space is required.
+   temporary copy, and enough free space is required. Loading is not transactional: a
+   rejected image stays loaded and tagged, an open promotion gate (see the
+   [service-account runbook](../runbooks/service-account.md), step 6).
 5. **Validate under the account.** [`validate.sh`](../../scripts/service-account/validate.sh)
    checks the account properties, runs `sandbox check --strict` with no warnings, then runs
    the `security or docker` suites. Any skip counts as a failure.
