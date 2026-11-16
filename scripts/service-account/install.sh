@@ -52,7 +52,14 @@ uv venv --python "$PY" "$PREFIX/venv"
     --format requirements-txt --output-file "$STAGE/requirements.txt" >/dev/null)
 uv pip install --python "$PREFIX/venv/bin/python" --require-hashes \
     --requirement "$STAGE/requirements.txt"
-(cd "$PREFIX/src" && uv build --wheel --out-dir "$STAGE/dist" >/dev/null)
+# The pinned, hash-checked build backend (B7 U11), with the same command as
+# build-sandbox-image.sh, so this wheel equals the image's. A mismatch fails, and no uv
+# configuration file or variable may switch off build isolation or hash checks.
+(cd "$PREFIX/src" && env -u UV_NO_BUILD_ISOLATION -u UV_NO_BUILD_ISOLATION_PACKAGE -u UV_NO_VERIFY_HASHES \
+    -u UV_CONFIG_FILE -u SOURCE_DATE_EPOCH \
+    uv build --no-config --wheel --build-constraints build-constraints.txt --require-hashes \
+    --out-dir "$STAGE/dist" >/dev/null) \
+    || die "wheel build with the pinned backend (build-constraints.txt) failed; rebuild from an empty $PREFIX"
 uv pip install --python "$PREFIX/venv/bin/python" --no-deps "$STAGE"/dist/*.whl
 
 echo "install: dockerd-rootless.sh -> $PREFIX/bin"
