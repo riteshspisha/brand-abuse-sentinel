@@ -33,6 +33,8 @@ origin: docs/plans/2026-11-09-001-post-i1-engineering-backlog.md
   - U4's scope (the G1/G5/G8 integration and a load check).
 
   Final wording before commit: the G1 stream filter is marked as a proposed design, conditional on U15, with an acceptance condition whose failure is a STOP. I-IMG's scope is stated: enforced on the B7 promotion path, procedural for M8 and pre-B3 paths. A U15 contradiction is a STOP and owner review. U12's one gate role is U3's offline-suite acceptance.
+
+  Owner review corrections: U13 adds a real-daemon filter acceptance test to its merge gate, and the Compose fallback of an ID-embedding name requires demonstrated race-safe enforcement against an independent retag, or is a STOP.
 - **Revision 2026-11-11:** U1 (the compatibility and inventory report, owner-held) is done, and this revision incorporates it. A design review in U2 then specified, and demonstrated on a scratch analog, three things: the cutover topology (KTD9), the copy trial's preventive layer (G3), and the intermediate deployment states. The owner's provisional directions on OB1-OB7 are recorded under "Owner decisions". They direct planning only and authorize nothing.
 - **Status:** plan only.
   - U1 and U2 are done, and so is U9 (PR-1, #25).
@@ -632,7 +634,7 @@ A pre-start tag check followed by `compose up` is a time-of-check/time-of-use ra
   - `validate.sh`'s lab stop goes through the wrapper, and a failed stop is a FAIL (no `|| true`).
 - **Selection rule:** the same as U14's. Enforce when an anchor exists and either the effective user is the anchor's account or the store is production-class. Otherwise resolve `:local` to an ID once and pass the ID. So a developer on a host that has an anchor is unaffected.
 - **Root's record changes are serialized too.** G5b and G5r take the same lock, opened read-only with `O_NOFOLLOW`, so a wrapped start never reads a record that is about to change. The wrapper re-reads the record after the start, before releasing the lock.
-- **If DV7 shows Compose rejects an ID reference:** activation creates a name that embeds the full ID, and the wrapper passes that name after checking, under the lock, that it resolves to that ID.
+- **If DV7 shows Compose rejects an ID reference:** a name that embeds the full ID is still a tag, and any tag is mutable. The image lock serializes only the kit's own tools, not an independent `docker tag` or `docker load`. So this fallback is allowed only if U15, U13's real-daemon tests and U3 demonstrate race-safe enforcement: an independent retag of that name between the wrapper's check and container creation cannot make Compose create a container from another image. A check after the start is containment and does not count. If immutable identity at creation cannot be guaranteed this way, it is a **STOP and owner review**, never an accepted residual or a redesign by the implementer.
 - **Containment:** after each creating subcommand, the wrapper confirms that the three sandbox-image services run the record's ID. On a mismatch it stops and removes the container and fails. This is detection, not prevention.
 - **Restarts** reuse the creation-time image ID.
 - **The G8 rollback exception:** the M8 tree's Compose files use `:local` and know no wrapper. The rollback recreates the proxy from them only after G5r and the retag of `:local` by the M8 ID under the lock, followed by a post-start check against the M8 ID. This is the only Compose start allowed outside the wrapper.
@@ -1137,8 +1139,14 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
   - **The test starts** in the two test files use the resolved ID.
   - **A rollback or retag given a tag:** refused.
   - **Every Docker call** names the account's host.
+- **Real-daemon filter acceptance test** (stubbed tests alone are insufficient). Representative adversarial archives run through the real stream filter into an isolated developer Docker daemon, with scratch images and scratch tags only. There is one archive for each refusal class above and each name route DV8 records, plus a truncated stream and a refusal at the last member. The test passes only if:
+  - no protected tag changes, comparing each scratch tag's ID before and after every archive;
+  - no unapproved image becomes eligible: nothing loaded carries a name, and the approval record and wrapped Compose creates still select only the approved ID.
+
+  If the Compose fallback is used, the test also includes an independent retag of the ID-embedding name during a wrapped create.
 - **Merge gate** (mirrors U14's):
   - ruff, the offline suite and the stubbed tests, 0 skipped;
+  - the real-daemon filter acceptance test, all cases passing, under its own separate developer Docker authorization;
   - `docker or security` and the lab Compose path, 0 skipped, on U13's head under its own developer authorization for Docker and egress;
   - a full-depth review;
   - the owner's merge approval.
@@ -1425,7 +1433,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
   | U10 merge | HOLD (OB10): its gate, then a separate authorization |
   | U15 | after this amendment; its own developer-Docker authorization: local builds with no network (`FROM scratch` images, probe images `FROM` a scratch tag of the M8 image ID), an offline scratch install of the M8 commit from the pinned uv cache, and the existing M8 image read-only by ID; no change to `:local` or lab images |
   | U14 | after OB8 and U15's results; its SP3 merge gate needs developer Docker and egress |
-  | U13 | after U10 and U14 merge, and U15's results; its merge gate needs developer Docker and egress |
+  | U13 | after U10 and U14 merge, and U15's results; its merge gate needs developer Docker and egress, and a separate developer Docker authorization for the real-daemon filter acceptance test on an isolated daemon |
 - **U3:** **HOLD** until all of these hold:
   1. U9-U13 are merged (and U14 per OB8), and the release commit is frozen (KTD11);
   2. the owner authorizes AU3-A, AU3-B and AU3-C (the developer's Docker daemon; package-index access for the image's pip layer; public egress for the SP3 tests that need it);
