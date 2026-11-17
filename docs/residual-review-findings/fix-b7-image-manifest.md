@@ -62,5 +62,5 @@ These are the accepted limits of `scripts/service-account/image_manifest.py`, af
 - **The base image's environment:** it sets no other `PYTHON*` and no `LD_*` variable, and sets no name twice.
 - **User site:** the image user has no user site directory.
 - **Container limits:** the measurement fits them (1 GiB memory, 64 processes).
-- **Wheel reproducibility:** load-profile dist-info equality across two separate wheel builds requires reproducible builds (PR-3).
+- **Wheel reproducibility:** load-profile dist-info equality across two separate wheel builds requires reproducible builds. PR-3 (U11) now pins the build backend with hashes on both build paths ([its residuals](fix-b7-build-backend-pin.md)); byte-equal wheels were shown in development only, and equality on the release commit is taken in U3.
 - **The real daemon:** tests fake `docker` and `uv`, and drive the real command runner only against stub executables. A real daemon's behaviour (output volume, hangs, signal delivery to the container) is not exercised.
