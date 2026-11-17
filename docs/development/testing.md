@@ -51,6 +51,7 @@ this page. Re-run them before relying on them.
 | sandbox preflight | `tests/security/test_preflight.py` |
 | sandbox image contents: package, bytecode, metadata, dependencies, identity (`image_manifest.py`; Docker faked, the in-image script run for real) | `tests/unit/test_image_manifest.py` |
 | dependency export bound to the named project's committed `uv.lock`: no `UV_*` variable, configuration file or ancestor workspace selects another lock (`image_manifest.py`, `scripts/uv-export-locked.sh`; the real uv, offline) | `tests/unit/test_lock_export_boundary.py` |
+| no caller setting changes what the build paths install or build: package selection, bytecode, the built project, the backend (`scripts/uv-clean.sh`; the real uv, offline, with small hash-pinned wheels) | `tests/unit/test_uv_ambient_boundary.py` |
 | lab transport refusals | `tests/security/test_lab_transport.py` |
 | detection evasion (static extractors) | `tests/unit/test_detection_evasion.py` |
 
@@ -142,10 +143,19 @@ pinned files fails the build; uv never substitutes another backend.
 
 Build isolation is what makes uv apply the pin: without it, uv builds with whatever
 backend the active environment holds and ignores the file. So both scripts run the build
-under `env -u` for `UV_NO_BUILD_ISOLATION`, `UV_NO_BUILD_ISOLATION_PACKAGE`,
-`UV_NO_VERIFY_HASHES`, `UV_CONFIG_FILE` and `SOURCE_DATE_EPOCH`, and pass `--no-config`,
-so no inherited variable, `uv.toml` or `[tool.uv]` table can switch isolation or hash
-checks off, or change the wheel's timestamps.
+through [`scripts/uv-clean.sh`](../../scripts/uv-clean.sh) and pass `--no-config`. The
+wrapper runs uv under `env -i` with an allow-list: `PATH`, `HOME`, `TMPDIR`,
+`XDG_DATA_HOME`, `XDG_CACHE_HOME`, `UV_OFFLINE`, `UV_CACHE_DIR`, `UV_LINK_MODE`, and the
+proxy and CA variables. Nothing else reaches uv or the backend: not
+`UV_NO_BUILD_ISOLATION`, `UV_NO_VERIFY_HASHES` or `UV_PROJECT`, not `PYTHONPATH` (which
+reaches the backend and can replace the pinned hatchling), not `VIRTUAL_ENV` or
+`CONDA_PREFIX` (which choose the backend's interpreter), not `SOURCE_DATE_EPOCH`. So no
+inherited variable, `uv.toml` or `[tool.uv]` table can switch isolation or hash checks
+off, build another project, swap the backend, or change the wheel's timestamps.
+`install.sh` also creates its venv and installs its requirements and wheel through the
+wrapper (B7 U10), so `UV_EXCLUDE` cannot drop a pinned package, `_PYTHON_HOST_PLATFORM`
+cannot select another platform's wheels, and `UV_COMPILE_BYTECODE` or a `uv.toml` cannot
+add bytecode.
 
 The image script prints the commit it built (marked when the tree has uncommitted
 changes), the wheel's sha256 and its `Generator` line before it deletes `docker/dist`, and

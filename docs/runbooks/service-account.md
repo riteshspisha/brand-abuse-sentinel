@@ -136,8 +136,13 @@ repeating steps 4-9.
    any other backend. The dependency list that the build, `install.sh` and the verifier
    export comes only from the checkout's committed `uv.lock`: no `UV_*` variable or uv
    configuration file changes it, and a `pyproject.toml` in any directory above the
-   checkout is refused. This covers the export only; the later `uv pip install` and
-   `uv build` still read the caller's uv environment, so run them from a clean one.
+   checkout is refused. The wheel builds and `install.sh`'s venv and installs run with an
+   allow-listed environment (`scripts/uv-clean.sh`; of uv's own variables only
+   `UV_OFFLINE`, `UV_CACHE_DIR` and `UV_LINK_MODE` pass) and without any `uv.toml`.
+   `install.sh`'s `uv python install` is not wrapped and reads uv configuration, so run
+   step 4 from a clean environment (`env -i` with `PATH`, `HOME` and the build's `UV_*`
+   inputs), in a directory with no `uv.toml`, with no user (`~/.config/uv/uv.toml`) or
+   system (`/etc/uv/uv.toml`) uv configuration.
    Stop unless `wheel source` names the release commit with no
    `+ uncommitted changes` marker: the build continues on a dirty tree, and neither
    script nor verifier checks the commit. Pass the printed sha256 as

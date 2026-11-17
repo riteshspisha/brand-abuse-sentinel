@@ -47,23 +47,27 @@ PY=$(find "$PREFIX/python" -maxdepth 3 -path '*/bin/python3.12' -type f | head -
 [ -n "$PY" ] || die "managed python not found under $PREFIX/python"
 
 echo "install: venv -> $PREFIX/venv"
-uv venv --python "$PY" "$PREFIX/venv"
+# Every uv call that creates, fills or builds for the installation runs through
+# uv-clean.sh, without the caller's uv, Python or backend settings and with --no-config:
+# UV_EXCLUDE would drop a pinned package, UV_COMPILE_BYTECODE or a uv.toml would add
+# bytecode, UV_PROJECT would build another project (B7 U10).
+sh "$PREFIX/src/scripts/uv-clean.sh" venv --no-config --python "$PY" "$PREFIX/venv"
 # Only the installed source's committed uv.lock decides the installed dependencies: no uv
 # variable (UV_NO_DEV would drop the dev group), configuration file or ancestor workspace
 # can change them (B7 U10).
 sh "$PREFIX/src/scripts/uv-export-locked.sh" "$PREFIX/src" --group dev --no-emit-project \
     --format requirements-txt --output-file "$STAGE/requirements.txt" >/dev/null
-uv pip install --python "$PREFIX/venv/bin/python" --require-hashes \
-    --requirement "$STAGE/requirements.txt"
+sh "$PREFIX/src/scripts/uv-clean.sh" pip install --no-config --python "$PREFIX/venv/bin/python" \
+    --require-hashes --requirement "$STAGE/requirements.txt"
 # The pinned, hash-checked build backend (B7 U11), with the same command as
 # build-sandbox-image.sh, so this wheel equals the image's. A mismatch fails, and no uv
-# configuration file or variable may switch off build isolation or hash checks.
-(cd "$PREFIX/src" && env -u UV_NO_BUILD_ISOLATION -u UV_NO_BUILD_ISOLATION_PACKAGE -u UV_NO_VERIFY_HASHES \
-    -u UV_CONFIG_FILE -u SOURCE_DATE_EPOCH \
-    uv build --no-config --wheel --build-constraints build-constraints.txt --require-hashes \
+# configuration file or caller setting may switch off build isolation or hash checks.
+(cd "$PREFIX/src" && sh scripts/uv-clean.sh build --no-config --wheel \
+    --build-constraints build-constraints.txt --require-hashes \
     --out-dir "$STAGE/dist" >/dev/null) \
     || die "wheel build with the pinned backend (build-constraints.txt) failed; rebuild from an empty $PREFIX"
-uv pip install --python "$PREFIX/venv/bin/python" --no-deps "$STAGE"/dist/*.whl
+sh "$PREFIX/src/scripts/uv-clean.sh" pip install --no-config --python "$PREFIX/venv/bin/python" \
+    --no-deps "$STAGE"/dist/*.whl
 
 echo "install: dockerd-rootless.sh -> $PREFIX/bin"
 mkdir "$PREFIX/bin"
