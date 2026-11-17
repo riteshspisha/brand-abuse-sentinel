@@ -127,20 +127,26 @@ repeating steps 4-9.
    $ scripts/build-sandbox-image.sh
    $ uv run python scripts/service-account/image_manifest.py --profile release \
        --docker-host unix://$XDG_RUNTIME_DIR/docker.sock --source . \
-       --wheel <release wheel> --expect-wheel-sha256 <its recorded sha256>
+       --wheel <release wheel> --expect-wheel-sha256 <image wheel sha256 printed by the build>
    ```
 
-   The build script prints the commit, the image wheel's sha256 and
+   The build script prints `wheel source: <commit>`, the image wheel's sha256 and
    `Generator: hatchling 1.32.4`, the pinned backend
    ([Reproducible wheels](../development/testing.md#reproducible-wheels)), and refuses
-   any other backend; that sha256 is the recorded value for `--expect-wheel-sha256`.
-   The release wheel is the approved build of this commit, made with the same pinned
-   command. The image installs its own build, so the two must be byte-identical builds;
-   `install.sh` builds with the same pin, so for a clean build of the same commit step
-   4's `wheel_sha256` equals it too. Expect `"violations": []` and
+   any other backend. Stop unless `wheel source` names the release commit with no
+   `+ uncommitted changes` marker: the build continues on a dirty tree, and neither
+   script nor verifier checks the commit. Pass the printed sha256 as
+   `--expect-wheel-sha256`, not the hash of the `--wheel` file itself. The release
+   wheel is the approved build of this commit, made with the same pinned command; the
+   image installs its own build, so the two must be byte-identical builds, and a
+   different release wheel fails with `wheel_sha256_mismatch`. `install.sh` builds
+   with the same pin, so for a clean build of the same commit step 4's `wheel_sha256`
+   is expected to equal it too. No tool compares that value or `INSTALL`'s commit
+   with this record (the load profile reports `installed_wheel_sha256` and compares
+   content); compare them by hand. Expect `"violations": []` and
    `"verdict": "ok"` (exit 0; 1 is a mismatch, 2 an incomplete check). At this point
    `binding.image_id` reads `NOT BOUND`: the result checks and identifies the image,
-   it does not approve it. Keep the exact wheel file, its sha256, `image_id`,
+   it does not approve it. Keep the commit, the exact wheel file, its sha256, `image_id`,
    `manifest_sha256` and the whole result together in sealed build evidence outside
    the repository. That record identifies the artifacts; the owner's approval of
    them is a separate, recorded decision. The image ID is what later steps trust,
