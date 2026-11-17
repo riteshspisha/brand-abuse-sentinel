@@ -128,3 +128,47 @@ replacement. `tests/resolver_tripwire.py` lists every gap. Those need a network 
 or a trace. To give a test DNS
 answers, inject a resolver: `StaticResolver` for `NetGuard`, or a double with
 dnspython's `resolve()` for `AnalysisStages(resolver=...)`.
+
+## Reproducible wheels
+
+The image wheel (`scripts/build-sandbox-image.sh`) and the installed wheel
+(`scripts/service-account/install.sh`) are built separately. Both pass
+[`build-constraints.txt`](../../build-constraints.txt) with
+`uv build --no-config --wheel --build-constraints build-constraints.txt --require-hashes`.
+That file pins hatchling and every package in its build environment, exactly and with
+hashes. A wrong hash, a build dependency missing from the file, or a cache without the
+pinned files fails the build; uv never substitutes another backend.
+
+Build isolation is what makes uv apply the pin: without it, uv builds with whatever
+backend the active environment holds and ignores the file. So both scripts run the build
+under `env -u` for `UV_NO_BUILD_ISOLATION`, `UV_NO_BUILD_ISOLATION_PACKAGE`,
+`UV_NO_VERIFY_HASHES`, `UV_CONFIG_FILE` and `SOURCE_DATE_EPOCH`, and pass `--no-config`,
+so no inherited variable, `uv.toml` or `[tool.uv]` table can switch isolation or hash
+checks off, or change the wheel's timestamps.
+
+The image script prints the commit it built (marked when the tree has uncommitted
+changes), the wheel's sha256 and its `Generator` line before it deletes `docker/dist`, and
+refuses a wheel whose backend is not the pinned one. Only clean builds of the same commit
+are comparable: `install.sh` builds a `git archive` of `HEAD`.
+`tests/unit/test_build_backend_pin.py` checks the pin file, the shared command and that
+record statically. Accepted limits are in the
+[residual findings](../residual-review-findings/fix-b7-build-backend-pin.md).
+
+The scripts do not force `--offline`. The release build runs them with `UV_OFFLINE=1` and
+`UV_CACHE_DIR` set to a private copy of the pinned uv cache, inside a boundary with no
+network (B7 U3). Use the uv the release pins, by absolute path or first on `PATH`: a
+different uv version may use another cache layout and then finds nothing offline.
+
+Evidence of 2026-11-16 (development only, uv 0.12.20, private copies of the pinned cache,
+empty network namespace): each script's own build lines gave byte-equal wheels with
+`Generator: hatchling 1.32.4`. A changed hash for hatchling or for a build dependency, a
+missing entry, a missing pin file and a cache without hatchling 1.32.4 each failed the
+build. Without the pin, a cache holding only hatchling 1.33.0 built a different wheel.
+Before the review fix, `UV_NO_BUILD_ISOLATION=1` (or a `uv.toml` setting it) with an
+active environment holding hatchling 1.33.0 made the pinned command build that backend's
+wheel; with the fix, both paths still built the pinned, byte-equal wheel in that
+environment.
+
+To change the backend, update every entry of the pin file and the expected closure in
+the test together, then repeat that evidence. The acceptance evidence for a release is
+taken on its release commit (B7 U3), not here.

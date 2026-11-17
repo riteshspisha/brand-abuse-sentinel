@@ -138,3 +138,4 @@ nav:
           - B2 installation bytecode: residual-review-findings/fix-install-bytecode-hardening.md
           - B3 production-store enforcement: residual-review-findings/feat-b3-production-store-enforcement.md
           - B7 sandbox image verification: residual-review-findings/fix-b7-image-manifest.md
+          - B7 build backend pin: residual-review-findings/fix-b7-build-backend-pin.md

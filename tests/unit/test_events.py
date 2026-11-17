@@ -288,15 +288,35 @@ def test_failed_ingest_holds_the_checkpoint_until_replayed(store, matcher):
     assert "hold" not in get_state(store.conn, REPLAY_STATE)
 
 
-def test_full_replay_skips_records_older_than_event_retention(store, matcher):
+@pytest.mark.parametrize("wall_clock", ["real", "far-future"])
+@pytest.mark.parametrize(
+    ("logged_days_before_replay", "read"),
+    [(400, 0), (10, 1)],
+    ids=["expired", "retained"],
+)
+def test_full_replay_skips_records_older_than_event_retention(
+    store, matcher, monkeypatch, wall_clock, logged_days_before_replay, read
+):
+    # The record's logged time is pinned, so the outcome does not depend on the
+    # date the suite runs (X19). The retained control shows the replay window
+    # still admits a recent record, which is read and found to be a duplicate.
+    import time
+
+    from brandsentinel.store.rawlog import RawLog
     from brandsentinel.store.retention import prune_discovery_events
 
-    old = cert_event("sadhguru-ancient.com", observed=T0)
-    write_events(store.rawlog(DISCOVERY_LOG), [old])
-    store.rawlog(DISCOVERY_LOG).close()
-    ingest(store, matcher, old)
+    if wall_clock == "far-future":
+        far = T0.timestamp() + 10 * 365 * 86400
+        monkeypatch.setattr(time, "time", lambda: far)
     later = T0.timestamp() + 400 * 86400
-    prune_discovery_events(store.conn, now=later, max_age_days=365)
+    logged = later - logged_days_before_replay * 86400
+    event = cert_event("sadhguru-ancient.com", observed=datetime.fromtimestamp(logged, UTC))
+    with RawLog(store.config.raw_dir, DISCOVERY_LOG, clock=lambda: logged) as log:
+        write_events(log, [event])
+    ingest(store, matcher, event)
+    max_age = store.config.rawlog.discovery_max_age_days
+    prune_discovery_events(store.conn, now=later, max_age_days=max_age)
     stats = replay(store, matcher, now=later)
+    assert stats.records == read
     assert stats.ingested == 0
     assert store.conn.execute("SELECT observations FROM candidate_sources").fetchone()[0] == 1

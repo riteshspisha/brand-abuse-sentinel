@@ -130,8 +130,14 @@ repeating steps 4-9.
        --wheel <release wheel> --expect-wheel-sha256 <its recorded sha256>
    ```
 
-   The release wheel is the approved build of this commit. The image installs its own
-   build, so the two must be byte-identical builds. Expect `"violations": []` and
+   The build script prints the commit, the image wheel's sha256 and
+   `Generator: hatchling 1.32.4`, the pinned backend
+   ([Reproducible wheels](../development/testing.md#reproducible-wheels)), and refuses
+   any other backend; that sha256 is the recorded value for `--expect-wheel-sha256`.
+   The release wheel is the approved build of this commit, made with the same pinned
+   command. The image installs its own build, so the two must be byte-identical builds;
+   `install.sh` builds with the same pin, so for a clean build of the same commit step
+   4's `wheel_sha256` equals it too. Expect `"violations": []` and
    `"verdict": "ok"` (exit 0; 1 is a mismatch, 2 an incomplete check). At this point
    `binding.image_id` reads `NOT BOUND`: the result checks and identifies the image,
    it does not approve it. Keep the exact wheel file, its sha256, `image_id`,
