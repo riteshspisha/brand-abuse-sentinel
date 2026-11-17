@@ -133,7 +133,12 @@ repeating steps 4-9.
    The build script prints `wheel source: <commit>`, the image wheel's sha256 and
    `Generator: hatchling 1.32.4`, the pinned backend
    ([Reproducible wheels](../development/testing.md#reproducible-wheels)), and refuses
-   any other backend. Stop unless `wheel source` names the release commit with no
+   any other backend. The dependency list that the build, `install.sh` and the verifier
+   export comes only from the checkout's committed `uv.lock`: no `UV_*` variable or uv
+   configuration file changes it, and a `pyproject.toml` in any directory above the
+   checkout is refused. This covers the export only; the later `uv pip install` and
+   `uv build` still read the caller's uv environment, so run them from a clean one.
+   Stop unless `wheel source` names the release commit with no
    `+ uncommitted changes` marker: the build continues on a dirty tree, and neither
    script nor verifier checks the commit. Pass the printed sha256 as
    `--expect-wheel-sha256`, not the hash of the `--wheel` file itself. The release

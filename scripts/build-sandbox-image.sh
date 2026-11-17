@@ -44,7 +44,10 @@ print(f"wheel Generator: {generator or '(missing)'}")
 if pin is None or generator != f"hatchling {pin.group(1)}":
     sys.exit("refusing: the wheel was not built by the pinned backend")
 EOF
-uv export --frozen --no-dev --extra sandbox --no-emit-project \
+# Only this checkout's committed uv.lock decides the image's dependencies: no uv variable,
+# configuration file or ancestor workspace can select another lock (B7 U10). No header:
+# it would copy the checkout's absolute path into an image layer.
+sh scripts/uv-export-locked.sh . --no-dev --extra sandbox --no-emit-project --no-header \
     --format requirements-txt --output-file docker/dist/requirements.txt >/dev/null
 docker build --file docker/Dockerfile.sandbox --tag "$TAG" docker
 rm -rf docker/dist

@@ -525,13 +525,19 @@ class Incomplete(Exception):
     """The inspection cannot be completed; nothing can be concluded."""
 
 
-def run_command(argv: list[str], cwd: Path | None = None, timeout: int | None = None) -> str:
+def run_command(
+    argv: list[str],
+    cwd: Path | None = None,
+    timeout: int | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     return subprocess.run(  # noqa: S603 - fixed argv
         argv,
         check=True,
         capture_output=True,
         text=True,
         cwd=cwd,
+        env=env,
         timeout=TIMEOUT_SECONDS if timeout is None else timeout,
     ).stdout
 
@@ -671,15 +677,38 @@ def installed_reference(prefix: Path) -> tuple[Reference, str | None]:
     return Reference("installed", payload, dist_info), wheel_sha
 
 
+def refuse_ancestor_projects(source: Path) -> None:
+    """uv exports the lock of a workspace declared in any ancestor directory that lists
+    the project as a member, and no flag stops that discovery. So no ancestor of the
+    source, by its logical or its physical path, may hold a pyproject.toml."""
+    for base in (Path(os.path.abspath(source)), source.resolve()):
+        for parent in base.parents:
+            if os.path.lexists(parent / "pyproject.toml"):
+                raise Incomplete(
+                    f"{bounded(str(parent))}/pyproject.toml above the source could make uv "
+                    "export another workspace's lock"
+                )
+
+
 def expected_pins(source: Path) -> list[tuple[str, str, str | None]]:
+    """The pins of exactly the source's committed uv.lock. No uv variable (UV_PROJECT,
+    UV_WORKING_DIR, UV_NO_DEV, UV_CACHE_DIR, ...) or configuration file reaches uv, the
+    project is named by its absolute physical path, no cache is read or written, and a
+    workspace above the source is refused. scripts/uv-export-locked.sh applies the same
+    rules to the build paths."""
     uv = shutil.which("uv")
     if uv is None:
         raise Incomplete("uv not found: the dependency pins cannot be derived from the lock")
-    argv = [uv, "export", "--frozen", "--offline", "--no-dev", "--extra", "sandbox",
-            "--no-emit-project", "--no-hashes", "--no-annotate", "--no-header",
-            "--format", "requirements-txt"]  # fmt: skip
+    refuse_ancestor_projects(source)
+    # One absolute path for both: uv resolves a relative --project against the working
+    # directory, so a relative source would otherwise name <source>/<source>.
+    project = source.resolve()
+    argv = [uv, "export", "--no-config", "--no-cache", "--project", str(project), "--frozen",
+            "--offline", "--no-dev", "--extra", "sandbox", "--no-emit-project", "--no-hashes",
+            "--no-annotate", "--no-header", "--format", "requirements-txt"]  # fmt: skip
+    env = {k: v for k, v in os.environ.items() if not k.startswith("UV_")}
     try:
-        text = run_command(argv, cwd=source)
+        text = run_command(argv, cwd=project, env=env)
     except (OSError, subprocess.SubprocessError) as error:
         raise Incomplete(f"uv export failed: {_detail(error)}") from None
     pins = []

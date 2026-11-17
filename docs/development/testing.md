@@ -50,6 +50,7 @@ this page. Re-run them before relying on them.
 | media and browser worker limits | `tests/security/test_media_limits.py`, `tests/security/test_browser_limits.py` |
 | sandbox preflight | `tests/security/test_preflight.py` |
 | sandbox image contents: package, bytecode, metadata, dependencies, identity (`image_manifest.py`; Docker faked, the in-image script run for real) | `tests/unit/test_image_manifest.py` |
+| dependency export bound to the named project's committed `uv.lock`: no `UV_*` variable, configuration file or ancestor workspace selects another lock (`image_manifest.py`, `scripts/uv-export-locked.sh`; the real uv, offline) | `tests/unit/test_lock_export_boundary.py` |
 | lab transport refusals | `tests/security/test_lab_transport.py` |
 | detection evasion (static extractors) | `tests/unit/test_detection_evasion.py` |
 

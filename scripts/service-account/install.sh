@@ -48,8 +48,11 @@ PY=$(find "$PREFIX/python" -maxdepth 3 -path '*/bin/python3.12' -type f | head -
 
 echo "install: venv -> $PREFIX/venv"
 uv venv --python "$PY" "$PREFIX/venv"
-(cd "$PREFIX/src" && uv export --frozen --group dev --no-emit-project \
-    --format requirements-txt --output-file "$STAGE/requirements.txt" >/dev/null)
+# Only the installed source's committed uv.lock decides the installed dependencies: no uv
+# variable (UV_NO_DEV would drop the dev group), configuration file or ancestor workspace
+# can change them (B7 U10).
+sh "$PREFIX/src/scripts/uv-export-locked.sh" "$PREFIX/src" --group dev --no-emit-project \
+    --format requirements-txt --output-file "$STAGE/requirements.txt" >/dev/null
 uv pip install --python "$PREFIX/venv/bin/python" --require-hashes \
     --requirement "$STAGE/requirements.txt"
 # The pinned, hash-checked build backend (B7 U11), with the same command as

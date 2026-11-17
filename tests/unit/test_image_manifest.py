@@ -248,7 +248,7 @@ class World:
         path = self.pkg / src
         return path.parent / "__pycache__" / f"{path.stem}.{TAG}.pyc"
 
-    def runner(self, argv, cwd=None, timeout=None):
+    def runner(self, argv, cwd=None, timeout=None, env=None):
         name = Path(argv[0]).name
         if name == "docker":
             self.docker_calls.append(argv)
@@ -275,7 +275,9 @@ class World:
         if name == "uv":
             assert {"--frozen", "--offline", "--no-dev", "--no-emit-project"} <= set(argv)
             assert argv[argv.index("--extra") + 1] == "sandbox"
-            assert cwd == self.source
+            assert {"--no-config", "--no-cache"} <= set(argv)
+            assert argv[argv.index("--project") + 1] == str(cwd) == str(self.source.resolve())
+            assert env is not None and not [k for k in env if k.startswith("UV_")]
             return PINS
         raise AssertionError(argv)
 
@@ -450,12 +452,12 @@ def _incomplete(code: int, report: dict, words: str) -> None:
 
 
 def _fail_runner(w: World, name: str, error: Exception | None = None, out: str | None = None):
-    def runner(argv, cwd=None, timeout=None):
+    def runner(argv, cwd=None, timeout=None, env=None):
         if Path(argv[0]).name == name and (name != "docker" or "run" in argv):
             if error is not None:
                 raise error
             return out
-        return w.runner(argv, cwd, timeout)
+        return w.runner(argv, cwd, timeout, env)
 
     return runner
 
@@ -931,8 +933,8 @@ def test_owned_layouts_pass(world, capsys):
                                 "fast.cpython-312-x86_64-linux-gnu.so": b"\x7fELF"})  # fmt: skip
     pins = PINS + "ns-one==1.0\nns-two==1.0\nsingle==1.0\n"
     original = world.runner
-    world_runner = lambda argv, cwd=None, timeout=None: (  # noqa: E731
-        pins if Path(argv[0]).name == "uv" else original(argv, cwd, timeout)
+    world_runner = lambda argv, cwd=None, timeout=None, env=None: (  # noqa: E731
+        pins if Path(argv[0]).name == "uv" else original(argv, cwd, timeout, env)
     )
     im.run_command = world_runner
     code, report = verify(world, capsys)
@@ -1289,8 +1291,8 @@ def test_path_interpreter_and_config_are_reported_and_bounded(world, capsys):
     world.config_env = ["PATH=/opt/decoy/bin:" + "x" * 5000, "PYTHONDONTWRITEBYTECODE=1"]
     original = world.runner
 
-    def runner(argv, cwd=None, timeout=None):
-        out = original(argv, cwd, timeout)
+    def runner(argv, cwd=None, timeout=None, env=None):
+        out = original(argv, cwd, timeout, env)
         if argv[3:5] == ["image", "inspect"]:
             data = json.loads(out)
             data["Config"]["Cmd"] = ["\x1b[2J" + "c" * 100000]
@@ -1331,10 +1333,10 @@ def test_sigterm_during_the_measurement_removes_its_container(world, capsys):
         signal.signal(sig, _unhandled)
     original = world.runner
 
-    def runner(argv, cwd=None, timeout=None):
+    def runner(argv, cwd=None, timeout=None, env=None):
         if argv[3] == "run":
             os.kill(os.getpid(), signal.SIGTERM)
-        return original(argv, cwd, timeout)
+        return original(argv, cwd, timeout, env)
 
     im.run_command = runner
     argv = ["--profile", "release", "--docker-host", "unix:///fake.sock", "--source",
@@ -1438,8 +1440,8 @@ def test_a_malformed_daemon_image_id_is_incomplete(image_id, world, capsys, monk
     """R4-6: the inspected ID is format-checked before it is used, bound or not."""
     original = world.runner
 
-    def runner(argv, cwd=None, timeout=None):
-        out = original(argv, cwd, timeout)
+    def runner(argv, cwd=None, timeout=None, env=None):
+        out = original(argv, cwd, timeout, env)
         if argv[3:5] == ["image", "inspect"]:
             return json.dumps(dict(json.loads(out), Id=image_id))
         return out
@@ -1517,8 +1519,8 @@ def test_a_non_identifier_module_name_is_resolution_checked(base_world, capsys):
                                 "odd-name.py": b"OK = True\n", mypyc: b"\x7fELF"})  # fmt: skip
     pins = PINS + "odd-name==1.0\n"
     original = w.runner
-    im.run_command = lambda argv, cwd=None, timeout=None: (
-        pins if Path(argv[0]).name == "uv" else original(argv, cwd, timeout)
+    im.run_command = lambda argv, cwd=None, timeout=None, env=None: (
+        pins if Path(argv[0]).name == "uv" else original(argv, cwd, timeout, env)
     )
     code, report = verify(w, capsys)
     assert (code, report["violations"]) == (0, [])  # a faithful odd name passes
@@ -1724,10 +1726,10 @@ def test_a_signal_during_the_measurement_removes_or_reports_its_container(
         world.rm_error = subprocess.CalledProcessError(1, ["docker"], stderr="daemon unreachable")
     original = world.runner
 
-    def runner(argv, cwd=None, timeout=None):
+    def runner(argv, cwd=None, timeout=None, env=None):
         if argv[3] == "run":
             os.kill(os.getpid(), signum)
-        return original(argv, cwd, timeout)
+        return original(argv, cwd, timeout, env)
 
     im.run_command = runner
     argv = ["--profile", "release", "--docker-host", "unix:///fake.sock", "--source",
@@ -1839,8 +1841,8 @@ def _owned_module(w: World, name: str, files: dict[str, bytes]) -> None:
     write_record(d / "RECORD", {f"{d.name}/METADATA": (d / "METADATA").read_bytes(), **files})
     original = w.runner
     pins = PINS + f"{name}==1.0\n"
-    im.run_command = lambda argv, cwd=None, timeout=None: (
-        pins if Path(argv[0]).name == "uv" else original(argv, cwd, timeout)
+    im.run_command = lambda argv, cwd=None, timeout=None, env=None: (
+        pins if Path(argv[0]).name == "uv" else original(argv, cwd, timeout, env)
     )
 
 
@@ -1867,7 +1869,7 @@ def test_two_owned_entries_with_one_import_name_are_detected(files, world, capsy
 
 def test_the_lock_export_runs_in_the_source_tree(world, tmp_path, monkeypatch):
     """The real runner, with a stub uv that only answers from the source directory."""
-    uv = _stub(tmp_path, "uv", f'[ "$(pwd)" = "{world.source}" ] && echo "dep-a==9.9"\n')
+    uv = _stub(tmp_path, "uv", f'[ "$(pwd)" = "{world.source.resolve()}" ] && echo "dep-a==9.9"\n')
     monkeypatch.setattr(im, "run_command", REAL_RUN_COMMAND)
     monkeypatch.setattr(im.shutil, "which", lambda name: str(uv) if name == "uv" else None)
     assert im.expected_pins(world.source) == [("dep-a", "9.9", None)]
