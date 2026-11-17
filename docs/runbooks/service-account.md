@@ -129,7 +129,11 @@ repeating steps 4-9.
        --docker-host unix://$XDG_RUNTIME_DIR/docker.sock --source .
    ```
 
-   Expect `"package_files_differing": []` and `"verdict": "ok"`; note `image_id`.
+   Expect `"package_files_differing": []` and `"verdict": "ok"`; note `image_id`. The
+   build script prints the commit, the wheel's sha256 and `Generator: hatchling 1.32.4`,
+   the pinned backend ([Reproducible wheels](../development/testing.md#reproducible-wheels));
+   note the sha256. `install.sh` builds with the same pin, so for a clean build of the same
+   commit step 4's `wheel_sha256` equals it.
 
 2. Create the account (home on the root filesystem, mode 0700, no login shell):
 
