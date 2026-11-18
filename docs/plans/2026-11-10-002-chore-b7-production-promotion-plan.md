@@ -49,7 +49,7 @@ origin: docs/plans/2026-11-09-001-post-i1-engineering-backlog.md
 - **Revision 2026-11-11:** U1 (the compatibility and inventory report, owner-held) is done, and this revision incorporates it. A design review in U2 then specified, and demonstrated on a scratch analog, three things: the cutover topology (KTD9), the copy trial's preventive layer (G3), and the intermediate deployment states. The owner's provisional directions on OB1-OB7 are recorded under "Owner decisions". They direct planning only and authorize nothing.
 - **Status:** plan only.
   - U1 and U2 are done, and so is U9 (PR-1, #25).
-  - U10 (PR-2) is an open draft (#26), not authorized to merge.
+  - U10 (PR-2) is merged: #26 into `main` `f4de71d`, 2026-11-18, under OB10 (corrected 2026-11-18).
   - U11-U15 have not started, and U3 is on HOLD.
 
   Each step marked **[AUTH]** or **[PRIV-READ]** needs its own explicit owner authorization (`AGENTS.md` §6).
@@ -154,7 +154,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
 | Unit | Alias | State |
 |---|---|---|
 | U9 | PR-1 | merged: #25 into `main` `f78913d` |
-| U10 | PR-2 | draft #26, head `e3a135a` on base `f78913d`. CI passes; CI does not run the verifier tests. Five review rounds. Not authorized to merge |
+| U10 | PR-2 | draft #26, head `e3a135a` on base `f78913d`. CI passes; CI does not run the verifier tests. Five review rounds. Not authorized to merge. **Update 2026-11-18:** merged as `main` `f4de71d` (OB10) |
 | U11 | PR-3 | not started |
 | U12 | none | not started |
 | U13 | none | not started; needs this amendment |
@@ -1029,7 +1029,7 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
 
 ### U9. Offline-test determinism (PR-1) [DEV]: **done** (#25, `main` `f78913d`, 2026-11-11)
 
-### U10. Sandbox image verifier (PR-2) [DEV]: draft #26
+### U10. Sandbox image verifier (PR-2) [DEV]: **done** (#26, `main` `f4de71d`, 2026-11-18)
 
 - **Scope:**
   - `scripts/service-account/image_manifest.py`, with the release and load profiles;
@@ -1473,7 +1473,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
 - U15 reviewed; AU3-A, AU3-B and AU3-C authorized; OB9 decided; the developer's Docker use authorized for U15, U13's and U14's merge gates and U4;
 - P0-P3 passed.
 
-**Owner decisions** (provisional directions of 2026-11-11 are recorded; OB8-OB10 were added 2026-11-16: OB8 is provisionally selected, OB9 is open and OB10 is HOLD; OB11 was added and decided (a) on 2026-11-18; none is an authorization):
+**Owner decisions** (provisional directions of 2026-11-11 are recorded; OB8-OB10 were added 2026-11-16: OB8 is provisionally selected, OB9 is open; OB10 was decided on 2026-11-18 and U10 is merged; OB11 was added and decided (a) on 2026-11-18; none is an authorization):
 
 | ID | Decision | Direction so far | Blocks |
 |---|---|---|---|
@@ -1487,7 +1487,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
 | OB7 | Docker and egress for G8 | not authorized yet | G8 |
 | OB8 | runtime image identity enforcement (U14) in 0.2.1 | **provisionally selected 2026-11-16: option C, U14 included**, subject to a defensible I-IMG contract ("How I-IMG is enforced") and SP3 acceptance. A planning decision, not implementation authorization. If reversed: option B, an owner-accepted exception for F5, and U14 as a backlog gate before the first sandbox-executing `run` | U13's dependency on U14; the release commit |
 | OB9 | isolation for U3's real-ownership runs (the offline suite and the 8 `installed_layout` tests): the network contained, no user namespace around the code (X12, X18) | **open**; see "OB9 comparison" below. Leaning (a), with the privilege contract stated there | U3 |
-| OB10 | U10 merge | **HOLD**, pending its merge gate and a separate owner authorization | U13; the release commit |
+| OB10 | U10 merge | **decided 2026-11-18:** conditional GO after its merge gate; merged as #26 into `main` `f4de71d` | U13; the release commit |
 | OB11 | the uv binary's binding for U16 (added 2026-11-18): **(a)** `install.sh` checks the sha256 of the `uv` it resolves against a committed pin and runs only that file, or **(b)** the binding stays procedural (U3's check and a recorded path and hash in `INSTALL`). Second part: whether the uv and archive pins, measured on first use from one developer environment, are cross-checked against upstream-published checksums | **decided 2026-11-18: (a).** The pin check and the run refer to the same resolved executable path. The swap residual between check and run is kept (U16). The upstream cross-check of both pins is **required before U3's release acceptance**. This does not authorize network access: the cross-check needs its own authorization, or an owner-held copy of the upstream checksums | U16; U3 |
 | — | O3, O4, O6 | not decided by B7 | live runs |
 
@@ -1572,7 +1572,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
   |---|---|
   | U12 | independent: ready as a bounded request whenever the owner authorizes it; it does not need this amendment |
   | U11 | after this amendment |
-  | U10 merge | HOLD (OB10): its gate, then a separate authorization |
+  | U10 merge | done: merged 2026-11-18 as #26 into `main` `f4de71d` (OB10) |
   | U15 | after this amendment; its own developer-Docker authorization: local builds with no network (`FROM scratch` images, probe images `FROM` a scratch tag of the M8 image ID), an offline scratch install of the M8 commit from the pinned uv cache, and the existing M8 image read-only by ID; no change to `:local` or lab images |
   | U14 | after OB8 and U15's results; its SP3 merge gate needs developer Docker and egress |
   | U13 | after U10 and U14 merge, and U15's results; its merge gate needs developer Docker and egress, and a separate developer Docker authorization for the real-daemon filter acceptance test on an isolated daemon |
