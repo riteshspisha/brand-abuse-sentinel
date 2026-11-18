@@ -197,6 +197,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
 | X18 | **User-namespace test artefacts.** The offline demo refuses with `anchor_unsafe`, and the 8 real-ownership tests need `newuidmap`, which nested isolation blocks | U3 runs on real ownership, under the isolation OB9 chooses |
 | X19 | **Date-dependent test.** `test_full_replay_skips_records_older_than_event_retention` pins the replay time to a fixed date, but stamps the record with the wall clock | U12 |
 | X20 | **The verifier contract was under-specified.** U3 said only "`image_manifest.py` with `verdict: ok`" | U10 defines the profiles and the binding; the revised U3 acceptance names them |
+| X21 | **The Python install follows ambient uv configuration** (found in U10's review, 2026-11-17). `install.sh`'s `uv python install` does not run through `scripts/uv-clean.sh`. A downloads-list URL from `UV_PYTHON_DOWNLOADS_JSON_URL` or from any `uv.toml` (working directory, user or system) makes it install an arbitrary archive, checked only against the checksum that list supplies (reproduced with uv 0.12.20) | **Unresolved; a mandatory blocker before U3's release build. Not an accepted risk.** Resolving it needs U3's Python-archive inputs written down and a fix under its own owner authorization; no unit is assigned yet. Until then `install.sh` runs only from a clean environment with no `uv.toml` (runbook step 4) |
 
 **Confirmed consistent:**
 - the backup and restore tools copy (`cp -a`, `mv --exchange`), never hard-link;
@@ -848,6 +849,7 @@ That clone predates U9-U14, so U3 takes a new clone of the release commit (KTD11
 
 - **Prerequisites (revision 2026-11-16):**
   - U9-U13 merged (and U14 if OB8 includes it), so that the release commit exists (KTD11);
+  - X21 resolved before any release build: the Python install bound to U3's written Python-archive inputs (added 2026-11-18);
   - AU3-A, AU3-B and AU3-C authorized;
   - OB9 decided;
   - the lean workflow accepted;
@@ -1037,6 +1039,12 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
   - **Real-image evidence.** Acceptance is taken on the release commit and its artifacts (KTD13), and U10 changes no wheel or image content.
   - **U11 and U13.** U13 builds on U10's `load-image.sh`.
 - **Stage after merge:** Implemented. Not development-tested on a real image.
+- **Scope deviation (owner-authorized, recorded 2026-11-18).** Integration review found that ambient `uv` settings could steer the dependency export, the installs and the wheel builds, so that the build and the verifier agreed on the wrong input. At the owner's direction, U10 also:
+  - adds `scripts/uv-export-locked.sh` (dependency export bound to the named project's committed lock) and `scripts/uv-clean.sh` (uv under an allow-listed environment, `--no-config` required);
+  - routes U11's `scripts/build-sandbox-image.sh` and `scripts/service-account/install.sh` export, venv, install and build calls through them, and updates U11's `tests/unit/test_build_backend_pin.py` to the wrapped command;
+  - leaves U11's pin, command and wheel bytes unchanged (`925205e6`), and `src/`, packaging, `docker/` and the lock untouched.
+
+  Not included: `install.sh`'s `uv python install` (X21).
 
 ### U11. Reproducible build backend (PR-3) [DEV]
 
@@ -1327,6 +1335,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
 **Prerequisites:**
 - U2 merged;
 - U9-U13 merged (and U14 per OB8), giving the release commit (KTD11);
+- X21 resolved before U3's release build (added 2026-11-18);
 - U3-U6 sealed;
 - all of KTD10's per-filesystem requirements met with measured values;
 - U15 reviewed; AU3-A, AU3-B and AU3-C authorized; OB9 decided; the developer's Docker use authorized for U15, U13's and U14's merge gates and U4;
@@ -1435,7 +1444,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
   | U14 | after OB8 and U15's results; its SP3 merge gate needs developer Docker and egress |
   | U13 | after U10 and U14 merge, and U15's results; its merge gate needs developer Docker and egress, and a separate developer Docker authorization for the real-daemon filter acceptance test on an isolated daemon |
 - **U3:** **HOLD** until all of these hold:
-  1. U9-U13 are merged (and U14 per OB8), and the release commit is frozen (KTD11);
+  1. U9-U13 are merged (and U14 per OB8), and the release commit is frozen (KTD11), and X21 is resolved (added 2026-11-18);
   2. the owner authorizes AU3-A, AU3-B and AU3-C (the developer's Docker daemon; package-index access for the image's pip layer; public egress for the SP3 tests that need it);
   3. OB9 is decided;
   4. the lean workflow is accepted;
