@@ -17,7 +17,7 @@ origin: docs/plans/2026-11-09-001-post-i1-engineering-backlog.md
   - B3 adds the production anchor and the store marker.
 
   The data directory, the recovery point, the two overdue rechecks and every retained piece of evidence stay unchanged. The only intended change in the data directory is the store marker.
-- **Release:** version **0.2.1** (U2). B1 (#21), B2 (#22) and B3 (#23) are in `main` since `fdd5003`. The **release commit** is the later `main` commit that also contains the U3 prerequisites U9-U13, and U14 if OB8 includes it (KTD11). B4-B6 are out of scope.
+- **Release:** version **0.2.1** (U2). B1 (#21), B2 (#22) and B3 (#23) are in `main` since `fdd5003`. The **release commit** is the later `main` commit that also contains the U3 prerequisites U9-U13, and U14 if OB8 includes it (KTD11), and U16 (amended 2026-11-18). B4-B6 are out of scope.
 - **Revision 2026-11-16:** reconciles the first U3 run (U3-A), which stopped at its test gates, with this plan. It adds:
   - the remediation units U9-U11 (labelled PR-1 to PR-3 in the owner's remediation records), plus U12;
   - image loading and activation (U13), runtime image identity (U14, scope decision OB8), and a diagnostic Docker-behaviour probe with M8 characterization (U15);
@@ -35,10 +35,21 @@ origin: docs/plans/2026-11-09-001-post-i1-engineering-backlog.md
   Final wording before commit: the G1 stream filter is marked as a proposed design, conditional on U15, with an acceptance condition whose failure is a STOP. I-IMG's scope is stated: enforced on the B7 promotion path, procedural for M8 and pre-B3 paths. A U15 contradiction is a STOP and owner review. U12's one gate role is U3's offline-suite acceptance.
 
   Owner review corrections: U13 adds a real-daemon filter acceptance test to its merge gate, and the Compose fallback of an ID-embedding name requires demonstrated race-safe enforcement against an independent retag, or is a STOP.
+- **Amendment 2026-11-18 (X21):** writes down U3's Python-archive inputs and adds U16, the contract that binds `install.sh`'s `uv python install` to them. X21 stays an unresolved, mandatory blocker before U3's release build until U16 is merged. **Owner decisions (2026-11-18):** the U16 contract is approved in principle; OB11 is decided as (a); the upstream cross-check of the uv and archive pins is required before U3's release acceptance. U16's implementation, push and merge stay on HOLD. It changes:
+  - the release-commit definition (Release bullet, KTD11, the sequence diagram);
+  - the X21 row;
+  - the Python and uv rows of "Pinned inputs";
+  - the development sequence and its diagram;
+  - U3's prerequisites, in U3 and under "Prerequisites";
+  - U4 (one line on the Python inputs);
+  - OB11;
+  - the GO/HOLD table.
+
+  It also adds the U16 section. Nothing else.
 - **Revision 2026-11-11:** U1 (the compatibility and inventory report, owner-held) is done, and this revision incorporates it. A design review in U2 then specified, and demonstrated on a scratch analog, three things: the cutover topology (KTD9), the copy trial's preventive layer (G3), and the intermediate deployment states. The owner's provisional directions on OB1-OB7 are recorded under "Owner decisions". They direct planning only and authorize nothing.
 - **Status:** plan only.
   - U1 and U2 are done, and so is U9 (PR-1, #25).
-  - U10 (PR-2) is an open draft (#26), not authorized to merge.
+  - U10 (PR-2) is merged: #26 into `main` `f4de71d`, 2026-11-18, under OB10 (corrected 2026-11-18).
   - U11-U15 have not started, and U3 is on HOLD.
 
   Each step marked **[AUTH]** or **[PRIV-READ]** needs its own explicit owner authorization (`AGENTS.md` §6).
@@ -143,7 +154,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
 | Unit | Alias | State |
 |---|---|---|
 | U9 | PR-1 | merged: #25 into `main` `f78913d` |
-| U10 | PR-2 | draft #26, head `e3a135a` on base `f78913d`. CI passes; CI does not run the verifier tests. Five review rounds. Not authorized to merge |
+| U10 | PR-2 | draft #26, head `e3a135a` on base `f78913d`. CI passes; CI does not run the verifier tests. Five review rounds. Not authorized to merge. **Update 2026-11-18:** merged as `main` `f4de71d` (OB10) |
 | U11 | PR-3 | not started |
 | U12 | none | not started |
 | U13 | none | not started; needs this amendment |
@@ -197,7 +208,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
 | X18 | **User-namespace test artefacts.** The offline demo refuses with `anchor_unsafe`, and the 8 real-ownership tests need `newuidmap`, which nested isolation blocks | U3 runs on real ownership, under the isolation OB9 chooses |
 | X19 | **Date-dependent test.** `test_full_replay_skips_records_older_than_event_retention` pins the replay time to a fixed date, but stamps the record with the wall clock | U12 |
 | X20 | **The verifier contract was under-specified.** U3 said only "`image_manifest.py` with `verdict: ok`" | U10 defines the profiles and the binding; the revised U3 acceptance names them |
-| X21 | **The Python install follows ambient uv configuration** (found in U10's review, 2026-11-17). `install.sh`'s `uv python install` does not run through `scripts/uv-clean.sh`. A downloads-list URL from `UV_PYTHON_DOWNLOADS_JSON_URL` or from any `uv.toml` (working directory, user or system) makes it install an arbitrary archive, checked only against the checksum that list supplies (reproduced with uv 0.12.20) | **Unresolved; a mandatory blocker before U3's release build. Not an accepted risk.** Resolving it needs U3's Python-archive inputs written down and a fix under its own owner authorization; no unit is assigned yet. Until then `install.sh` runs only from a clean environment with no `uv.toml` (runbook step 4) |
+| X21 | **The Python install follows ambient uv configuration** (found in U10's review, 2026-11-17). `install.sh`'s `uv python install` does not run through `scripts/uv-clean.sh`. A downloads-list URL from `UV_PYTHON_DOWNLOADS_JSON_URL` or from any `uv.toml` (working directory, user or system) makes it install an arbitrary archive, checked only against the checksum that list supplies (reproduced with uv 0.12.20) | **Unresolved; a mandatory blocker before U3's release build. Not an accepted risk.** Resolving it needs U3's Python-archive inputs written down and a fix under its own owner authorization. **Amended 2026-11-18:** the inputs are in "Pinned inputs", and U16 is the fix. X21 is resolved when U16 is merged. Until then `install.sh` runs only from a clean environment with no `uv.toml` (runbook step 4) |
 
 **Confirmed consistent:**
 - the backup and restore tools copy (`cp -a`, `mv --exchange`), never hard-link;
@@ -246,7 +257,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
   - Staging image storage (the developer's daemon, home filesystem) and production image storage (the account's daemon, root filesystem) are accounted separately.
   - A failed install is retained, so each retry consumes a tree's worth of space.
 - **KTD11: one release commit, and evidence bound to it.**
-  - **The release commit** is the `main` commit that contains U9-U13 (and U14 if OB8 includes it), at version 0.2.1. U3 works from a frozen clone of it, and records its commit and tree hash.
+  - **The release commit** is the `main` commit that contains U9-U13 (and U14 if OB8 includes it), and U16 (amended 2026-11-18), at version 0.2.1. U3 works from a frozen clone of it, and records its commit and tree hash.
   - **Built from it:** the wheel (from both paths, with equal sha256 by U11), the image and its ID, the bound release report and `manifest_sha256`, and the lock sha.
   - **Results that may carry over from another commit:** only those that depend on tree contents alone, and only when the two tree hashes are equal. These are lint, the unit and offline suites, the docs build, and reviews of unchanged files.
   - **Results that never carry over:**
@@ -295,7 +306,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
 flowchart TD
   subgraph DEV[Development side]
     U1[U1 report: done] --> U2[U2 release prep: done]
-    U2 --> RC[release commit: U9-U14, KTD11]
+    U2 --> RC[release commit: U9-U14, U16, KTD11]
     RC --> U3[U3 inputs re-pinned, wheel, image: lean]
     U3 --> U4[U4 B7 kit: canonical-view build, exchange, window tests]
     U3 --> U5[U5 snapshot references, delta and legacy-path contract]
@@ -342,7 +353,8 @@ flowchart TD
   U15 -.U10 follow-ups.-> U10
   U15 --> U14
   U15 --> U13
-  U12 & U10 & U11 & U13 --> RC[release commit, KTD11]
+  U10 --> U16[U16 Python-install boundary, X21]
+  U12 & U10 & U11 & U13 & U16 --> RC[release commit, KTD11]
   U14 --> RC
   RC --> U3[U3: AU3-A, AU3-B, AU3-C; DV1-DV8]
   U3 --> U4
@@ -355,6 +367,7 @@ flowchart TD
 - **U11 is independent of U10** (different files), but must land before the release commit, which needs equal wheels from both paths.
 - **U15 before U13:** U13's load contract depends on Docker behaviour (K14, K15) that only a real daemon shows. Settling it before the release commit avoids a new release commit and a full U3 rerun later.
 - **U14 before U13** (OB8 provisionally selected): U14 owns the single approval-record reader that U13's scripts and Compose wrapper call. If OB8 is reversed, U13 defines the record and its reader.
+- **U16 after U10** (added 2026-11-18): it extends U10's `scripts/uv-clean.sh` and its tests. It needs no Docker and is independent of U11-U15, but must be in the release commit (X21).
 - **U3 runs only on the release commit.** U6 does not depend on it and may proceed after U2, as before.
 
 ### Rollback architecture
@@ -799,9 +812,10 @@ So C3 and C4 are compatible with B3 as written.
 | source | frozen clone of `e40ffcb` | present (home filesystem) | new frozen clone of the release commit, from the local repository with no network (`GIT_OPTIONAL_LOCKS=0`); tree hash recorded |
 | `uv.lock` | sha `0f040b7d…` | changes in U2, one line | new sha pinned. A structured comparison shows every dependency entry equal to M8's; only the project's version differs |
 | uv package cache | content pin `06076888…` | present (home filesystem) | verify against the pin; work on a private copy (uv writes into its cache: an M7 lesson); prove completeness by an offline install with `--require-hashes` from it |
-| Python download cache | in `/var/tmp` | **unverified; subject to 30-day age-out** | verify the CPython 3.12.14 archive (uv checks its published checksum on install) and copy it into durable storage on the home filesystem before use. **If it is missing or damaged:** a re-download needs network authorization, so HOLD |
+| Python download cache | in `/var/tmp` | **unverified; subject to 30-day age-out** | verify the CPython 3.12.14 archive (uv checks its published checksum on install) and copy it into durable storage on the home filesystem before use. **If it is missing or damaged:** a re-download needs network authorization, so HOLD. **Amended 2026-11-18 (X21, U16):** the archive is CPython 3.12.14, python-build-standalone build `20260924`, `x86_64-unknown-linux-gnu`, `install_only_stripped`, content pin sha256 `269b2c99e4db15b242bf01832f4fea1e8f1a664f273cff519393f296e9820b41` (U3-A). The expected checksum comes only from the download list built into the pinned uv binary; no other list is an authority, even one whose checksum matches its archive. U3 verifies the durable copy against the content pin, then gives `install.sh` a private copy, under uv's cache file name `269b2c99e-cpython-3.12.14-20260924-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz` (the name U3-A used), as `UV_PYTHON_CACHE_DIR`, with `UV_OFFLINE=1` |
+| Python install request | `3.12` (whichever 3.12 release the uv binary's list names) | 3.12.14 with uv 0.12.20 | **Added 2026-11-18 (U16):** `install.sh` requests exactly `cpython-3.12.14-linux-x86_64-gnu` and refuses any other installed version |
 | `dockerd-rootless.sh` | sha `20020363…` | developer copy matches (measured) | re-verify; `install.sh` checks it |
-| uv binary | the version used for M8 | unpinned by hash | record version and hash; pin |
+| uv binary | the version used for M8 | unpinned by hash | record version and hash; pin. **Amended 2026-11-18:** U3-A measured uv 0.12.20, sha256 `b8299463da6fa7da3b94464444d252d0afca8ac6c96cb229f1baf4012f365246`. This pin is also the anchor of the Python archive's expected checksum (U16). `install.sh` checks the `uv` it runs against this pin before the Python install (OB11 (a), U16). A mismatch is a refusal, and in U3 a STOP. The pin was measured on first use. Until the upstream cross-check (OB11, required before U3's release acceptance), it and the archive pin come from the same developer environment and carry no independent provenance |
 | build backend (X16) | not pinned; the M8 image and rehearsal wheels were built with different versions | unpinned (`hatchling>=1.25`) | U11 pins it, with hashes, for both wheel-build paths. The pinned version must be in the verified uv cache |
 
 **U3-A status of these inputs (owner-held evidence, 2026-11-11):**
@@ -849,7 +863,8 @@ That clone predates U9-U14, so U3 takes a new clone of the release commit (KTD11
 
 - **Prerequisites (revision 2026-11-16):**
   - U9-U13 merged (and U14 if OB8 includes it), so that the release commit exists (KTD11);
-  - X21 resolved before any release build: the Python install bound to U3's written Python-archive inputs (added 2026-11-18);
+  - X21 resolved before any release build: the Python install bound to U3's written Python-archive inputs (added 2026-11-18), that is, U16 merged and in the release commit (amended 2026-11-18);
+  - before U3's release acceptance, the uv and archive pins cross-checked against independently obtained upstream checksums (OB11, added 2026-11-18). This needs its own network authorization or an owner-held copy;
   - AU3-A, AU3-B and AU3-C authorized;
   - OB9 decided;
   - the lean workflow accepted;
@@ -894,7 +909,8 @@ That clone predates U9-U14, so U3 takes a new clone of the release commit (KTD11
   - the image ID and the digests;
   - the bound release report and `manifest_sha256`, the DV results and the filter dry run;
   - the environment fingerprint (KTD13);
-  - the counts and measured sizes.
+  - the counts and measured sizes;
+  - the uv binary's path and sha256, the Python archive content pin, and the OB11 upstream cross-check (sources and result; a mismatch is a STOP) (added 2026-11-18).
 
   **The owner's approval of the image ID is recorded separately.** A passing record is evidence for that decision, not the decision itself (KTD12).
 
@@ -906,6 +922,7 @@ That clone predates U9-U14, so U3 takes a new clone of the release commit (KTD11
   - the classifier and the code-only restore (exchange back);
   - a refusal to start without the anchor.
 - **Rehearsal:** offline, from U3's inputs, in a masked-`/opt` namespace on the developer side, yielding the final-path content manifest for KTD3(b).
+- **Python inputs (added 2026-11-18, X21):** the kit runs `install.sh` (rehearsal and G4) with `UV_OFFLINE=1` and `UV_PYTHON_CACHE_DIR` set to a private copy that the kit has verified against the archive content pin. It refuses to run without them. G4's `$PREFIX/python` is then bound to the rehearsal by KTD3(b). The uv binary is checked by `install.sh` (OB11 (a)).
 - **Test scenarios:**
   - W1-W6 and N1-N5 (see "Cutover topology");
   - every M7/M8 kit defect class;
@@ -1012,7 +1029,7 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
 
 ### U9. Offline-test determinism (PR-1) [DEV]: **done** (#25, `main` `f78913d`, 2026-11-11)
 
-### U10. Sandbox image verifier (PR-2) [DEV]: draft #26
+### U10. Sandbox image verifier (PR-2) [DEV]: **done** (#26, `main` `f4de71d`, 2026-11-18)
 
 - **Scope:**
   - `scripts/service-account/image_manifest.py`, with the release and load profiles;
@@ -1230,6 +1247,120 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
 - **Status:** development evidence (KTD13).
 - **Done when:** the results are recorded and reviewed by the owner.
 
+### U16. Python-install boundary (X21) [DEV] (added 2026-11-18)
+
+- **Goal:** the installation's Python can come only from the archive that the pinned uv binary's built-in download list names for CPython 3.12.14. Three things cannot choose it:
+  - a uv configuration file;
+  - another download list, or a mirror;
+  - an environment variable, including `PATH`, since `install.sh` runs only a `uv` it has checked against a committed pin (OB11 (a)).
+- **Root cause (reproduced offline with uv 0.12.20 on synthetic archives and lists, 2026-11-18, development evidence):**
+  - `install.sh` runs `uv python install --install-dir "$PREFIX/python" --no-bin 3.12` with the caller's whole environment and uv configuration, outside `scripts/uv-clean.sh`.
+  - Each of these replaces the built-in download list:
+    - `UV_PYTHON_DOWNLOADS_JSON_URL`;
+    - `UV_CONFIG_FILE`, and `--config-file`, which applies even with `--no-config`;
+    - a `uv.toml` in the working directory or an ancestor;
+    - `[tool.uv]` in an ancestor `pyproject.toml`;
+    - the user's `uv.toml` (`XDG_CONFIG_HOME`);
+    - the system `uv.toml` (`XDG_CONFIG_DIRS`).
+  - uv then checks the archive only against the checksum that same list gives. The hash check passes for any archive the list's author chose, including one listed under the genuine download URL. **The checksum shows integrity, not provenance.**
+  - Under `UV_OFFLINE=1` the attack still works if the archive is in the Python cache under the name the list implies.
+  - A list may also add a newer 3.12 release, which the `3.12` request then selects.
+  - Run under `env -i` with `--no-config`, the same poisoned cache and lists install the genuine 3.12.14. Synthetic bytes under the genuine cache name fail with "Hash mismatch", expected `269b2c99…`.
+- **Trust boundary:** the build supply chain. It lies between the developer's ambient environment and the installed interpreter that every production process runs (`/opt/brandsentinel/python`, invariant 3's installed code).
+  - **Trusted:** the uv binary, pinned by sha256 ("Pinned inputs"), committed in the repository and checked by `install.sh` (OB11 (a)).
+  - **Not an authority:** the archive's own file name, the cache, mirrors, and every download list except the built-in one.
+- **Contract:**
+  1. **Wrapped.** `install.sh` runs the Python install through `scripts/uv-clean.sh`, with `--no-config`, so no uv configuration file applies and only allow-listed variables reach uv.
+  2. **One variable, for the Python install only.** `UV_PYTHON_CACHE_DIR` reaches uv for the Python-install step only, so U3 can supply the archive offline (owner decision 2026-11-18).
+     - **Why it is safe there:** uv checks a cached archive against the built-in checksum.
+     - **Other callers:** the venv, install and build calls do not receive it. `uv-clean.sh`'s allow-list for them is unchanged. Extending it to another caller needs its own justification and test. The mechanism is the implementer's choice.
+     - **Nothing else is added to the Python step.** In particular, these stay out:
+       - `UV_PYTHON_DOWNLOADS_JSON_URL` and `UV_CONFIG_FILE`;
+       - `UV_PYTHON_INSTALL_MIRROR`, `UV_PYPY_INSTALL_MIRROR` and `UV_PYTHON_DOWNLOADS`;
+       - `XDG_CONFIG_HOME` and `XDG_CONFIG_DIRS`.
+  3. **No list, mirror or configuration file in the command.** It names none of `--python-downloads-json-url`, `--mirror`, `--pypy-mirror` or `--config-file`.
+  4. **Exact request.** The command requests `cpython-3.12.14-linux-x86_64-gnu`. Its expected checksum, `269b2c99…`, is in the pinned uv's built-in list: U3-A's rejection of a tampered archive printed it.
+  5. **Checked result.** After the install, the Python step refuses, with a named message and a non-zero exit, unless all of these hold:
+     - `$PREFIX/python` has exactly one directory `cpython-3.12.14-linux-x86_64-gnu` that is not a symlink;
+     - any other `cpython-*` entry is a symlink resolving to that directory (uv adds `cpython-3.12-linux-x86_64-gnu`);
+     - the regular file `bin/python3.12` inside it reports 3.12.14.
+
+     uv's own dot entries are ignored, and `INSTALL` keeps its `python:` line. This check catches the wrong release or a second installation, **not substitution**. Provenance comes from items 1-4 and 6, and at G4 from KTD3(b).
+  6. **The uv binary (OB11 (a), decided 2026-11-18).**
+     - **Resolve once:** the Python step resolves `uv` once, to an absolute path with symlinks resolved. The target must be a regular, executable file; otherwise the step refuses.
+     - **Check before use:** before any interpreter-install operation, it checks that file's sha256 against a pin committed in the repository, following the `DOCKERD_ROOTLESS_SHA256` pattern in `install.sh`. A mismatch, or a `uv` that cannot be resolved, is a refusal with a named message and a non-zero exit, before uv runs.
+     - **Run what was checked:** the step runs that same resolved path, never a new `PATH` lookup, including inside `uv-clean.sh`.
+     - **Recorded:** `INSTALL` records the path and sha256.
+     - **Residual (kept by owner decision):** a `uv` file the developer can write could be replaced between the check and the run. File ownership is the boundary there.
+  7. **Unchanged:**
+     - the venv, install and build calls that U10 and U11 wrapped, and `uv-clean.sh`'s allow-list for them;
+     - U11's pin and wheel;
+     - `UV_LINK_MODE=copy`;
+     - the U3 offline contract;
+     - `src/`, packaging, `docker/` and the lock.
+  8. **Online installs.** Without a cache, the install downloads the built-in entry, checked against the built-in checksum. uv 0.12.20 lists it under `releases.astral.sh` and names `github.com/astral-sh/python-build-standalone` in its offline error. Any re-download authorization names both hosts. U3's offline release run makes no download.
+- **Testability:** the Python install and its result check may move into a small script that `install.sh` calls (implementer's choice). Tests then run that step alone, without `install.sh`'s empty-prefix, clean-tree and `git archive` preconditions.
+- **Files:**
+  - `scripts/service-account/install.sh`, and the new Python-step script if one is used;
+  - `scripts/uv-clean.sh`: it must, for the Python step only, run a given absolute uv path and pass `UV_PYTHON_CACHE_DIR`. For the other callers its behaviour and allow-list are unchanged, and tested as unchanged;
+  - `tests/unit/test_uv_ambient_boundary.py`, or a new test file under `tests/unit/`;
+  - `docs/residual-review-findings/fix-b7-image-manifest.md` (X21 resolved);
+  - the runbook's step 4 (the clean-environment requirement that the wrapper replaces for the Python install);
+  - `docs/development/testing.md`;
+  - this plan's X21 row, when U16 merges.
+- **Test scenarios.** All run offline with real uv and synthetic archives and lists, so no real CPython archive is needed.
+  - **The oracle:** the cache holds synthetic bytes under the genuine cache name. A wrapped run then must:
+    - exit non-zero with uv's hash-mismatch error, whose expected checksum equals the committed archive content pin (only the built-in list yields it);
+    - leave no synthetic interpreter.
+
+    A uv other than the pinned version fails these tests rather than skipping them. A uv upgrade means re-pinning.
+  - **Failing first.** Each case fails on `main` `f4de71d`. Each has a plain-uv control, run through the current command, showing that the vector installs the synthetic interpreter. The cases:
+    - each list source in the root cause, including `--config-file` with `--no-config`;
+    - a list that keeps the genuine URL and changes only the checksum;
+    - a list that adds 3.12.99;
+    - `UV_PYTHON_INSTALL_MIRROR`.
+  - **Static:**
+    - the guarded-command check of `test_uv_ambient_boundary.py` also covers `uv python`, so an unwrapped Python install fails it;
+    - the install command has `--no-config` and the exact request, and none of the options in item 3.
+  - **Allow-list:** with a stub uv, the Python step passes `UV_PYTHON_CACHE_DIR`, `UV_OFFLINE` and `UV_LINK_MODE` to uv, and none of the variables listed in item 2.
+  - **Other callers:** with a stub uv and `UV_PYTHON_CACHE_DIR` set by the caller, the wrapped venv, install and build calls do not receive it. Their argv, environment and uv lookup are unchanged.
+  - **Result check:** with a stub uv, each of these makes the Python step refuse with its named message:
+    - another version;
+    - two real installation directories;
+    - none;
+    - a `cpython-*` symlink pointing elsewhere.
+  - **uv binding (OB11 (a)):**
+    - a `uv` earlier on `PATH` with another hash is refused before any uv run;
+    - a `uv` that cannot be resolved is refused, and so is one found through an empty or `.` `PATH` entry, or one that resolves to a file that is not regular;
+    - with the pin matching, the executable that runs is the checked path. A stub records its own path, including when `uv` on `PATH` is a symlink.
+  - **Mutation:** each of these changes makes a test fail:
+    - removing `--no-config` or the wrapper;
+    - removing `UV_PYTHON_CACHE_DIR` from the Python step's environment;
+    - adding it to `uv-clean.sh`'s allow-list for the other callers;
+    - restoring the `3.12` request;
+    - adding `--config-file`;
+    - removing the pin check, or running `uv` by name after the check.
+- **Evidence in U3** (on the release commit, offline, AU3-A):
+  - the wrapped install of the durable archive's private copy gives 3.12.14;
+  - a tampered copy fails;
+  - the build record holds the uv binary's path and sha256 and the archive content pin.
+  - **Before U3's release acceptance (OB11):** both pins are checked against upstream sources obtained independently, under their own authorization. The sources and results go in the build record. A mismatch is a STOP.
+    - **uv:** where upstream publishes checksums only for its release archives (not checked offline), the upstream uv 0.12.20 `x86_64-unknown-linux-gnu` archive is checked against its published sha256 and extracted, and the extracted `uv` must equal the committed binary pin.
+    - **Python:** the archive pin must equal python-build-standalone's published checksum for build `20260924`.
+- **D2:**
+  - **Narrows** what can choose the interpreter.
+  - **Adds** one variable for the Python step only, whose content uv checks against the pinned binary's list, and a committed uv pin (OB11 (a)).
+  - **No new** network, privilege or dependency.
+  - **Review:** `ce-code-review` at full depth.
+- **Not in scope:**
+  - binding the uv that `build-sandbox-image.sh` and the other `install.sh` steps run. OB11 (a) is required for the Python step; extending it is a separate change;
+  - the developer guide's `uv python install 3.12` for local development;
+  - any other supply-chain change.
+
+  U4's rehearsal and G4 take their Python inputs as U4 states. G4's tree is bound to the rehearsal by KTD3(b).
+- **Residual (kept by owner decision, 2026-11-18; recorded in the residual findings when U16 lands):** a `uv` file the developer can write can still be replaced between the check and the run. File ownership is the boundary there.
+- **Done when:** the owner merges it. That resolves X21.
+
 ---
 
 ## Handling the two overdue rechecks
@@ -1335,13 +1466,14 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
 **Prerequisites:**
 - U2 merged;
 - U9-U13 merged (and U14 per OB8), giving the release commit (KTD11);
-- X21 resolved before U3's release build (added 2026-11-18);
+- X21 resolved before U3's release build (added 2026-11-18): U16 merged (amended 2026-11-18);
+- before U3's release acceptance, the uv and archive pins cross-checked upstream (OB11, added 2026-11-18);
 - U3-U6 sealed;
 - all of KTD10's per-filesystem requirements met with measured values;
 - U15 reviewed; AU3-A, AU3-B and AU3-C authorized; OB9 decided; the developer's Docker use authorized for U15, U13's and U14's merge gates and U4;
 - P0-P3 passed.
 
-**Owner decisions** (provisional directions of 2026-11-11 are recorded; OB8-OB10 were added 2026-11-16: OB8 is provisionally selected, OB9 is open and OB10 is HOLD; none is an authorization):
+**Owner decisions** (provisional directions of 2026-11-11 are recorded; OB8-OB10 were added 2026-11-16: OB8 is provisionally selected, OB9 is open; OB10 was decided on 2026-11-18 and U10 is merged; OB11 was added and decided (a) on 2026-11-18; none is an authorization):
 
 | ID | Decision | Direction so far | Blocks |
 |---|---|---|---|
@@ -1355,7 +1487,8 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
 | OB7 | Docker and egress for G8 | not authorized yet | G8 |
 | OB8 | runtime image identity enforcement (U14) in 0.2.1 | **provisionally selected 2026-11-16: option C, U14 included**, subject to a defensible I-IMG contract ("How I-IMG is enforced") and SP3 acceptance. A planning decision, not implementation authorization. If reversed: option B, an owner-accepted exception for F5, and U14 as a backlog gate before the first sandbox-executing `run` | U13's dependency on U14; the release commit |
 | OB9 | isolation for U3's real-ownership runs (the offline suite and the 8 `installed_layout` tests): the network contained, no user namespace around the code (X12, X18) | **open**; see "OB9 comparison" below. Leaning (a), with the privilege contract stated there | U3 |
-| OB10 | U10 merge | **HOLD**, pending its merge gate and a separate owner authorization | U13; the release commit |
+| OB10 | U10 merge | **decided 2026-11-18:** conditional GO after its merge gate; merged as #26 into `main` `f4de71d` | U13; the release commit |
+| OB11 | the uv binary's binding for U16 (added 2026-11-18): **(a)** `install.sh` checks the sha256 of the `uv` it resolves against a committed pin and runs only that file, or **(b)** the binding stays procedural (U3's check and a recorded path and hash in `INSTALL`). Second part: whether the uv and archive pins, measured on first use from one developer environment, are cross-checked against upstream-published checksums | **decided 2026-11-18: (a).** The pin check and the run refer to the same resolved executable path. The swap residual between check and run is kept (U16). The upstream cross-check of both pins is **required before U3's release acceptance**. This does not authorize network access: the cross-check needs its own authorization, or an owner-held copy of the upstream checksums | U16; U3 |
 | — | O3, O4, O6 | not decided by B7 | live runs |
 
 **OB9 comparison** (option (c), network up with detection only, is not preventive and is not proposed):
@@ -1439,17 +1572,20 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
   |---|---|
   | U12 | independent: ready as a bounded request whenever the owner authorizes it; it does not need this amendment |
   | U11 | after this amendment |
-  | U10 merge | HOLD (OB10): its gate, then a separate authorization |
+  | U10 merge | done: merged 2026-11-18 as #26 into `main` `f4de71d` (OB10) |
   | U15 | after this amendment; its own developer-Docker authorization: local builds with no network (`FROM scratch` images, probe images `FROM` a scratch tag of the M8 image ID), an offline scratch install of the M8 commit from the pinned uv cache, and the existing M8 image read-only by ID; no change to `:local` or lab images |
   | U14 | after OB8 and U15's results; its SP3 merge gate needs developer Docker and egress |
   | U13 | after U10 and U14 merge, and U15's results; its merge gate needs developer Docker and egress, and a separate developer Docker authorization for the real-daemon filter acceptance test on an isolated daemon |
+  | U16 | contract approved in principle and OB11 decided (a), 2026-11-18. **Implementation HOLD** until its own authorization; offline, no Docker; then a separate merge approval |
 - **U3:** **HOLD** until all of these hold:
-  1. U9-U13 are merged (and U14 per OB8), and the release commit is frozen (KTD11), and X21 is resolved (added 2026-11-18);
+  1. U9-U13 are merged (and U14 per OB8), and the release commit is frozen (KTD11), and X21 is resolved (added 2026-11-18) by U16's merge (amended 2026-11-18);
   2. the owner authorizes AU3-A, AU3-B and AU3-C (the developer's Docker daemon; package-index access for the image's pip layer; public egress for the SP3 tests that need it);
   3. OB9 is decided;
   4. the lean workflow is accepted;
   5. U15's results are reviewed;
   6. the developer daemon's build cache, frontend and base image are confirmed present (read-only, under AU3-B).
+
+  U3's release acceptance also waits for the OB11 upstream cross-check of the uv and archive pins, under its own network authorization or from an owner-held copy (added 2026-11-18).
 - **Every [PRIV-READ] and [AUTH] step:** HOLD.
 - **Open review blockers carried by this plan:**
   - K11 (namespace install) is unproven until U4 N5. If it fails, KTD9 must be redesigned before any G4.
