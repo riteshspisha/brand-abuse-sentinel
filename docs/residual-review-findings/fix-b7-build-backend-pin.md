@@ -16,8 +16,10 @@ one hash-pinned backend. It does not make the build environment trustworthy by i
   `simple-v27`; the pinned cache is `simple-v25`) finds nothing offline and fails closed.
   Enforcement was shown with uv 0.12.20 only. U3 records the uv version and hash (KTD13).
 - **The install path does not check its own `Generator` line.** It relies on uv's
-  enforcement, with build isolation and hash checks protected by clearing their
-  variables and `--no-config`. The image path checks it, and U3 compares the two wheels.
+  enforcement, with build isolation and hash checks protected by `scripts/uv-clean.sh`
+  (uv runs under `env -i` with an allow-list; of uv's variables only `UV_OFFLINE`,
+  `UV_CACHE_DIR` and `UV_LINK_MODE` pass; B7 U10) and `--no-config`. The image path
+  checks it, and U3 compares the two wheels.
 - **The build interpreter is not pinned.** hatchling is pure Python and the wheel is
   `py3-none-any`, so bytes are not expected to depend on it. U3's wheel equality covers it.
 - **Equality needs a clean tree.** The image script builds the working tree and prints

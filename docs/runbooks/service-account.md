@@ -24,7 +24,7 @@ account checks pass cleanly, whatever host they run on.
 | M4 | At most one untrusted container on `bs_sandbox` | Runner network lease: exclusive `flock` per network in `$XDG_RUNTIME_DIR/brandsentinel/` across all processes and instances of the account (released by the kernel if a process dies); before create, any member other than the egress proxy (another job, an orphan, a manual container) refuses the run; after start, the job is killed if another untrusted container is attached. Preflight `single_untrusted_container` | `tests/security/test_network_lease.py`; `test_sp1_isolation.py` (manual and orphaned containers on the real network) |
 | M5 | Media workers have no network | `SandboxSpec(network="none")` takes no lease and joins nothing | `test_sp1_isolation.py::test_media_style_jobs_have_no_network_at_all` |
 | M6 | Hostile-content gate: sandbox stages run only when the account checks pass cleanly (no failure, no override); lab mode is exempt (synthetic content) | `_prepare_sandbox` (`dedicated_account`) | `tests/security/test_preflight.py` |
-| M7 | Image identity and provenance | Image built from the installed commit; ID and package-file manifest checked after streaming it to the account | `scripts/service-account/image_manifest.py`, `load-image.sh` |
+| M7 | Image identity and provenance | Image built from the installed commit. At build time the image's package, bytecode, metadata and dependency set are checked against the release wheel, the source and the lock. After streaming it to the account, its ID is checked against the build record and its package against the installation. Loading is not transactional: a rejected image stays loaded and tagged (open promotion gate, step 6) | `scripts/service-account/image_manifest.py`, `load-image.sh` |
 
 ### Defense in depth (not the boundary)
 
@@ -125,15 +125,42 @@ repeating steps 4-9.
 
    ```sh
    $ scripts/build-sandbox-image.sh
-   $ uv run python scripts/service-account/image_manifest.py \
-       --docker-host unix://$XDG_RUNTIME_DIR/docker.sock --source .
+   $ uv run python scripts/service-account/image_manifest.py --profile release \
+       --docker-host unix://$XDG_RUNTIME_DIR/docker.sock --source . \
+       --wheel <release wheel> --expect-wheel-sha256 <image wheel sha256 printed by the build>
    ```
 
-   Expect `"package_files_differing": []` and `"verdict": "ok"`; note `image_id`. The
-   build script prints the commit, the wheel's sha256 and `Generator: hatchling 1.32.4`,
-   the pinned backend ([Reproducible wheels](../development/testing.md#reproducible-wheels));
-   note the sha256. `install.sh` builds with the same pin, so for a clean build of the same
-   commit step 4's `wheel_sha256` equals it.
+   The build script prints `wheel source: <commit>`, the image wheel's sha256 and
+   `Generator: hatchling 1.32.4`, the pinned backend
+   ([Reproducible wheels](../development/testing.md#reproducible-wheels)), and refuses
+   any other backend. The dependency list that the build, `install.sh` and the verifier
+   export comes only from the checkout's committed `uv.lock`: no `UV_*` variable or uv
+   configuration file changes it, and a `pyproject.toml` in any directory above the
+   checkout is refused. The wheel builds and `install.sh`'s venv and installs run with an
+   allow-listed environment (`scripts/uv-clean.sh`; of uv's own variables only
+   `UV_OFFLINE`, `UV_CACHE_DIR` and `UV_LINK_MODE` pass) and without any `uv.toml`.
+   `install.sh`'s `uv python install` is not wrapped and reads uv configuration, so run
+   step 4 from a clean environment (`env -i` with `PATH`, `HOME` and the build's `UV_*`
+   inputs), in a directory with no `uv.toml`, with no user (`~/.config/uv/uv.toml`) or
+   system (`/etc/uv/uv.toml`) uv configuration.
+   Stop unless `wheel source` names the release commit with no
+   `+ uncommitted changes` marker: the build continues on a dirty tree, and neither
+   script nor verifier checks the commit. Pass the printed sha256 as
+   `--expect-wheel-sha256`, not the hash of the `--wheel` file itself. The release
+   wheel is the approved build of this commit, made with the same pinned command; the
+   image installs its own build, so the two must be byte-identical builds, and a
+   different release wheel fails with `wheel_sha256_mismatch`. `install.sh` builds
+   with the same pin, so for a clean build of the same commit step 4's `wheel_sha256`
+   is expected to equal it too. No tool compares that value or `INSTALL`'s commit
+   with this record (the load profile reports `installed_wheel_sha256` and compares
+   content); compare them by hand. Expect `"violations": []` and
+   `"verdict": "ok"` (exit 0; 1 is a mismatch, 2 an incomplete check). At this point
+   `binding.image_id` reads `NOT BOUND`: the result checks and identifies the image,
+   it does not approve it. Keep the commit, the exact wheel file, its sha256, `image_id`,
+   `manifest_sha256` and the whole result together in sealed build evidence outside
+   the repository. That record identifies the artifacts; the owner's approval of
+   them is a separate, recorded decision. The image ID is what later steps trust,
+   and the manifest digest only identifies this measurement.
 
 2. Create the account (home on the root filesystem, mode 0700, no login shell):
 
@@ -195,7 +222,34 @@ repeating steps 4-9.
    (One pipeline: the left side as the developer, the right side with sudo.)
    Expect the free space before and after, `Loaded image:
    brandsentinel-sandbox:local`, and the manifest with `"id_matches": true` and
-   `"verdict": "ok"`.
+   `"verdict": "ok"`. This check (`--profile load`) compares the image's package with
+   the installed source and package. It does not re-derive the dependency set, which
+   step 1 checked and the image ID binds. The image ID given to `load-image.sh` must
+   be taken from the sealed, approved build record of step 1; the script cannot tell
+   where it came from.
+
+   `load-image.sh` refuses a malformed ID before loading. It also refuses a stream that
+   loaded any image other than the expected one, and then checks that image by its ID,
+   whatever tag it carries.
+
+   **Open gates (U3/U4).** Loading is not transactional: `docker load` applies the
+   stream's tags *before* the check, and verifying by ID does not change that. This
+   first-installation command streams `:local`, so a failed check (exit 1 or 2) leaves
+   `:local` naming the rejected image. The script warns about it, but sandbox preflight
+   checks only that the tag exists. **Promotion blocker:** a failure must not expose an
+   unapproved image to sandbox execution. For a B7 promotion, stream under a release
+   tag (plan G1) and retag `:local` only after a pass (G5). The final loading strategy
+   is reconciled in U3/U4.
+
+   Also open for the real image:
+   - startup hooks outside the environment (system site-packages, the standard library,
+     later layers) are inventoried and hashed into the manifest but not judged;
+   - the image's Entrypoint, Cmd and PATH are reported (`config`), not judged. Every
+     variable of its environment is judged (a malformed environment is incomplete; a
+     name set twice, any `LD_*` and any unreviewed `PYTHON*` is a mismatch), and the
+     report lists the first 200 names with the total.
+
+   Both need inspection and approval in U3.
 
 7. Install the production anchor (B3; root, write-then-rename into a root-only
    directory, so a reader sees the old file or the new one, never part of one):

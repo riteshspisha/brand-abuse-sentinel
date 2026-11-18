@@ -61,11 +61,14 @@ def _pins() -> dict[str, tuple[str, set[str]]]:
 
 
 def _uv_build(script: Path) -> list[str]:
-    """The single wheel-build command of a script, from its `env` prefix, without --out-dir."""
-    commands = [line for line in _logical_lines(script.read_text()) if "uv build" in line]
+    """The single wheel-build command of a script, from its uv-clean.sh wrapper (B7 U10),
+    without --out-dir."""
+    commands = [line for line in _logical_lines(script.read_text()) if "uv-clean.sh build" in line]
     assert len(commands) == 1, f"{script.name}: {commands}"
+    lines = _logical_lines(script.read_text())
+    assert not [line for line in lines if re.search(r"\buv(\s+-\S+)*\s+build\b", line)]
     command = commands[0]
-    command = command[command.index("env -u") :].split(")", 1)[0]
+    command = command[command.index("uv-clean.sh build") :].split(")", 1)[0]
     words = [w for w in shlex.split(command) if w != ">/dev/null"]
     i = words.index("--out-dir")
     del words[i : i + 2]
@@ -107,29 +110,35 @@ def test_pins_shared_with_the_lock_have_the_locked_version_and_hashes():
 def test_both_wheel_paths_build_with_the_same_pinned_command():
     image, install = _uv_build(IMAGE_SCRIPT), _uv_build(INSTALL_SCRIPT)
     assert image == install
-    build = image.index("uv")
-    assert image[build : build + 4] == ["uv", "build", "--no-config", "--wheel"]
+    assert image[:4] == ["uv-clean.sh", "build", "--no-config", "--wheel"]
     i = image.index("--build-constraints")
     assert image[i + 1] == "build-constraints.txt"
     assert "--require-hashes" in image
 
 
-def test_the_build_clears_every_override_of_isolation_hashes_or_timestamps():
+def test_the_build_clears_every_override_of_isolation_hashes_or_timestamps(tmp_path):
     # Each of these, inherited from the caller, either switches off build isolation (the
     # pin is then ignored and the ambient backend builds the wheel), turns off hash
     # checks, or changes the wheel's bytes. --no-config ignores uv.toml and [tool.uv].
-    words = _uv_build(IMAGE_SCRIPT)
-    prefix = words[: words.index("uv")]
-    assert prefix[0] == "env"
-    cleared = {prefix[i + 1] for i, w in enumerate(prefix) if w == "-u"}
-    assert len(prefix) == 1 + 2 * len(cleared)
-    assert cleared == {
+    # The build runs through scripts/uv-clean.sh (B7 U10), which clears them with every
+    # other caller setting; a stub uv shows what reaches it.
+    overrides = {
         "UV_NO_BUILD_ISOLATION",
         "UV_NO_BUILD_ISOLATION_PACKAGE",
         "UV_NO_VERIFY_HASHES",
         "UV_CONFIG_FILE",
         "SOURCE_DATE_EPOCH",
     }
+    stub = tmp_path / "uv"
+    stub.write_text(f'#!/bin/sh\nenv > "{tmp_path}/env"\n')
+    stub.chmod(0o755)
+    env = {"PATH": f"{tmp_path}:/usr/bin:/bin", **dict.fromkeys(overrides, "1")}
+    words = _uv_build(IMAGE_SCRIPT)
+    subprocess.run(  # noqa: S603 - fixed argv
+        ["/bin/sh", str(REPO / "scripts" / "uv-clean.sh"), *words[1:]], env=env, check=True
+    )
+    passed = {line.split("=", 1)[0] for line in (tmp_path / "env").read_text().splitlines()}
+    assert overrides & passed == set()
 
 
 @pytest.mark.parametrize("script", [IMAGE_SCRIPT, INSTALL_SCRIPT], ids=["image", "install"])
@@ -145,14 +154,14 @@ def test_the_pin_file_is_at_the_root_both_scripts_build_from():
     # $PREFIX/src, a `git archive` of it. An export-ignore would drop the file there.
     assert PIN.is_file()
     assert 'cd "$(dirname "$0")/.."' in IMAGE_SCRIPT.read_text()
-    assert '(cd "$PREFIX/src" && env -u' in INSTALL_SCRIPT.read_text()
+    assert '(cd "$PREFIX/src" && sh scripts/uv-clean.sh build' in INSTALL_SCRIPT.read_text()
     attributes = REPO / ".gitattributes"
     assert not attributes.exists() or "export-ignore" not in attributes.read_text()
 
 
 def test_the_image_script_records_the_wheel_before_cleanup():
     text = IMAGE_SCRIPT.read_text()
-    build = text.index("uv build")
+    build = text.index("uv-clean.sh build")
     record = text.index("python3 -I -S - docker/dist build-constraints.txt")
     assert build < record < text.index("docker build") < text.rindex("rm -rf docker/dist")
 

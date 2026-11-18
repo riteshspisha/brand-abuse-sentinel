@@ -18,12 +18,11 @@ rm -rf docker/dist
 mkdir -p docker/dist
 # The same pinned, hash-checked build backend as install.sh (B7 U11), so the image
 # wheel and the installed wheel are byte-equal. A missing or mismatched backend fails.
-# No uv configuration file or variable may switch off build isolation (which would
-# ignore the pin) or hash checks, or change the wheel's timestamps.
-env -u UV_NO_BUILD_ISOLATION -u UV_NO_BUILD_ISOLATION_PACKAGE -u UV_NO_VERIFY_HASHES \
-    -u UV_CONFIG_FILE -u SOURCE_DATE_EPOCH \
-    uv build --no-config --wheel --build-constraints build-constraints.txt --require-hashes \
-    --out-dir docker/dist
+# uv-clean.sh runs uv without the caller's uv, Python or backend settings (B7 U10): none
+# may switch off build isolation (which would ignore the pin) or hash checks, build
+# another project, put another backend on the import path, or change the timestamps.
+sh scripts/uv-clean.sh build --no-config --wheel --build-constraints build-constraints.txt \
+    --require-hashes --out-dir docker/dist
 # The wheel equals install.sh's only when built from the same commit with no local changes.
 echo "wheel source: $(git rev-parse HEAD 2>/dev/null || echo unknown)$(
     [ -z "$(git status --porcelain 2>/dev/null)" ] || echo ' + uncommitted changes (not reproducible)')"
@@ -44,7 +43,10 @@ print(f"wheel Generator: {generator or '(missing)'}")
 if pin is None or generator != f"hatchling {pin.group(1)}":
     sys.exit("refusing: the wheel was not built by the pinned backend")
 EOF
-uv export --frozen --no-dev --extra sandbox --no-emit-project \
+# Only this checkout's committed uv.lock decides the image's dependencies: no uv variable,
+# configuration file or ancestor workspace can select another lock (B7 U10). No header:
+# it would copy the checkout's absolute path into an image layer.
+sh scripts/uv-export-locked.sh . --no-dev --extra sandbox --no-emit-project --no-header \
     --format requirements-txt --output-file docker/dist/requirements.txt >/dev/null
 docker build --file docker/Dockerfile.sandbox --tag "$TAG" docker
 rm -rf docker/dist
