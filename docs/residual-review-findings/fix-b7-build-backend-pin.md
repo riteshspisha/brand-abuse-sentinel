@@ -11,7 +11,8 @@ one hash-pinned backend. It does not make the build environment trustworthy by i
 - **Offline is the caller's job (assumption A1).** The scripts do not force `--offline`.
   U3 sets `UV_OFFLINE=1` and `UV_CACHE_DIR`, inside a boundary with no network. Online,
   the hashes still bind the backend's identity.
-- **The uv binary is not pinned by the scripts.** They run the `uv` first on `PATH`. A
+- **The uv binary is not pinned by the scripts.** They run the `uv` first on `PATH`.
+  Only `install.sh`'s Python step checks uv against a pin (B7 U16). A
   uv with another cache layout (`/usr/bin/uv` 0.13.8 on the development host uses
   `simple-v27`; the pinned cache is `simple-v25`) finds nothing offline and fails closed.
   Enforcement was shown with uv 0.12.20 only. U3 records the uv version and hash (KTD13).

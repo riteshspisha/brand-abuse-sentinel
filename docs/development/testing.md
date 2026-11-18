@@ -52,6 +52,7 @@ this page. Re-run them before relying on them.
 | sandbox image contents: package, bytecode, metadata, dependencies, identity (`image_manifest.py`; Docker faked, the in-image script run for real) | `tests/unit/test_image_manifest.py` |
 | dependency export bound to the named project's committed `uv.lock`: no `UV_*` variable, configuration file or ancestor workspace selects another lock (`image_manifest.py`, `scripts/uv-export-locked.sh`; the real uv, offline) | `tests/unit/test_lock_export_boundary.py` |
 | no caller setting changes what the build paths install or build: package selection, bytecode, the built project, the backend (`scripts/uv-clean.sh`; the real uv, offline, with small hash-pinned wheels) | `tests/unit/test_uv_ambient_boundary.py` |
+| only the pinned uv's built-in download list chooses the installation's Python: no list, configuration file or variable redirects `install.sh`; the uv pin and the checked file run; one 3.12.14 installation; a uv path containing `=`, inherited `SHELLOPTS`/`PS4`/`BASHOPTS`, exported functions and `LD_*` variables cannot steer the step (`install-python.sh`; the real uv offline with synthetic archives, plus a stub uv) | `tests/unit/test_python_install_boundary.py` |
 | lab transport refusals | `tests/security/test_lab_transport.py` |
 | detection evasion (static extractors) | `tests/unit/test_detection_evasion.py` |
 
@@ -155,7 +156,11 @@ off, build another project, swap the backend, or change the wheel's timestamps.
 `install.sh` also creates its venv and installs its requirements and wheel through the
 wrapper (B7 U10), so `UV_EXCLUDE` cannot drop a pinned package, `_PYTHON_HOST_PLATFORM`
 cannot select another platform's wheels, and `UV_COMPILE_BYTECODE` or a `uv.toml` cannot
-add bytecode.
+add bytecode. Its Python install uses the wrapper's `--python-install` form, through
+`scripts/service-account/install-python.sh` (B7 U16), which also checks uv against a pin.
+`install.sh` starts that step from the same allow-listed environment, so inherited shell
+options, exported functions and loader variables cannot steer it. Only that form passes
+`UV_PYTHON_CACHE_DIR` to uv.
 
 The image script prints the commit it built (marked when the tree has uncommitted
 changes), the wheel's sha256 and its `Generator` line before it deletes `docker/dist`, and

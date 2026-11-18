@@ -39,13 +39,16 @@ REPO = Path(__file__).parents[2]
 WRAPPER = REPO / "scripts" / "uv-clean.sh"
 IMAGE_SCRIPT = REPO / "scripts" / "build-sandbox-image.sh"
 INSTALL_SCRIPT = REPO / "scripts" / "service-account" / "install.sh"
+PYTHON_SCRIPT = REPO / "scripts" / "service-account" / "install-python.sh"
 ALLOWED = ("PATH", "HOME", "TMPDIR", "XDG_DATA_HOME", "XDG_CACHE_HOME", "UV_OFFLINE",
            "UV_CACHE_DIR", "UV_LINK_MODE", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
            "ALL_PROXY", "http_proxy", "https_proxy", "no_proxy", "all_proxy",
            "SSL_CERT_FILE", "SSL_CERT_DIR")  # fmt: skip
 CLEARED = ("UV_EXCLUDE", "UV_PROJECT", "UV_WORKING_DIR", "UV_COMPILE_BYTECODE",
            "UV_VENV_SEED", "UV_NO_VERIFY_HASHES", "UV_CONFIG_FILE", "UV_SOMETHING_FUTURE",
-           "UV_PYTHON_DOWNLOADS_JSON_URL", "PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE",
+           "UV_PYTHON_DOWNLOADS_JSON_URL", "UV_PYTHON_CACHE_DIR", "UV_PYTHON_INSTALL_MIRROR",
+           "UV_PYPY_INSTALL_MIRROR", "UV_PYTHON_DOWNLOADS", "PYTHONPATH", "PYTHONHOME",
+           "PYTHONUSERBASE",
            "_PYTHON_HOST_PLATFORM", "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV",
            "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", "HATCH_BUILD_HOOKS_ENABLE",
            "SOURCE_DATE_EPOCH", "LD_LIBRARY_PATH", "KEEP_ME")  # fmt: skip
@@ -407,10 +410,12 @@ def _logical(text: str) -> list[str]:
     return out
 
 
-GUARDED = re.compile(r"\buv(\s+-\S+)*\s+(build|pip|venv|sync|run|tool)\b")
+GUARDED = re.compile(r"\buv(\s+-\S+)*\s+(build|pip|venv|sync|run|tool|python)\b")
 
 
-@pytest.mark.parametrize("script", [IMAGE_SCRIPT, INSTALL_SCRIPT], ids=["image", "install"])
+@pytest.mark.parametrize(
+    "script", [IMAGE_SCRIPT, INSTALL_SCRIPT, PYTHON_SCRIPT], ids=["image", "install", "python"]
+)
 def test_no_build_path_runs_uv_to_build_or_install_without_the_wrapper(script):
     for line in _logical(script.read_text()):
         assert not GUARDED.search(line), f"{script.name}: {line}"
