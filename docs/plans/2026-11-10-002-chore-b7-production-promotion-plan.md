@@ -51,7 +51,7 @@ origin: docs/plans/2026-11-09-001-post-i1-engineering-backlog.md
   - U1 and U2 are done, and so is U9 (PR-1, #25).
   - U10 (PR-2) is merged: #26 into `main` `f4de71d`, 2026-11-18, under OB10 (corrected 2026-11-18).
   - U16 is merged: #31 into `main` `a29f29d`, 2026-11-19. X21 is resolved for U3's release build (U3 prerequisite 1). The OB11 upstream cross-check of the uv and archive pins is a separate requirement, still outstanding, and still gates U3's release acceptance (added 2026-11-19).
-  - U11-U15 have not started, and U3 is on HOLD.
+  - U12 is merged: #28 into `main` `5f33409`, 2026-11-16. U11 is merged: #29 into `main` `749c8b8`, 2026-11-17. U13-U15 have not started, and U3 is on HOLD (corrected 2026-11-19).
 
   Each step marked **[AUTH]** or **[PRIV-READ]** needs its own explicit owner authorization (`AGENTS.md` §6).
 - **Authority:**
