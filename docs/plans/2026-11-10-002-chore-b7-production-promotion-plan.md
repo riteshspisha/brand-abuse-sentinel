@@ -50,6 +50,7 @@ origin: docs/plans/2026-11-09-001-post-i1-engineering-backlog.md
 - **Status:** plan only.
   - U1 and U2 are done, and so is U9 (PR-1, #25).
   - U10 (PR-2) is merged: #26 into `main` `f4de71d`, 2026-11-18, under OB10 (corrected 2026-11-18).
+  - U16 is merged: #31 into `main` `a29f29d`, 2026-11-19. X21 is resolved for U3's release build (U3 prerequisite 1). The OB11 upstream cross-check of the uv and archive pins is a separate requirement, still outstanding, and still gates U3's release acceptance (added 2026-11-19).
   - U11-U15 have not started, and U3 is on HOLD.
 
   Each step marked **[AUTH]** or **[PRIV-READ]** needs its own explicit owner authorization (`AGENTS.md` §6).
@@ -208,7 +209,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
 | X18 | **User-namespace test artefacts.** The offline demo refuses with `anchor_unsafe`, and the 8 real-ownership tests need `newuidmap`, which nested isolation blocks | U3 runs on real ownership, under the isolation OB9 chooses |
 | X19 | **Date-dependent test.** `test_full_replay_skips_records_older_than_event_retention` pins the replay time to a fixed date, but stamps the record with the wall clock | U12 |
 | X20 | **The verifier contract was under-specified.** U3 said only "`image_manifest.py` with `verdict: ok`" | U10 defines the profiles and the binding; the revised U3 acceptance names them |
-| X21 | **The Python install follows ambient uv configuration** (found in U10's review, 2026-11-17). `install.sh`'s `uv python install` does not run through `scripts/uv-clean.sh`. A downloads-list URL from `UV_PYTHON_DOWNLOADS_JSON_URL` or from any `uv.toml` (working directory, user or system) makes it install an arbitrary archive, checked only against the checksum that list supplies (reproduced with uv 0.12.20) | **Unresolved; a mandatory blocker before U3's release build. Not an accepted risk.** Resolving it needs U3's Python-archive inputs written down and a fix under its own owner authorization. **Amended 2026-11-18:** the inputs are in "Pinned inputs", and U16 is the fix. X21 is resolved when U16 is merged. Until then `install.sh` runs only from a clean environment with no `uv.toml` (runbook step 4) |
+| X21 | **The Python install follows ambient uv configuration** (found in U10's review, 2026-11-17). `install.sh`'s `uv python install` does not run through `scripts/uv-clean.sh`. A downloads-list URL from `UV_PYTHON_DOWNLOADS_JSON_URL` or from any `uv.toml` (working directory, user or system) makes it install an arbitrary archive, checked only against the checksum that list supplies (reproduced with uv 0.12.20) | **Unresolved (status 2026-11-19: see the Update below); a mandatory blocker before U3's release build. Not an accepted risk.** Resolving it needs U3's Python-archive inputs written down and a fix under its own owner authorization. **Amended 2026-11-18:** the inputs are in "Pinned inputs", and U16 is the fix. X21 is resolved when U16 is merged. Until then `install.sh` runs only from a clean environment with no `uv.toml` (runbook step 4). **Update 2026-11-19:** **code remediation done; X21 is resolved for U3's release build** (U3 prerequisite 1): U16 merged as #31 into `main` `a29f29d`, so any release commit cut from `main` after it will contain it. `install.sh` now installs CPython 3.12.14 only from the pinned uv binary's built-in list, and the runbook starts `install.sh` itself under `/usr/bin/env -i` (U16's trusted-parent contract). **Upstream provenance outstanding:** the OB11 cross-check of the uv binary pin and the archive content pin against independently obtained upstream sources is a separate requirement. It has not been accepted, and U3's release acceptance waits for it ("GO/HOLD") |
 
 **Confirmed consistent:**
 - the backup and restore tools copy (`cp -a`, `mv --exchange`), never hard-link;
@@ -1247,7 +1248,7 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
 - **Status:** development evidence (KTD13).
 - **Done when:** the results are recorded and reviewed by the owner.
 
-### U16. Python-install boundary (X21) [DEV] (added 2026-11-18)
+### U16. Python-install boundary (X21) [DEV] (added 2026-11-18): **done** (#31, `main` `a29f29d`, 2026-11-19)
 
 - **Goal:** the installation's Python can come only from the archive that the pinned uv binary's built-in download list names for CPython 3.12.14. Three things cannot choose it:
   - a uv configuration file;
@@ -1359,7 +1360,7 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
 
   U4's rehearsal and G4 take their Python inputs as U4 states. G4's tree is bound to the rehearsal by KTD3(b).
 - **Residual (kept by owner decision, 2026-11-18; recorded in the residual findings when U16 lands):** a `uv` file the developer can write can still be replaced between the check and the run. File ownership is the boundary there.
-- **Done when:** the owner merges it. That resolves X21.
+- **Done when:** the owner merges it. That resolves X21. **Update 2026-11-19:** merged; X21 is resolved for U3's release build (prerequisite 1). The OB11 upstream cross-check of the uv and archive pins is a separate requirement, still outstanding, and still gates U3's release acceptance.
 
 ---
 
@@ -1576,7 +1577,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
   | U15 | after this amendment; its own developer-Docker authorization: local builds with no network (`FROM scratch` images, probe images `FROM` a scratch tag of the M8 image ID), an offline scratch install of the M8 commit from the pinned uv cache, and the existing M8 image read-only by ID; no change to `:local` or lab images |
   | U14 | after OB8 and U15's results; its SP3 merge gate needs developer Docker and egress |
   | U13 | after U10 and U14 merge, and U15's results; its merge gate needs developer Docker and egress, and a separate developer Docker authorization for the real-daemon filter acceptance test on an isolated daemon |
-  | U16 | contract approved in principle and OB11 decided (a), 2026-11-18. **Implementation HOLD** until its own authorization; offline, no Docker; then a separate merge approval |
+  | U16 | contract approved in principle and OB11 decided (a), 2026-11-18. **Implementation HOLD** until its own authorization; offline, no Docker; then a separate merge approval. **Update 2026-11-19:** done: merged as #31 into `main` `a29f29d`. The OB11 upstream cross-check stays outstanding (U3, below) |
 - **U3:** **HOLD** until all of these hold:
   1. U9-U13 are merged (and U14 per OB8), and the release commit is frozen (KTD11), and X21 is resolved (added 2026-11-18) by U16's merge (amended 2026-11-18);
   2. the owner authorizes AU3-A, AU3-B and AU3-C (the developer's Docker daemon; package-index access for the image's pip layer; public egress for the SP3 tests that need it);
