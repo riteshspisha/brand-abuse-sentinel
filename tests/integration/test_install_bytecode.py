@@ -452,6 +452,7 @@ def _install_tail(tmp_path: Path, verifier: int, harden: int = 0, smoke: int = 0
     harness = (
         "set -eu\n"
         f"PREFIX={prefix}\nSTAGE={stage}\nCOMMIT=abc\nDOCKERD_ROOTLESS_SHA256=def\n"
+        "UV_RECORD='/x/uv 0'\n"
         'die() { echo "install: $*" >&2; exit 1; }\n'
     )
     return prefix, _run("sh", "-c", harness + body)

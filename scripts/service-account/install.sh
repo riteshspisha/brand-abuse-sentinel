@@ -8,7 +8,8 @@
 #
 # Layout:
 #   /opt/brandsentinel/src          `git archive` of the committed HEAD
-#   /opt/brandsentinel/python       uv-managed CPython 3.12 (checksum-verified download)
+#   /opt/brandsentinel/python       CPython 3.12.14 from the pinned uv's built-in download
+#                                   list (install-python.sh, B7 U16)
 #   /opt/brandsentinel/venv         hash-pinned dependencies from uv.lock + the package
 #                                   (non-editable) + the dev group, for validation
 #   /opt/brandsentinel/bin          dockerd-rootless.sh (pinned to Docker 29.9.0, sha256 checked)
@@ -41,10 +42,28 @@ echo "install: source $COMMIT -> $PREFIX/src"
 mkdir "$PREFIX/src"
 git -C "$REPO" archive --format=tar "$COMMIT" | tar -x -C "$PREFIX/src"
 
-echo "install: python 3.12 -> $PREFIX/python"
-uv python install --install-dir "$PREFIX/python" --no-bin 3.12
-PY=$(find "$PREFIX/python" -maxdepth 3 -path '*/bin/python3.12' -type f | head -1)
-[ -n "$PY" ] || die "managed python not found under $PREFIX/python"
+echo "install: python 3.12.14 -> $PREFIX/python"
+# Only the archive the pinned uv's built-in download list names: no uv variable,
+# configuration file, mirror or other download list can choose it, and the uv that runs is
+# the one checked against the pin. Prints that uv's path and sha256 (B7 U16, X21).
+# The step starts from an allow-listed environment (uv-clean.sh's list), by absolute
+# paths: bash, as sh, would apply an inherited SHELLOPTS, BASHOPTS, PS4 or exported
+# function, and the loader LD_* variables, before the step's first line could check.
+UV_RECORD=$(/usr/bin/env -i \
+    ${PATH+"PATH=$PATH"} ${HOME+"HOME=$HOME"} ${TMPDIR+"TMPDIR=$TMPDIR"} \
+    ${XDG_DATA_HOME+"XDG_DATA_HOME=$XDG_DATA_HOME"} \
+    ${XDG_CACHE_HOME+"XDG_CACHE_HOME=$XDG_CACHE_HOME"} \
+    ${UV_OFFLINE+"UV_OFFLINE=$UV_OFFLINE"} ${UV_CACHE_DIR+"UV_CACHE_DIR=$UV_CACHE_DIR"} \
+    ${UV_LINK_MODE+"UV_LINK_MODE=$UV_LINK_MODE"} \
+    ${UV_PYTHON_CACHE_DIR+"UV_PYTHON_CACHE_DIR=$UV_PYTHON_CACHE_DIR"} \
+    ${HTTP_PROXY+"HTTP_PROXY=$HTTP_PROXY"} ${HTTPS_PROXY+"HTTPS_PROXY=$HTTPS_PROXY"} \
+    ${NO_PROXY+"NO_PROXY=$NO_PROXY"} ${ALL_PROXY+"ALL_PROXY=$ALL_PROXY"} \
+    ${http_proxy+"http_proxy=$http_proxy"} ${https_proxy+"https_proxy=$https_proxy"} \
+    ${no_proxy+"no_proxy=$no_proxy"} ${all_proxy+"all_proxy=$all_proxy"} \
+    ${SSL_CERT_FILE+"SSL_CERT_FILE=$SSL_CERT_FILE"} ${SSL_CERT_DIR+"SSL_CERT_DIR=$SSL_CERT_DIR"} \
+    /bin/sh "$PREFIX/src/scripts/service-account/install-python.sh" "$PREFIX") \
+    || die "the Python step refused or failed (see above); rebuild from an empty $PREFIX"
+PY=$PREFIX/python/cpython-3.12.14-linux-x86_64-gnu/bin/python3.12
 
 echo "install: venv -> $PREFIX/venv"
 # Every uv call that creates, fills or builds for the installation runs through
@@ -110,6 +129,7 @@ python: $("$PREFIX/venv/bin/python" -I -B -S -c 'import sys; print(sys.version.s
 wheel_sha256: $WHEEL
 uv_lock_sha256: $(sha256sum "$PREFIX/src/uv.lock" | cut -d' ' -f1)
 dockerd_rootless_sha256: $DOCKERD_ROOTLESS_SHA256
+uv: $UV_RECORD
 EOF
 # Published by rename, after every check: a partial install has no record.
 cp "$STAGE/INSTALL" "$PREFIX/.INSTALL.tmp"

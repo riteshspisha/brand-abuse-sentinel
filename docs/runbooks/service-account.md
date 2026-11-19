@@ -139,10 +139,43 @@ repeating steps 4-9.
    checkout is refused. The wheel builds and `install.sh`'s venv and installs run with an
    allow-listed environment (`scripts/uv-clean.sh`; of uv's own variables only
    `UV_OFFLINE`, `UV_CACHE_DIR` and `UV_LINK_MODE` pass) and without any `uv.toml`.
-   `install.sh`'s `uv python install` is not wrapped and reads uv configuration, so run
-   step 4 from a clean environment (`env -i` with `PATH`, `HOME` and the build's `UV_*`
-   inputs), in a directory with no `uv.toml`, with no user (`~/.config/uv/uv.toml`) or
-   system (`/etc/uv/uv.toml`) uv configuration.
+   `install.sh` installs Python through `scripts/service-account/install-python.sh`
+   (B7 U16): only the archive that the pinned uv's built-in download list names for
+   `cpython-3.12.14-linux-x86_64-gnu`. No uv variable, configuration file, mirror or
+   other download list can choose it. The step refuses unless `PATH` has only absolute
+   entries and the `uv` it finds there resolves to a regular file with the pinned
+   sha256 (uv 0.12.20). It then runs that same file and records its path and sha256 on
+   `INSTALL`'s `uv:` line. Another uv version is refused; upgrading uv means changing
+   the pin. For an offline install, set `UV_OFFLINE=1` and `UV_PYTHON_CACHE_DIR` to a
+   private copy of the verified Python archive. That variable reaches only this step.
+   Without a cache, uv downloads the built-in entry, checked against the built-in
+   checksum. uv 0.12.20 lists it under `releases.astral.sh` and names
+   `github.com/astral-sh/python-build-standalone` in its offline error, so any
+   authorization for a re-download names both hosts.
+
+   **What this protects, and what it does not.** `install.sh` is the trusted parent, so
+   start it itself from a clean environment (the command below). It starts the Python
+   step as a separate shell through `/usr/bin/env -i` with an allow-list and `/bin/sh`.
+
+   - **Ambient uv configuration cannot choose the interpreter or the uv that runs.**
+     This covers uv variables and `uv.toml` files (working directory, ancestors, user
+     or system). It also covers `[tool.uv]` tables and a uv path containing `=`.
+   - **The step's shell starts clean.** `SHELLOPTS`, `BASHOPTS`, `PS4`, exported shell
+     functions and loader `LD_*` variables do not reach it, so they cannot change its
+     decisions. Its record is printed by `/usr/bin/printf`.
+   - **The shell that runs `install.sh` is part of the parent, and is not contained.**
+     The same shell configuration in that shell acts on `install.sh` itself, before the
+     step. It can rewrite the extracted source the step runs from, or forge `INSTALL`'s
+     `uv:` line and anything else `install.sh` writes. This is a compromised parent,
+     like a compromised `install.sh`, `/bin/sh` or `/usr/bin/env`. It is why
+     `install.sh` must be started from a clean environment.
+   - **A same-account attacker is not contained.** Someone who can write the `uv` file,
+     the source tree or `/opt/brandsentinel` while the install runs is outside this
+     protection. File ownership is the boundary there.
+   - **Kept residuals.** `uv` could be replaced between the check and the run. An
+     installation planted in `/opt/brandsentinel/python` after the check would be kept.
+     Both need write access you control.
+
    Stop unless `wheel source` names the release commit with no
    `+ uncommitted changes` marker: the build continues on a dirty tree, and neither
    script nor verifier checks the commit. Pass the printed sha256 as
@@ -189,11 +222,16 @@ repeating steps 4-9.
 
    ```sh
    # install -d -o <developer> -g <developer group> -m 0755 /opt/brandsentinel
-   $ scripts/service-account/install.sh
+   $ /usr/bin/env -i PATH="$HOME/.local/bin:/usr/bin:/bin" HOME="$HOME" \
+         /bin/sh scripts/service-account/install.sh
    # chown -R root:root /opt/brandsentinel && chmod -R go-w /opt/brandsentinel
    # find /opt/brandsentinel ! -user root | head; cat /opt/brandsentinel/INSTALL
    ```
 
+   The clean start keeps your shell's options, exported functions and loader
+   variables out of `install.sh` (see the limits under step 1). Add to the `env -i` line only
+   what the install needs, for example `UV_OFFLINE`, `UV_CACHE_DIR`,
+   `UV_PYTHON_CACHE_DIR`, `DOCKERD_ROOTLESS_SH` or proxy variables.
    `install.sh` refuses a dirty tree or a non-empty target and prints the commit
    it installed. Expect `find` to print nothing. It hardens the launchers, compiles
    checked-hash bytecode and runs `check_bytecode.py`, and writes `INSTALL` only after

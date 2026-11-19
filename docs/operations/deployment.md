@@ -11,7 +11,7 @@
 | Element | Production form |
 |---|---|
 | Code | `/opt/brandsentinel`, built from a committed `git archive`; root-owned, nothing group- or world-writable; the service account can read but not modify it |
-| Runtime | uv-managed CPython 3.12 and a hash-pinned virtual environment from `uv.lock` (`/opt/brandsentinel/venv`) |
+| Runtime | uv-managed CPython 3.12 (3.12.14 from the pinned uv's built-in download list once B7 U16 is installed) and a hash-pinned virtual environment from `uv.lock` (`/opt/brandsentinel/venv`) |
 | Configuration | `config/service.yaml`, installed read-only as `/opt/brandsentinel/etc/service.yaml`; no developer override |
 | Account | dedicated unprivileged `brandsentinel` user with its own rootless Docker daemon (a systemd user unit) |
 | Containers | the sandbox image, `bs_sandbox` and `bs_egress` networks, and the long-running `bs-egress-proxy`, on the account's daemon |
