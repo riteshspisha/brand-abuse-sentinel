@@ -51,7 +51,8 @@ origin: docs/plans/2026-11-09-001-post-i1-engineering-backlog.md
   - U1 and U2 are done, and so is U9 (PR-1, #25).
   - U10 (PR-2) is merged: #26 into `main` `f4de71d`, 2026-11-18, under OB10 (corrected 2026-11-18).
   - U16 is merged: #31 into `main` `a29f29d`, 2026-11-19. X21 is resolved for U3's release build (U3 prerequisite 1). The OB11 upstream cross-check of the uv and archive pins is a separate requirement, still outstanding, and still gates U3's release acceptance (added 2026-11-19).
-  - U12 is merged: #28 into `main` `5f33409`, 2026-11-16. U11 is merged: #29 into `main` `749c8b8`, 2026-11-17. U13-U15 have not started, and U3 is on HOLD (corrected 2026-11-19).
+  - U12 is merged: #28 into `main` `5f33409`, 2026-11-16. U11 is merged: #29 into `main` `749c8b8`, 2026-11-17. U13 and U14 have not started, and U3 is on HOLD (corrected 2026-11-19).
+  - U15 is done: development evidence, reviewed by the owner on 2026-11-22 (see "U15 results"). The U10 correction it led to is merged: #33 into `main` `b628cf7`, 2026-11-22.
 
   Each step marked **[AUTH]** or **[PRIV-READ]** needs its own explicit owner authorization (`AGENTS.md` §6).
 - **Authority:**
@@ -160,7 +161,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
 | U12 | none | not started |
 | U13 | none | not started; needs this amendment |
 | U14 | none | not started; scope decision OB8 |
-| U15 | none | not started; Docker-behaviour probe and M8 characterization before U13 (review finding, revision 2026-11-16) |
+| U15 | none | not started; Docker-behaviour probe and M8 characterization before U13 (review finding, revision 2026-11-16). **Update 2026-11-22:** done, development evidence, owner-reviewed ("U15 results") |
 
 ---
 
@@ -615,6 +616,8 @@ The harness runs in a user namespace on a tmpfs `/opt`, with `--map-auto` and `s
 - the adversarial name surface: every member, field and annotation that Docker honours as a name, probed with crafted scratch archives for each candidate route (DV6, DV8).
 
 The filter counts as preventing F1 and F2 only after U13's adversarial tests and U3's dry run on the release stream also pass. Until then G1 does not start.
+
+**U15 (2026-11-22)** recorded DV1, DV3, DV6 and DV8 on the developer daemon with no contradiction of this design. The recorded name routes are both `index.json` descriptor annotations, and a later duplicate `index.json` replaces an earlier one. Under the containerd store, the ID is the manifest digest. The constraints these results place on U13 are listed in "U15 results". The filter remains a proposed design until U13 and U3 pass.
 
 **Acceptance condition.** The filter must not let any archive be interpreted by Docker as assigning or replacing a tag, and in particular an approved tag such as `:local`. Each of the following is a **STOP and owner review**, never a waiver, a workaround or a redesign by the implementer:
 - a discrepancy between what the filter parses and what the daemon loads or names;
@@ -1219,7 +1222,7 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
   SP3 runs again on the release commit in U3 and under the account at G8.
 - **If OB8 is reversed:** U14 becomes a new backlog item, a prerequisite of the first `run` with sandbox stages on the live store and of B16, through its own promotion.
 
-### U15. Docker-behaviour probe and M8 characterization [DEV-AUTH]: development evidence only
+### U15. Docker-behaviour probe and M8 characterization [DEV-AUTH]: development evidence only; **done** (2026-11-22)
 
 - **Goal:** settle the Docker facts U13 and U14 depend on before they are written, and give U10's verifier its first contact with a real image. A surprise then surfaces before the release commit, not in U3.
 - **Part A: Docker behaviour (DV1, DV3-DV8).**
@@ -1245,8 +1248,96 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
   - **Outcomes:** each item is recorded as holds, does not hold, or not applicable. A "does not hold" leads to a reviewed U10 change before the release commit, never to a waiver.
 - **If Part A contradicts this plan:** for example, a name route the filter design cannot refuse, a name-free archive that does not load by ID, or a Compose result outside the DV7 fallback already planned. That is a **STOP and owner review**. It does not authorize another loading or activation design, does not reopen option A, and does not narrow I-IMG or reclassify any path in "How I-IMG is enforced". U13, U14 and U3 stay on HOLD until the owner decides.
 - **Files:** none in the repository. The results and the environment fingerprint are recorded outside it.
-- **Status:** development evidence (KTD13).
+- **Status:** development evidence (KTD13). **Done 2026-11-22**: the results are recorded (below, and in sealed records outside the repository) and the owner has reviewed them. Nothing here accepts anything for U3 or the promotion.
 - **Done when:** the results are recorded and reviewed by the owner.
+
+#### U15 results (2026-11-22)
+
+Five sessions were run on the developer's rootless daemon. That daemon was isolated by a temporary runtime drop-in (no network, `Restart=no`), with scratch images and the M8 image read-only by ID:
+- **Daemon:** Docker 29.9.3, containerd image store.
+- **Sessions:**
+  - sessions 1 to 3 each ended in a STOP: 1 and 3 on wrapper refusals, which were procedural; 2 on a false-positive listing check, a safety STOP;
+  - session 4 completed Part A;
+  - session 5 (R6) ran Part B only.
+
+No session pulled an image: the daemon event logs hold no pull. No session changed `:local`, the M7 or M8 tags, or the lab containers' state. The verdicts below are the sessions' own. None was rewritten afterwards.
+
+**Part A (DV1, DV3-DV8): no contradiction of this plan.** The owner accepted Part A on 2026-11-22.
+
+| # | Observed |
+|---|---|
+| DV1 | `docker save <ID>` writes an OCI layout: `oci-layout`, `index.json`, `manifest.json` and `blobs/sha256/*`, regular files and directories only, with no symlinks and no names. A name-free archive loads as `Loaded image ID:` only, with no tag. **The image ID is the manifest digest** under the containerd store, not the configuration digest. |
+| DV3 | These fail and add nothing: a stream cut after the first header, after the first JSON member, or mid-member ("short read").<br>**A stream ending at the last member boundary, with no end-of-archive blocks, loads** the complete image.<br>A load killed by SIGKILL mid-stream leaves content blobs only: no image record and no name. |
+| DV4 | An unnamed staged image persists across a daemon restart, and its re-saved archive is byte-equal. A hold tag keeps the previous image after the active tag is moved to another ID. |
+| DV5 | Tagging by ID, and `create` and `run --pull never` by full ID, bind the container to that ID. An absent ID fails (exit 125). |
+| DV6 | **A load moves an existing tag** when the archive names it: a genuine `docker save` by name, or an `index.json` descriptor annotation. A `RepoTags` entry in `manifest.json` alone does not move it. |
+| DV7 | Compose accepts a full ID for `image:` through a required variable (`${VAR:?}`). `pull_policy: never` keeps a reference that names no image from being fetched for non-creating subcommands. A restart keeps the creation-time ID. The planned fallback (an ID-embedding tag) is therefore not needed. |
+| DV8 | **Only `index.json` descriptor annotations name an image:** `io.containerd.image.name` and `org.opencontainers.image.ref.name`. With both present, the load reported the `io.containerd.image.name` value.<br>Of two `index.json` members, the later one is used.<br>These are ignored: `RepoTags`, a `repositories` member, a manifest annotation, a nested index, and a duplicate `manifest.json`.<br>A symlinked `index.json` is refused by the daemon. |
+
+**Name-record anomalies** (DV8, sessions 1 and 3), which U13 and U14 must not assume away:
+- A full `ref.name` creates an un-normalized record. It is listed, but cannot be resolved or removed by that name.
+- A tag-only `ref.name` creates a verbatim record. `docker image ls` **does not list it**, inspecting it by ID works, and the load prints a different, normalized name.
+
+A listing is therefore not an inventory of names.
+
+One such hidden scratch image (`sha256:256e39cd…`, record `u15-dv8-tagonly`) remains on the developer daemon. It is kept intentionally and recorded as a residual: the harness removes only images it can list, and the owner has authorized no metadata-store edit or cleanup.
+
+**Part B (M8, load profile, read-only by ID): characterized.**
+- **The verifier at `f4de71d`** (session 4) returned INCOMPLETE ("no package directory in the environment's site-packages"). Ubuntu 3.12.3's `sysconfig` captures its scheme and prefix at import time. This "does not hold" led to the reviewed U10 correction #33 (`main` `b628cf7`; [residuals](../residual-review-findings/fix-b7-image-manifest.md#correction-after-u15-part-b-2026-11-22)).
+- **The merged verifier at `b628cf7`** (R6) measured M8 against an offline scratch install of the M8 commit (`e40ffcb`, pinned uv cache, CPython 3.12.14). Its verdict was MISMATCH, with exactly one violation listed and none truncated. The judgements:
+
+  | Item | Result |
+  |---|---|
+  | identity (image ID compared) | holds |
+  | configuration and environment | holds |
+  | interpreter and import path (site `/opt/brandsentinel/lib/python3.12/site-packages`) | holds |
+  | RECORD ownership | holds |
+  | bytecode, field equality against M8's own source (77 files) | holds |
+  | container limits: no capabilities, `no_new_privs`, seccomp, 1 GiB memory and no swap, 64 processes, read-only root, `lo` only, uid 1001 | holds |
+  | cleanup on SIGTERM (exit 143), on SIGHUP (exit 129) and on the timeout (exit 2, INCOMPLETE "timed out") | holds: the verifier removed its running container each time, and none was left |
+  | dependencies | not applicable: in the load profile they are bound by the expected image ID to the release check |
+  | **installed-source integrity** | **does not hold**: `metadata_modified` on `brandsentinel-0.2.0.dist-info/WHEEL` |
+
+- **The WHEEL difference** is classified by the owner (2026-11-22) as an **M8 historical build limitation**. The verdict stays "does not hold", and the rule is not waived.
+  - **The cause:** M8 was built before U11's backend pin. Its WHEEL reads `Generator: hatchling 1.33.0`, and its own RECORD hash matches that file. The scratch reference was rebuilt offline, where the only cached backend is 1.32.4.
+  - **What matched:** all payload files, METADATA and `entry_points.txt` compared equal.
+  - **What rests on inference:** that the generator line is the only difference. The reference's bytes were not kept.
+  - **Why the rule stands:** WHEEL is not executed. The rule still fails closed, as intended, because it cannot tell version drift from an edit.
+  - **Why it needs no U10 change:** the cause is the dist-info equality between build paths (X16), which Part B excludes from judgement on M8.
+  - **Why the release image should not share it:** U11 pins `hatchling==1.32.4` on both build paths, and U3 requires byte-equal wheels.
+- **Blob accounting (R6 safety STOP, kept as recorded):** three content blobs (`4d9bb0da…`, `6c89c6e5…`, `8209edcf…`) were missing at R6's first daemon start, before any harness command.
+  - **What they were:** session 1's scratch image A. Session 3 had removed that image, leaving these blobs unreferenced.
+  - **Why it stopped:** R6's own accounting did not list them as inherited U15 content. That is a harness defect, not a preservation failure.
+  - **Owner decision (2026-11-22):** the blobs are inherited U15 scratch content.
+  - **Not established:** the removal mechanism. Garbage collection of unreferenced content at daemon start is the plausible cause; why session 4's start did not remove them is not established.
+  - **Stop not converted:** the STOP stands as recorded.
+  - **Cleanup:** the STOP left the isolation drop-in in place; it was removed afterwards under the owner's authorization, with the daemon stopped.
+- **Preservation:**
+  - **Images:** after every session, the M7 and M8 images keep their IDs and their tags (`:local` and `m7-d3adbe9` to M7, `m8-e40ffcb` to M8). Their content was verified complete at R6's end.
+  - **Lab containers:** the four were never started. Session 1's daemon start rewrote their `hostconfig.json` files (`Dns: null` became `[]`). Since then their configuration files are byte-equal across sessions.
+  - **R1:** `bs-egress-proxy` stays manually stopped (R1, applied in session 1 by the owner's authorization). It is unchanged: R1 restoration is on HOLD.
+  - **Daemon:** stopped and disabled.
+
+**Not tested or not concluded** (open, not waived):
+- **Signal and timeout cleanup** was shown with pinned diagnostic variants of the verifier (an added sleep, and a 15 s timeout), not with the unmodified file. SIGINT, SIGKILL, SIGQUIT and a second signal were not exercised (see the U10 residuals).
+- **Symlinked members:** only `index.json` was probed as a symlink. The save format uses none, so the filter refuses all of them.
+- **One daemon only:** every observation is from one daemon. That `.Id` is the same kind of digest on the account's daemon (DV1, K16), and DV2, are for P2 and G1.
+- **The account's daemon** was not probed. P2 must show the same engine, containerd, Compose, storage driver and image store, or it is a HOLD before G1.
+- **The probe image** for DV5 and DV7 was made with `docker commit`, sharing M8's layers, not with a `FROM` build. The owner accepted this deviation before session 1.
+- **The release image** is still to be measured: U3 re-runs DV1 and DV3-DV8 and the release-profile verifier on the release commit (K17).
+
+**Constraints for U13 and U14** (from these results; each refines this plan and changes none of its decisions):
+1. **Bind the load to the manifest digest.** The expected ID is the digest of the single manifest that `index.json` names. Under the containerd store, the configuration digest is not the ID. The filter's configuration-reference rule applies only where an image store makes the ID the configuration digest. Accept exactly one `Loaded image ID:` line equal to the expected ID.
+2. **Refuse every name route DV8 found,** plus the routes Docker ignores today (defence in depth):
+   - any descriptor `annotations`;
+   - a duplicate member, in particular a second `index.json`;
+   - any symlink, hard link or member outside the DV1 layout;
+   - `RepoTags` that is not absent or empty, and a `repositories` member.
+3. **Never end the stream cleanly after a refusal.** A stream cut at a member boundary loads, so a refusal must kill the load (SIGKILL), as "The G1 stream filter" requires. A killed load can leave unnamed content blobs; do not treat their presence or absence as a signal, since the daemon may remove unreferenced content at start.
+4. **Never treat a listing as complete.** `docker image ls` can omit an image record and can show records it cannot resolve by name. Identity checks resolve by full ID (`docker image inspect <ID>`, a container's `.Image`), and compare `:local`'s resolved ID with the record.
+5. **Create every container, and every Compose project, by full ID** with `--pull never` and `pull_policy: never` (DV5, DV7). A tag is mutable by any load that names it (DV6).
+6. **Name the daemon on every Docker call.** The developer host also runs a rootful daemon, so a bare `docker` may reach the wrong one. Every call names the intended `--host`, as U13's scripts require for the account.
+7. **U10's load and release profiles fail closed on dist-info drift.** The release image must come from U11's pinned build on both paths, with byte-equal wheels in U3. Do not relax `metadata_modified`.
 
 ### U16. Python-install boundary (X21) [DEV] (added 2026-11-18): **done** (#31, `main` `a29f29d`, 2026-11-19)
 
@@ -1540,8 +1631,8 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
 | K11 | `install.sh` inside the masked canonical-view namespace | U4 (N5) |
 | K12 | owners and modes of the account's home and `/var/backups/brandsentinel`, on which C3's prevention depends | P2 |
 | K13 | crash consistency of the exchange (expected from ext4 journaling; not testable by power cut) | recorded expectation; the classifier handles both outcomes |
-| K14 | when `docker load` commits images and tags, and what an interrupted or truncated stream leaves behind | U15 (scratch images, before U13); re-confirmed in U3 (DV3, DV6) |
-| K15 | whether an untagged staged image persists until activation, and the M8 image under its hold tag until acceptance, on each daemon's image store | U15, U3 (DV4); G1; G8/G9 pass conditions |
+| K14 | when `docker load` commits images and tags, and what an interrupted or truncated stream leaves behind | U15 (scratch images, before U13): observed 2026-11-22 ("U15 results"); re-confirmed in U3 (DV3, DV6) |
+| K15 | whether an untagged staged image persists until activation, and the M8 image under its hold tag until acceptance, on each daemon's image store | U15 (DV4, observed 2026-11-22 on the developer daemon), U3 (DV4); G1; G8/G9 pass conditions |
 | K16 | whether the image ID survives `save` and `load` between the two daemons, and is the same kind of digest under both image stores | G1 (DV2); P2 records the account daemon's image store; U3 if a second daemon is authorized |
 | K17 | the real-image assumptions of U10's verifier (see U3's goal) | U3 |
 
@@ -1574,7 +1665,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
   | U12 | independent: ready as a bounded request whenever the owner authorizes it; it does not need this amendment |
   | U11 | after this amendment |
   | U10 merge | done: merged 2026-11-18 as #26 into `main` `f4de71d` (OB10) |
-  | U15 | after this amendment; its own developer-Docker authorization: local builds with no network (`FROM scratch` images, probe images `FROM` a scratch tag of the M8 image ID), an offline scratch install of the M8 commit from the pinned uv cache, and the existing M8 image read-only by ID; no change to `:local` or lab images |
+  | U15 | after this amendment; its own developer-Docker authorization: local builds with no network (`FROM scratch` images, probe images `FROM` a scratch tag of the M8 image ID), an offline scratch install of the M8 commit from the pinned uv cache, and the existing M8 image read-only by ID; no change to `:local` or lab images. **Update 2026-11-22:** done; results reviewed by the owner ("U15 results") |
   | U14 | after OB8 and U15's results; its SP3 merge gate needs developer Docker and egress |
   | U13 | after U10 and U14 merge, and U15's results; its merge gate needs developer Docker and egress, and a separate developer Docker authorization for the real-daemon filter acceptance test on an isolated daemon |
   | U16 | contract approved in principle and OB11 decided (a), 2026-11-18. **Implementation HOLD** until its own authorization; offline, no Docker; then a separate merge approval. **Update 2026-11-19:** done: merged as #31 into `main` `a29f29d`. The OB11 upstream cross-check stays outstanding (U3, below) |
@@ -1583,7 +1674,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
   2. the owner authorizes AU3-A, AU3-B and AU3-C (the developer's Docker daemon; package-index access for the image's pip layer; public egress for the SP3 tests that need it);
   3. OB9 is decided;
   4. the lean workflow is accepted;
-  5. U15's results are reviewed;
+  5. U15's results are reviewed (done 2026-11-22);
   6. the developer daemon's build cache, frontend and base image are confirmed present (read-only, under AU3-B).
 
   U3's release acceptance also waits for the OB11 upstream cross-check of the uv and archive pins, under its own network authorization or from an owner-held copy (added 2026-11-18).

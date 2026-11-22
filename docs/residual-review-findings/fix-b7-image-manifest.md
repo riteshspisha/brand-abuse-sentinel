@@ -89,7 +89,7 @@ These are the accepted limits of `scripts/service-account/image_manifest.py`, af
 
 - **Image ID:** with the containerd image store, the ID must survive `docker save | docker load` between daemons, and it must have the form `sha256:<64 hex>`.
 - **pip's install and compile paths:** the purelib of the environment's `venv` scheme, and timestamp `.pyc` at that path whose code matches field by field (the raw instruction stream and the slot order included) under the image's interpreter (Ubuntu 3.12, which must expose `_varname_from_oparg`).
-- **Ubuntu's `site.venv()` and `getsitepackages()`,** including any extra site directory inside the environment. The site location itself was corrected after U15 (2026-11-22, below); its premise is reproduced offline with the M8 image's own `sysconfig.py` and `site.py`, not yet on a real image.
+- **Ubuntu's `site.venv()` and `getsitepackages()`,** including any extra site directory inside the environment. The site location itself was corrected after U15 (2026-11-22, below); its premise is reproduced offline with the M8 image's own `sysconfig.py` and `site.py`, and the corrected verifier was measured on M8 itself ("Measured on M8", below). The release image remains for U3.
 - **System packages:** no pin is satisfied from system dist-packages.
 - **pip's layout:**
   - pip's RECORDs own every top-level site-packages entry;
@@ -111,4 +111,20 @@ These are the accepted limits of `scripts/service-account/image_manifest.py`, af
   The environment's site directories now come from that list in its order, a symlinked alias of one listed earlier counted once; one that resolves outside the environment, or a system directory that resolves into it, is INCOMPLETE. On the host, the reported prefix must be the executable's environment and the reported site must lie inside it, as normalized absolute paths.
 - **Also closed.** Before the fix, on the pinned interpreter, a site-packages path through a symlink inside the environment passed, and the host accepted a reported prefix that was not the executable's environment (including `/`).
 - **Tests.** Stand-ins for Ubuntu's `sysconfig` (the two import-time captures) and for Debian's `site.getsitepackages()` in the writable base world reproduce the failure without Docker. The faithful image passes on both interpreters.
-- **Not covered.** The stand-ins model only what the script calls. The real Ubuntu files were exercised only in an offline simulation outside the repository, and M8 and the release image remain to be measured.
+- **Not covered.** The stand-ins model only what the script calls. The real Ubuntu files were exercised only in an offline simulation outside the repository. The release image remains to be measured (U3).
+
+## Measured on M8 (U15 Part B, 2026-11-22)
+
+The merged verifier (`main` `b628cf7`), in the load profile, was run against the M8 image by ID. Its reference was an offline scratch install of the M8 commit. This is development evidence on one image that predates the verifier contract, and it accepts nothing for the release image.
+- **Holds:**
+  - identity;
+  - configuration and environment;
+  - the interpreter and import path: the site directory is the environment's `lib/python3.12/site-packages`, so the correction above works on Ubuntu's real files;
+  - RECORD ownership;
+  - bytecode field equality (77 files);
+  - the container limits.
+- **Cleanup holds** on SIGTERM, SIGHUP and the timeout: the verifier removed its running container each time. This was shown with pinned diagnostic copies of the in-image script (an added sleep, and a 15 s timeout), not with the unmodified file. The untested cases listed above stay untested.
+- **Does not hold:** `metadata_modified` on the package's dist-info `WHEEL`.
+  - **The cause:** M8 was built before the backend pin, so its file names `hatchling 1.33.0`. The offline reference had only 1.32.4, and its bytes were not kept.
+  - **Classification:** the owner classified this as an M8 historical build limitation. The rule is unchanged and not waived, and no verifier change follows.
+  - **For the release image:** the release build must come from the pinned backend on both paths ("Wheel reproducibility", above).
