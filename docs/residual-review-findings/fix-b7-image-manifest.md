@@ -88,8 +88,8 @@ These are the accepted limits of `scripts/service-account/image_manifest.py`, af
 ## Unverified until the real image (U3)
 
 - **Image ID:** with the containerd image store, the ID must survive `docker save | docker load` between daemons, and it must have the form `sha256:<64 hex>`.
-- **pip's install and compile paths:** `sysconfig` purelib, and timestamp `.pyc` at that path whose code matches field by field (the raw instruction stream and the slot order included) under the image's interpreter (Ubuntu 3.12, which must expose `_varname_from_oparg`).
-- **Ubuntu's `site.venv()` and `getsitepackages()`,** including any extra site directory inside the environment.
+- **pip's install and compile paths:** the purelib of the environment's `venv` scheme, and timestamp `.pyc` at that path whose code matches field by field (the raw instruction stream and the slot order included) under the image's interpreter (Ubuntu 3.12, which must expose `_varname_from_oparg`).
+- **Ubuntu's `site.venv()` and `getsitepackages()`,** including any extra site directory inside the environment. The site location itself was corrected after U15 (2026-11-22, below); its premise is reproduced offline with the M8 image's own `sysconfig.py` and `site.py`, not yet on a real image.
 - **System packages:** no pin is satisfied from system dist-packages.
 - **pip's layout:**
   - pip's RECORDs own every top-level site-packages entry;
@@ -100,3 +100,15 @@ These are the accepted limits of `scripts/service-account/image_manifest.py`, af
 - **Container limits:** the measurement fits them (1 GiB memory, 64 processes).
 - **Wheel reproducibility:** load-profile dist-info equality across two separate wheel builds requires reproducible builds. PR-3 (U11) now pins the build backend with hashes on both build paths ([its residuals](fix-b7-build-backend-pin.md)); byte-equal wheels were shown in development only, and equality on the release commit is taken in U3.
 - **The real daemon:** tests fake `docker` and `uv`, and drive the real command runner only against stub executables. A real daemon's behaviour (output volume, hangs, signal delivery to the container) is not exercised.
+
+## Correction after U15 Part B (2026-11-22)
+
+- **Defect.** On M8, the first real image, the verifier returned INCOMPLETE ("no package directory in the environment's site-packages"). The in-image script imported `sysconfig` before `site.venv()` and read `sysconfig.get_paths()["purelib"]`. Ubuntu's 3.12.3 `sysconfig` fixes two values at import: the default scheme (`get_paths`' default argument: Debian's `posix_local` outside an environment) and the prefix (`/usr`; Ubuntu's copy predates the upstream re-read, GH-126789). The script therefore inspected the system's `/usr/local/lib/python3.12/dist-packages`. The pinned CPython 3.12.14 hid this: its default scheme's path coincides with the environment's once the prefix is re-read, and the tests ran on it. It failed closed.
+- **Fix.** The site directory is the purelib of the `venv` scheme expanded from the prefix `site.venv()` sets, never the defaults. It must also:
+  - appear in `site.getsitepackages()`'s own list for that prefix;
+  - lie inside the prefix, with no symlink between the prefix and it (a symlink at or above the prefix is resolved and accepted).
+
+  The environment's site directories now come from that list in its order, a symlinked alias of one listed earlier counted once; one that resolves outside the environment, or a system directory that resolves into it, is INCOMPLETE. On the host, the reported prefix must be the executable's environment and the reported site must lie inside it, as normalized absolute paths.
+- **Also closed.** Before the fix, on the pinned interpreter, a site-packages path through a symlink inside the environment passed, and the host accepted a reported prefix that was not the executable's environment (including `/`).
+- **Tests.** Stand-ins for Ubuntu's `sysconfig` (the two import-time captures) and for Debian's `site.getsitepackages()` in the writable base world reproduce the failure without Docker. The faithful image passes on both interpreters.
+- **Not covered.** The stand-ins model only what the script calls. The real Ubuntu files were exercised only in an offline simulation outside the repository, and M8 and the release image remain to be measured.
