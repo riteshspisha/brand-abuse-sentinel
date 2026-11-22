@@ -210,6 +210,7 @@ class World:
         self.config_override = _UNSET  # replaces the whole image config when set
         self.run_error: BaseException | None = None  # raised by `docker run`
         self.rm_error: BaseException | None = None  # raised by `docker rm -f`
+        self.interpreter_options: list[str] = []  # before the image's own flags
 
     def install_package(self, site: Path, installer: str = "pip") -> None:
         for rel, data in FILES.items():
@@ -270,7 +271,11 @@ class World:
                 flags = args[args.index(IMAGE_ID) + 1 :]
                 env = {"PATH": os.environ.get("PATH", ""), "HOME": str(self.home)}
                 return subprocess.run(  # noqa: S603 - the verifier's own in-image script
-                    [self.python, *flags], check=True, capture_output=True, text=True, env=env
+                    [self.python, *self.interpreter_options, *flags],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=env,
                 ).stdout
         if name == "uv":
             assert {"--frozen", "--offline", "--no-dev", "--no-emit-project"} <= set(argv)
@@ -939,6 +944,298 @@ def test_owned_layouts_pass(world, capsys):
     im.run_command = world_runner
     code, report = verify(world, capsys)
     assert (code, report["violations"]) == (0, [])
+
+
+# The image's interpreter: Ubuntu's 3.12 ------------------------------------------------
+
+# A stand-in for Ubuntu 3.12.3's sysconfig (the M8 image's; Debian-patched and older than
+# GH-126789), reduced to what the in-image script calls. Two values are fixed when the
+# module is imported, before site.venv() has run: the default scheme (`get_paths`'s
+# default argument, Debian's `posix_local` outside an environment) and the prefix. A
+# script that imports sysconfig first and reads the defaults gets the system's
+# /usr/local/lib/python3.12/dist-packages, not the environment's site-packages (U15
+# Part B). Explicit `vars` take precedence over the config variables, as upstream.
+UBUNTU_SYSCONFIG = """
+import os, sys
+_PREFIX = os.path.normpath(sys.prefix)
+_EXEC_PREFIX = os.path.normpath(sys.exec_prefix)
+_BASE_PREFIX = os.path.normpath(sys.base_prefix)
+_SCHEMES = {
+    "posix_local": {
+        "purelib": "{base}/local/lib/python{py_version_short}/dist-packages",
+        "platlib": "{platbase}/local/lib/python{py_version_short}/dist-packages",
+    },
+    "posix_prefix": {
+        "purelib": "{base}/lib/python{py_version_short}/site-packages",
+        "platlib": "{platbase}/lib/python{py_version_short}/site-packages",
+    },
+    "venv": {
+        "purelib": %(venv_purelib)r,
+        "platlib": "{platbase}/lib/python{py_version_short}/site-packages",
+    },
+}
+
+def get_default_scheme():
+    return "venv" if sys.prefix != sys.base_prefix else "posix_local"
+
+def get_config_vars():
+    return {"base": _PREFIX, "platbase": _EXEC_PREFIX, "installed_base": _BASE_PREFIX,
+            "installed_platbase": _BASE_PREFIX,
+            "py_version_short": "%%d.%%d" %% sys.version_info[:2]}
+
+def get_paths(scheme=get_default_scheme(), vars=None, expand=True):
+    values = get_config_vars()
+    values.update(vars or {})
+    return {k: os.path.normpath(v.format(**values)) for k, v in _SCHEMES[scheme].items()}
+"""
+VENV_PURELIB = "{base}/lib/python{py_version_short}/site-packages"
+
+# This interpreter's site.py with Ubuntu 3.12.3's (Debian's) getsitepackages: in an
+# environment, each prefix lists its lib/python3.x/site-packages, then Debian's three
+# dist-packages directories, so the system's /usr/local/lib/python3.x/dist-packages is on
+# the path after the environment's directories. `extra` runs after it, to bend it.
+UBUNTU_SITE = """
+exec(compile(open(%(real)r).read(), %(real)r, "exec"))
+
+def getsitepackages(prefixes=None):
+    sitepackages, seen = [], set()
+    ver = "python%%d.%%d" %% sys.version_info[:2]
+    for prefix in PREFIXES if prefixes is None else prefixes:
+        if not prefix or prefix in seen:
+            continue
+        seen.add(prefix)
+        if sys.base_prefix != sys.prefix:
+            sitepackages.append(os.path.join(prefix, "lib", ver, "site-packages"))
+        sitepackages.append(os.path.join(prefix, "local/lib", ver, "dist-packages"))
+        sitepackages.append(os.path.join(prefix, "lib", "python3", "dist-packages"))
+        sitepackages.append(os.path.join(prefix, "lib", ver, "dist-packages"))
+    return sitepackages
+%(extra)s
+"""
+
+
+def ubuntu_like(w: World, venv_purelib: str = VENV_PURELIB, site_extra: str = "") -> Path:
+    """Give the world's base interpreter Ubuntu's sysconfig and site behaviour and the
+    image's layout: a --system-site-packages environment, and a system dist-packages
+    directory (holding pip in the image) where the import-time defaults point. Returns
+    that directory."""
+    assert w.base_lib is not None, "needs the writable base"
+    (w.base_lib / "sysconfig.py").unlink()  # a symlink to the real one
+    (w.base_lib / "sysconfig.py").write_text(UBUNTU_SYSCONFIG % {"venv_purelib": venv_purelib})
+    # site is a frozen module in 3.12 (Ubuntu freezes its own patched copy): the
+    # stand-in's interpreter must load it from the file instead.
+    w.interpreter_options = ["-X", "frozen_modules=off"]
+    real_site = os.path.realpath(w.base_lib / "site.py")
+    (w.base_lib / "site.py").unlink()
+    (w.base_lib / "site.py").write_text(UBUNTU_SITE % {"real": real_site, "extra": site_extra})
+    local = w.base_lib.parents[1] / "local" / "lib" / VER / "dist-packages"
+    local.mkdir(parents=True)
+    dist(local, "pip", "26.0", module=False)
+    cfg = w.image / "pyvenv.cfg"
+    cfg.write_text(
+        cfg.read_text().replace(
+            "include-system-site-packages = false", "include-system-site-packages = true"
+        )
+    )
+    return local
+
+
+@pytest.fixture(params=["upstream", "ubuntu"])
+def either_world(request, base_world):
+    """The base world on the pinned interpreter as it is, and with Ubuntu's sysconfig."""
+    if request.param == "ubuntu":
+        ubuntu_like(base_world)
+    return base_world
+
+
+def test_the_environments_site_packages_is_measured_on_either_interpreter(either_world, capsys):
+    """U15 Part B: on Ubuntu's interpreter the verifier measured the system's
+    dist-packages and could not find the package (INCOMPLETE)."""
+    code, report = verify(either_world, capsys)
+    assert (code, report["verdict"], report["violations"]) == (0, "ok", [])
+    assert report["site"] == str(either_world.site)
+    assert report["compared"]["payload_files"] == len(FILES)
+    code, report = verify(either_world, capsys, profile="load")
+    assert (code, report["verdict"], report["violations"]) == (0, "ok", [])
+
+
+@pytest.mark.parametrize(
+    "purelib, words",
+    [
+        ("{base}/lib/python{py_version_short}/other-packages", "site.py puts it"),
+        ("{installed_base}/lib/python{py_version_short}/site-packages", "outside the environment"),
+    ],
+    ids=["calculations-disagree", "outside-the-environment"],
+)
+def test_a_site_directory_the_environment_does_not_use_is_incomplete(
+    purelib, words, base_world, capsys
+):
+    """The environment's own scheme must name a directory inside it that site.py adds
+    for it, even holding a faithful copy of the package."""
+    ubuntu_like(base_world, venv_purelib=purelib)
+    values = {"base": str(base_world.image), "installed_base": str(base_world.base_lib.parents[1]),
+              "py_version_short": VER.removeprefix("python")}  # fmt: skip
+    elsewhere = Path(purelib.format(**values))
+    elsewhere.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(base_world.pkg, elsewhere / "brandsentinel")
+    shutil.copytree(base_world.site / DIST, elsewhere / DIST)
+    _incomplete(*verify(base_world, capsys), words)
+
+
+# site.venv() sets both prefixes; an interpreter that leaves exec_prefix elsewhere is not
+# the environment the measurement assumes.
+SPLIT_EXEC_PREFIX = """
+_venv = venv
+def venv(known_paths):
+    known_paths = _venv(known_paths)
+    sys.exec_prefix = sys.base_exec_prefix
+    return known_paths
+"""
+
+
+def _venv_site_out(w: World) -> None:
+    outside = w.tmp / "outside-dist-packages"
+    outside.mkdir()
+    (w.image / "lib" / "python3").mkdir()
+    (w.image / "lib" / "python3" / "dist-packages").symlink_to(outside)
+
+
+def _system_site_in(w: World, local: Path) -> None:
+    shutil.rmtree(local)
+    local.symlink_to(w.site)
+
+
+@pytest.mark.parametrize(
+    "purelib, extra, damage, words",
+    [
+        (VENV_PURELIB, SPLIT_EXEC_PREFIX, None, "prefix and exec_prefix differ"),
+        ("{base}/local/lib/python{py_version_short}/dist-packages", "", None, "is missing"),
+        ("{base}", "", None, "outside the environment"),
+        (VENV_PURELIB, "", lambda w, local: _venv_site_out(w), "resolves outside it"),
+        (VENV_PURELIB, "", _system_site_in, "resolves into the environment"),
+    ],
+    ids=["exec-prefix-elsewhere", "site-missing", "site-is-the-prefix",
+         "environment-site-resolves-out", "system-site-resolves-in"],
+)  # fmt: skip
+def test_an_environment_the_measurement_cannot_place_is_incomplete(
+    purelib, extra, damage, words, base_world, capsys
+):
+    local = ubuntu_like(base_world, venv_purelib=purelib, site_extra=extra)
+    if damage is not None:
+        damage(base_world, local)
+    _incomplete(*verify(base_world, capsys), words)
+
+
+def test_an_alias_of_the_environments_site_is_listed_once(base_world, capsys):
+    """Debian's list names lib/python3.x/dist-packages too; a symlink to site-packages
+    there is the same directory, not a second copy of every distribution."""
+    ubuntu_like(base_world)
+    (base_world.image / "lib" / VER / "dist-packages").symlink_to(base_world.site)
+    code, report = verify(base_world, capsys)
+    assert (code, report["verdict"], report["violations"]) == (0, "ok", [])
+
+
+def _symlinked_lib(w: World) -> None:
+    real = w.image / "lib.real"
+    (w.image / "lib").rename(real)
+    (w.image / "lib").symlink_to(real)
+
+
+def _site_elsewhere(w: World) -> None:
+    moved = w.tmp / "elsewhere-site"
+    shutil.move(w.site, moved)
+    w.site.symlink_to(moved)
+
+
+@pytest.mark.parametrize(
+    "damage, words",
+    [
+        (_symlinked_lib, "through a symlink"),
+        (_site_elsewhere, "through a symlink"),
+        (
+            lambda w: shutil.move(w.pkg, w.tmp / "pkg") or w.pkg.symlink_to(w.tmp / "pkg"),
+            "no package directory",
+        ),
+    ],
+    ids=["symlink-inside-the-environment", "site-symlinked-out", "package-symlinked-out"],
+)
+def test_a_site_or_package_reached_through_a_symlink_is_incomplete(
+    damage, words, either_world, capsys
+):
+    damage(either_world)
+    _incomplete(*verify(either_world, capsys), words)
+
+
+@pytest.mark.parametrize(
+    "change, words",
+    [
+        (lambda m: m.update(site="/usr/local/lib/python3.12/dist-packages"), "site"),
+        (lambda m: m.update(site=m["interpreter"]["prefix"]), "site"),
+        (lambda m: m.update(site=m["site"] + "/../site-packages"), "site"),
+        (lambda m: m["interpreter"].update(prefix="/usr"), "prefix"),
+        (lambda m: m["interpreter"].update(prefix="/"), "prefix"),
+        (lambda m: m["interpreter"].update(executable="/usr/bin/python3"), "prefix"),
+        (lambda m: m.update(site=None), "site"),
+        (lambda m: m.update(site=m["interpreter"]["prefix"] + "-other/site-packages"), "site"),
+        (lambda m: m.update(interpreter=None), "no interpreter"),
+        (lambda m: m["interpreter"].update(prefix=m["interpreter"]["prefix"].lstrip("/")),
+         "prefix"),
+        (lambda m: m["interpreter"].update(prefix=m["interpreter"]["prefix"] + "/"), "prefix"),
+        (lambda m: m["interpreter"].update(
+            executable=m["interpreter"]["prefix"] + "/bin/../bin/python"), "prefix"),
+    ],
+    ids=["site-outside", "site-is-prefix", "site-not-normal", "prefix-elsewhere",
+         "prefix-root", "executable-elsewhere", "site-not-text", "site-in-a-sibling",
+         "no-interpreter", "prefix-relative", "prefix-not-normal", "executable-not-normal"],
+)  # fmt: skip
+def test_the_host_checks_the_reported_site_against_the_interpreter(
+    change, words, world, capsys, monkeypatch
+):
+    """The host does not take the image's word for where its environment is."""
+
+    def runner(argv, cwd=None, timeout=None, env=None):
+        out = world.runner(argv, cwd, timeout, env)
+        if Path(argv[0]).name == "docker" and "run" in argv:
+            measured = json.loads(out)
+            change(measured)
+            out = json.dumps(measured)
+        return out
+
+    monkeypatch.setattr(im, "run_command", runner)
+    _incomplete(*verify(world, capsys), words)
+
+
+def test_system_site_distributions_are_not_the_environments(base_world, capsys):
+    """With include-system-site-packages = true, the system's copies of a dependency
+    and of pip follow the environment's at runtime: never counted as in it."""
+    local = ubuntu_like(base_world)
+    system = base_world.base_lib / "site-packages"
+    for site in (local, system):
+        dist(site, "dep-a", "0.9")
+        dist(site, "dep-b", "2.0")
+    code, report = verify(base_world, capsys)
+    assert (code, report["verdict"], report["violations"]) == (0, "ok", [])
+
+
+def test_a_counterfeit_package_in_a_system_directory_is_never_measured(base_world, capsys):
+    """A faithful copy where Ubuntu's import-time defaults point, and none in the
+    environment: the environment's package is missing, whatever the system holds."""
+    local = ubuntu_like(base_world)
+    for site in (local, base_world.base_lib / "site-packages"):
+        shutil.copytree(base_world.pkg, site / "brandsentinel")
+        shutil.copytree(base_world.site / DIST, site / DIST)
+    shutil.rmtree(base_world.pkg)
+    shutil.rmtree(base_world.site / DIST)
+    _incomplete(*verify(base_world, capsys), "no package directory")
+
+
+def test_a_stdlib_copy_of_the_package_shadows_on_ubuntu_too(base_world, capsys):
+    ubuntu_like(base_world)
+    shadow = base_world.base_lib / "brandsentinel"
+    shadow.mkdir()
+    (shadow / "__init__.py").write_text("")
+    code, report = verify(base_world, capsys)
+    assert code == 1 and "package_shadowed" in rules(report)
 
 
 def _code_tree_change(w: World, change) -> None:

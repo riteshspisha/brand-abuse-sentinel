@@ -107,12 +107,21 @@ image's `bin/`, Entrypoint, Cmd or PATH (reported for the U3 review), and the RE
 files used for ownership, which the image itself provides (bound by the image ID).
 Report text that comes from the image is escaped and truncated.
 
+The environment's site-packages is the purelib of `sysconfig`'s `venv` scheme expanded
+from the prefix `site.venv()` sets, never the defaults: Ubuntu's 3.12 fixes the default
+scheme and the prefix when `sysconfig` is imported, which named the system's
+dist-packages instead (U15 Part B, M8). It must also be in `site.getsitepackages()`'s
+list for that prefix, inside the prefix with no symlink below it, and the host checks
+the reported prefix and site against the interpreter's executable; otherwise the
+inspection is incomplete.
+
 Assumptions proven only against stand-ins, to be verified on the real image (U3):
-pip installed the package under `sysconfig` purelib of the environment's own scheme
-and compiled timestamp bytecode at that path; `site.venv()`/`site.getsitepackages()`
-behave on the image's Ubuntu interpreter as upstream (system dist-packages from
-`--system-site-packages`); pip installed every pin into the environment rather than
-reusing a system distribution, and its RECORDs own every top-level entry; the base
+pip installed the package under that directory and compiled timestamp bytecode there;
+`site.getsitepackages()` on the image's Ubuntu interpreter lists the environment's
+site directories first, then the system's dist-packages (`--system-site-packages`;
+reproduced offline with the M8 image's `site.py` and `sysconfig.py`); pip installed
+every pin into the environment rather than reusing a system distribution, and its
+RECORDs own every top-level entry; the base
 image sets no other `PYTHON*` and no `LD_*` variable; the measurement fits the
 container limits; the image ID survives `docker save | docker load` between daemons
 (containerd image store); and the base image's system startup hooks are known and
@@ -127,6 +136,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import re
 import secrets
 import shutil
@@ -344,8 +354,7 @@ def main():
         # without it the slot order cannot be compared: incomplete, never skipped
         errors.append("this interpreter does not expose the code slot order")
     # site.venv() reads pyvenv.cfg and sets sys.prefix and site.PREFIXES. It also adds
-    # the site-packages, which would run .pth files, so that step is stubbed out. It
-    # must run before sysconfig computes (and caches) any path.
+    # the site-packages, which would run .pth files, so that step is stubbed out.
     add = site.addsitepackages
     site.addsitepackages = lambda known_paths, prefixes=None: known_paths
     try:
@@ -354,17 +363,46 @@ def main():
         site.addsitepackages = add
     if sys.prefix == sys.base_prefix:
         raise RuntimeError("the interpreter is not a virtual environment's")
-    site_dir = sysconfig.get_paths()["purelib"]
+    prefix = os.path.normpath(sys.prefix)
+    if os.path.normpath(sys.exec_prefix) != prefix:
+        raise RuntimeError("the environment's prefix and exec_prefix differ")
+    # The environment's own scheme, expanded from the prefix site.venv() just set: never
+    # sysconfig's defaults, which an interpreter may fix when sysconfig is imported.
+    # Ubuntu's 3.12 (before GH-126789) fixes both the default scheme and the prefix, so
+    # the defaults named the system's /usr/local/lib/python3.12/dist-packages.
+    site_dir = os.path.normpath(
+        sysconfig.get_paths("venv", vars={"base": prefix, "platbase": prefix})["purelib"])
     root = os.path.join(site_dir, "brandsentinel")
-    venv_root = os.path.realpath(sys.prefix)
+    venv_root = os.path.realpath(prefix)
     def in_venv(path):
         real = os.path.realpath(path)
         return real == venv_root or real.startswith(venv_root + os.sep)
+    # Inside the environment by name, with no symlink below its prefix: one path, one
+    # directory.
+    rel = os.path.relpath(site_dir, prefix)
+    if rel == os.curdir or rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        raise RuntimeError("the environment's site-packages is outside the environment")
+    if os.path.realpath(site_dir) != os.path.join(venv_root, rel):
+        raise RuntimeError("the environment's site-packages is reached through a symlink")
+    # site.py's own, independent list for the environment, in the order site.venv()
+    # adds it: the scheme's directory must be one of them.
+    own = [os.path.normpath(p) for p in site.getsitepackages([prefix])]
+    if site_dir not in own:
+        raise RuntimeError("the environment's site-packages is not where site.py puts it")
+    if not os.path.isdir(site_dir):
+        raise RuntimeError("the environment's site-packages is missing")
+    venv_sites, seen = [], set()
+    for p in own:
+        if os.path.isdir(p) and os.path.realpath(p) not in seen:  # an alias: listed once
+            seen.add(os.path.realpath(p))
+            venv_sites.append(p)
+    if not all(in_venv(p) for p in venv_sites):
+        raise RuntimeError("a site directory of the environment resolves outside it")
     system = sys.base_prefix in site.PREFIXES  # include-system-site-packages = true
     user_site = site.getusersitepackages() if system else None  # venv without system: off
-    sites = [p for p in site.getsitepackages() if os.path.isdir(p)]
-    venv_sites = [site_dir] + [p for p in sites if in_venv(p)
-                               and os.path.realpath(p) != os.path.realpath(site_dir)]
+    sites = [os.path.normpath(p) for p in site.getsitepackages() if os.path.isdir(p)]
+    if any(in_venv(p) and p not in own for p in sites):
+        raise RuntimeError("a system site directory resolves into the environment")
     system_sites = [p for p in sites if not in_venv(p)]
     # site.venv() adds the environment's site-packages before the user site (3.12).
     search = list(venv_sites)
@@ -1001,6 +1039,28 @@ def remove_container(host: str, name: str) -> str | None:
     return None
 
 
+def location_problem(measured: dict) -> str | None:
+    """The image reports where its environment and site-packages are; the host does not
+    take its word. The prefix must be the environment of the interpreter that ran
+    (site.venv() derives it from the executable) and the site directory must lie inside
+    it, all as normalized absolute container paths."""
+    interpreter = measured.get("interpreter")
+    if not isinstance(interpreter, dict):
+        return "no interpreter"
+    prefix, executable = interpreter.get("prefix"), interpreter.get("executable")
+    site = measured.get("site")
+
+    def normal(path: object) -> bool:
+        return isinstance(path, str) and path.startswith("/") and posixpath.normpath(path) == path
+
+    if (not normal(prefix) or prefix == "/" or not normal(executable)
+            or posixpath.dirname(posixpath.dirname(executable)) != prefix):  # fmt: skip
+        return "an environment prefix that is not its interpreter's"
+    if not normal(site) or not site.startswith(prefix + "/"):
+        return "a site directory outside its environment"
+    return None
+
+
 def measure(host: str, image: str) -> dict:
     name = f"brandsentinel-image-manifest-{os.getpid()}-{secrets.token_hex(4)}"
     # -S: no .pth file or sitecustomize may run before it is inventoried.
@@ -1031,6 +1091,9 @@ def measure(host: str, image: str) -> dict:
     if measured["errors"]:
         problem = bounded(measured["errors"][0], 200)
         raise Incomplete(f"the in-image measurement could not read: {problem}")
+    problem = location_problem(measured)
+    if problem is not None:
+        raise Incomplete(f"the in-image measurement reported {problem}")
     if not measured["bytecode"]:
         raise Incomplete("no package source was inspected in the image")
     return measured
