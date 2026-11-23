@@ -11,11 +11,14 @@ import warnings
 
 import pytest
 from tests.docker_support import make_runner, runtime_or_skip
+from tests.fake_docker import image_id
 
 from brandsentinel.config import Config, MediaSettings
 from brandsentinel.sandbox import media_fixtures as F
 from brandsentinel.sandbox.media_client import media_spec
 from brandsentinel.sandbox.runner import DockerCli, SandboxRunner
+
+APPROVED = "sha256:" + "a" * 64
 
 pytestmark = pytest.mark.security
 
@@ -54,7 +57,7 @@ def test_the_application_never_imports_an_image_decoder():
 
 
 def _args(spec) -> list[str]:
-    runner = SandboxRunner(Config().sandbox, DockerCli("unix:///fake.sock"))
+    runner = SandboxRunner(Config().sandbox, DockerCli("unix:///fake.sock"), image_id=APPROVED)
     runner.validate(spec)
     return runner.create_args(spec, "bs-main-media-1-0", "1", 0)
 
@@ -83,16 +86,15 @@ def test_media_container_is_network_less_read_only_and_limited():
 def test_media_jobs_take_no_network_lease_and_inspect_no_network(
     fake_docker, tmp_path, monkeypatch
 ):
-    from dataclasses import replace
-
     from brandsentinel.config import SandboxLimits, SandboxSettings
 
     runtime = tmp_path / "run"
     runtime.mkdir(mode=0o700)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
     settings = SandboxSettings(limits=SandboxLimits(wall_seconds=10), kill_grace_seconds=5)
-    r = SandboxRunner(settings, DockerCli("unix:///fake.sock", str(fake_docker.binary)))
-    spec = replace(media_spec(MediaSettings()), image="fake/echo")
+    docker = DockerCli("unix:///fake.sock", str(fake_docker.binary))
+    r = SandboxRunner(settings, docker, image_id=image_id("echo"))
+    spec = media_spec(MediaSettings())
     result = asyncio.run(r.run(spec, job="m1", attempt=0, stdin=b"{}"))
     assert result.status == "ok"
     assert not (runtime / "brandsentinel").exists()  # no lease file was ever opened

@@ -3,7 +3,11 @@
 Invoked as `python fake_docker.py <state_dir> <docker args...>` through a small
 wrapper script (see `make_fake_docker`). Containers are JSON records in
 `<state_dir>/state.json`; every invocation's argv is appended to `calls.jsonl`.
-A container's behaviour is chosen by its image name:
+Images exist only by ID, as Docker's immutable reference (B7 U14): a container's
+behaviour is chosen by the image ID it is created from, `image_id("<behaviour>")`,
+and `create` refuses any other reference, so a test that creates a container by tag
+fails. Tags live in `<state_dir>/tags.json` (tag -> ID, `DEFAULT_TAGS` when absent) and
+are only resolved by `image inspect`. The behaviours:
 
 - `fake/echo`: reads stdin, prints `{"echo": <stdin>}`
 - `fake/sleep`: sleeps until killed
@@ -20,6 +24,7 @@ and `container inspect` for names not created through `create`.
 """
 
 import fcntl
+import hashlib
 import json
 import os
 import signal
@@ -28,16 +33,22 @@ import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
-IMAGES = {
-    "fake/echo",
-    "fake/sleep",
-    "fake/flood",
-    "fake/stderr",
-    "fake/oom",
-    "fake/fail",
-    "fake/text",
-    "fake/nested",
-}
+BEHAVIOURS = ("echo", "sleep", "flood", "stderr", "oom", "fail", "text", "nested")
+
+
+def image_id(behaviour: str) -> str:
+    """The fake image ID for a behaviour; an unknown name gives an ID no image has."""
+    return "sha256:" + hashlib.sha256(f"fake/{behaviour}".encode()).hexdigest()
+
+
+IMAGES = {image_id(b): f"fake/{b}" for b in BEHAVIOURS}
+# The configured default `sandbox.image` names the echo image until a test moves it.
+DEFAULT_TAGS = {"brandsentinel-sandbox:local": image_id("echo")}
+
+
+def tags(state_dir: Path) -> dict[str, str]:
+    path = state_dir / "tags.json"
+    return json.loads(path.read_text()) if path.exists() else dict(DEFAULT_TAGS)
 
 
 @contextmanager
@@ -70,6 +81,8 @@ def cmd_create(state_dir: Path, args: list[str]) -> None:
             continue
         i += 1
     image = args[i + 1]
+    if not image.startswith("sha256:"):
+        fail(f"fake docker: create by a mutable reference {image!r}; create by ID", 125)
     if image not in IMAGES:
         fail(f"Error response from daemon: No such image: {image}", 125)
     with locked(state_dir) as state:
@@ -93,7 +106,7 @@ def cmd_start(state_dir: Path, name: str) -> None:
         c["pid"] = os.getpid()
         c["State"]["Status"] = "running"
         image = c["Image"]
-    code, oom = run_behaviour(image)
+    code, oom = run_behaviour(IMAGES.get(image, image))
     with locked(state_dir) as state:
         if name in state:
             state[name]["State"].update(Status="exited", ExitCode=code, OOMKilled=oom)
@@ -217,9 +230,11 @@ def main() -> None:
         info = state_dir / "info.json"
         print(info.read_text() if info.exists() else "{}")
     elif cmd == "image" and rest[0] == "inspect":
-        if (state_dir / "no-image").exists():
-            fail(f"Error: No such image: {rest[-1]}")
-        print("sha256:fake")
+        ref = rest[-1]
+        resolved = ref if ref in IMAGES else tags(state_dir).get(ref)
+        if (state_dir / "no-image").exists() or resolved is None:
+            fail(f"Error: No such image: {ref}")
+        print(resolved)
     elif cmd == "network" and rest[0] == "inspect":
         net = state_dir / "networks" / f"{rest[-1]}.json"
         if not net.exists():

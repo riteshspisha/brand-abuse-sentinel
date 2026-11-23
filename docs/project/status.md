@@ -96,6 +96,12 @@ All three are in version 0.2.1, the release candidate for their promotion (backl
 [plan](../plans/2026-11-10-002-chore-b7-production-promotion-plan.md)). 0.2.1 has not been
 built, installed or promoted; production runs 0.2.0.
 
+B7 also adds runtime image identity (U14): containers are created by the image ID resolved
+once per run and, where enforced, only by the root-approved ID, with the proxy checked by
+its container ([security model](../concepts/security.md#image-identity)). It is
+development-tested with stubbed Docker only: its Docker gate (SP3) has not yet run, it is
+not yet merged or promoted, and Compose starts by ID (U13) have not started.
+
 Until all of them ship, the
 [production CLI rules](../operations/deployment.md#production-cli-operations) are
 procedural.

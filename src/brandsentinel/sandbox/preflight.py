@@ -11,6 +11,19 @@ endpoint answers, it is rootless, cgroup v2 enforces memory, PID and CPU limits,
 seccomp is available, and the sandbox image exists. Any failure disables sandbox
 stages, and `status` says why.
 
+Image identity (B7 U14, KTD12 option C) is part of the runtime checks. Once per run,
+before any Docker call, `store.image_selection` decides whether identity is enforced
+(the anchor's account, either user ID, or a production-class store). The configured
+`sandbox.image` is then resolved to its full ID exactly once, and the runner
+`prepare_runtime` returns creates every container by that ID, so a tag moved later is
+never used. When enforcing, the root-owned approval record (`store.approval`) must
+exist, be safe and well formed, and name that same ID; the network check then also
+requires the proxy container to run it. A refused selection, a missing, unsafe or
+malformed record, or a mismatch is a named failure (`image_selection`,
+`image_approval`, `image_approved`, `proxy_image`) that disables sandbox stages, so
+`needs_media` and `needs_render` stay visible. Nothing here turns an error into "not
+enforced". A record changed during a run is not seen until the next preflight.
+
 Network checks (`check_network`) gate the browser stage: the sandbox network is
 internal, the egress proxy is the only long-running container on it and is
 hardened, at most one untrusted job container is attached, a throwaway
@@ -32,7 +45,14 @@ from pathlib import Path
 import brandsentinel
 from brandsentinel.config import Config, SandboxSettings
 from brandsentinel.sandbox.netns import NamespaceUnavailable, RootlessNamespace
-from brandsentinel.sandbox.runner import DockerCli, SandboxError, SandboxRunner, SandboxSpec
+from brandsentinel.sandbox.runner import (
+    IMAGE_ID,
+    DockerCli,
+    SandboxError,
+    SandboxRunner,
+    SandboxSpec,
+)
+from brandsentinel.store import approval, image_selection
 
 ROOTFUL_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock")
 INHIBIT_IPV4 = "com.docker.network.bridge.inhibit_ipv4"
@@ -73,6 +93,10 @@ class Check:
 class Report:
     checks: list[Check] = field(default_factory=list)
     docker: DockerCli | None = None  # the endpoint checked, for runtime reports
+    # Image identity (runtime reports): set only when every runtime check passed.
+    image_id: str | None = None  # the ID `sandbox.image` resolved to, once
+    image_enforced: bool | None = None  # None: the selection was refused
+    image_reason: str = ""  # the selection's reason, or the refusal's check name
 
     @property
     def ok(self) -> bool:
@@ -153,8 +177,57 @@ def _owner(path: Path) -> int | None:
         return None
 
 
-async def check_runtime(docker: DockerCli, settings: SandboxSettings) -> Report:
+@dataclass(frozen=True)
+class _ImagePolicy:
+    enforce: bool
+    approved: str | None  # the record's ID when enforcing
+
+
+def _image_policy(config: Config, report: Report) -> _ImagePolicy | None:
+    """Select once, and read the approval record when enforcing. Every failure is a
+    named check and returns None; none of them means "not enforced". Details carry
+    only stable check names (and, for an unexpected error, its type name): no path,
+    account or exception text."""
+    try:
+        selection = image_selection.select(config.data_dir)
+    except image_selection.SelectionRefused as e:
+        report.image_reason = e.check
+        report.add("image_selection", False, e.check)
+        return None
+    except Exception as e:  # any other error fails closed, named, never "development"
+        report.image_reason = "selection_error"
+        report.add("image_selection", False, f"selection_error ({type(e).__name__})")
+        return None
+    report.image_enforced = selection.enforce
+    report.image_reason = selection.reason
+    if not selection.enforce:
+        report.add("image_selection", True, f"not enforced ({selection.reason})")
+        return _ImagePolicy(False, None)
+    report.add("image_selection", True, f"enforced ({selection.reason})")
+    try:
+        record = approval.load_approval()
+    except approval.ApprovalRefused as e:
+        report.add("image_approval", False, e.check)
+        return None
+    except Exception as e:  # as above
+        report.add("image_approval", False, f"approval_error ({type(e).__name__})")
+        return None
+    if record is None:
+        report.add("image_approval", False, "approval_missing")
+        return None
+    report.add("image_approval", True, short_id(record.image_id))
+    return _ImagePolicy(True, record.image_id)
+
+
+def short_id(image: str) -> str:
+    """An image ID shortened for display: `sha256:` and 12 hex digits."""
+    return image[:19]
+
+
+async def check_runtime(docker: DockerCli, config: Config) -> Report:
     report = Report()
+    policy = _image_policy(config, report)  # before any Docker call
+    settings = config.sandbox
     info_call = await docker.call("info", "--format", "{{json .}}", timeout=20)
     if not info_call.ok:
         report.add("endpoint", False, f"{docker.host}: {info_call.stderr.strip()[:300]}")
@@ -191,22 +264,50 @@ async def check_runtime(docker: DockerCli, settings: SandboxSettings) -> Report:
         not missing,
         f"controller(s) not delegated: {', '.join(missing)}",
     )
-    image = await docker.call("image", "inspect", "--format", "{{.Id}}", settings.image)
-    report.add("sandbox_image", image.ok, f"image {settings.image} not found; build it first")
+    # The one resolution of the tag for this run: everything after uses the ID.
+    image = await docker.call("image", "inspect", "--format", "{{.Id}}", "--", settings.image)
+    resolved = image.stdout.strip() if image.ok else ""
+    if not image.ok:
+        report.add("sandbox_image", False, f"image {settings.image} not found; build it first")
+        return report
+    if not IMAGE_ID.fullmatch(resolved):
+        report.add("sandbox_image", False, f"image {settings.image} did not resolve to a full ID")
+        return report
+    report.add("sandbox_image", True, short_id(resolved))
+    if policy is not None and policy.enforce:
+        report.add(
+            "image_approved",
+            resolved == policy.approved,
+            f"{settings.image} resolves to {short_id(resolved)}, not the approved"
+            f" {short_id(policy.approved or '')}",
+        )
+    if report.ok:
+        report.image_id = resolved
     return report
 
 
 async def prepare_runtime(config: Config) -> tuple[SandboxRunner | None, Report]:
-    """A runner when every runtime check passes, else None and the reasons."""
+    """A runner when every runtime check passes, else None and the reasons. The runner
+    creates every container by the image ID resolved here (B7 U14)."""
     try:
         docker = DockerCli(config.runtime.docker_host, config.runtime.docker_binary)
     except SandboxError as e:
         report = Report()
         report.add("endpoint", False, str(e))
         return None, report
-    report = await check_runtime(docker, config.sandbox)
+    report = await check_runtime(docker, config)
     report.docker = docker
-    return (SandboxRunner(config.sandbox, docker) if report.ok else None), report
+    if report.ok and report.image_id is None:
+        report.add("sandbox_image", False, "the sandbox image was not resolved to an ID")
+    if not report.ok:
+        return None, report
+    runner = SandboxRunner(
+        config.sandbox,
+        docker,
+        image_id=report.image_id,
+        image_enforced=report.image_enforced is True,
+    )
+    return runner, report
 
 
 def gate_hostile_content(
@@ -279,10 +380,21 @@ async def check_network(
         "container", "inspect", "--format", "{{json .}}", settings.proxy_container
     )
     if proxy.ok:
-        problems = proxy_hardening_problems(json.loads(proxy.stdout))
+        inspected = json.loads(proxy.stdout)
+        problems = proxy_hardening_problems(inspected)
         report.add("proxy_hardened", not problems, "; ".join(problems))
     else:
+        inspected = None
         report.add("proxy_hardened", False, f"{settings.proxy_container} not found")
+    if runner.image_enforced:
+        # B7 U14: the proxy is created outside the runner (Compose), so its image is
+        # checked on the container itself, never through the tag.
+        running = inspected.get("Image") if isinstance(inspected, dict) else None
+        report.add(
+            "proxy_image",
+            running == runner.image_id,
+            f"{settings.proxy_container} does not run the approved image",
+        )
     if probe and report.ok:
         report.checks.append(await _egress_probe(runner, network))
     return report
