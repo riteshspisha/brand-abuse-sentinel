@@ -53,6 +53,11 @@ origin: docs/plans/2026-11-09-001-post-i1-engineering-backlog.md
   - U16 is merged: #31 into `main` `a29f29d`, 2026-11-19. X21 is resolved for U3's release build (U3 prerequisite 1). The OB11 upstream cross-check of the uv and archive pins is a separate requirement, still outstanding, and still gates U3's release acceptance (added 2026-11-19).
   - U12 is merged: #28 into `main` `5f33409`, 2026-11-16. U11 is merged: #29 into `main` `749c8b8`, 2026-11-17. U13 and U14 have not started, and U3 is on HOLD (corrected 2026-11-19).
   - U15 is done: development evidence, reviewed by the owner on 2026-11-22 (see "U15 results"). The U10 correction it led to is merged: #33 into `main` `b628cf7`, 2026-11-22.
+  - **U14 has started (2026-11-23).**
+    - OB8 option C is confirmed.
+    - The approval-record reader is merged: #35 into `main` `859f458`.
+    - The selection rule is in development, under decisions D1-D4 (see U14).
+    - U14 is not complete: preflight, the runner, by-ID creation and SP3 remain. U13 has not started.
 
   Each step marked **[AUTH]** or **[PRIV-READ]** needs its own explicit owner authorization (`AGENTS.md` §6).
 - **Authority:**
@@ -160,7 +165,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
 | U11 | PR-3 | not started |
 | U12 | none | not started |
 | U13 | none | not started; needs this amendment |
-| U14 | none | not started; scope decision OB8 |
+| U14 | none | not started; scope decision OB8. **Update 2026-11-23:** OB8 option C confirmed. The approval-record reader is merged (#35, `main` `859f458`). The selection rule is in development. Preflight, runner and by-ID enforcement, and SP3, are open |
 | U15 | none | not started; Docker-behaviour probe and M8 characterization before U13 (review finding, revision 2026-11-16). **Update 2026-11-22:** done, development evidence, owner-reviewed ("U15 results") |
 
 ---
@@ -273,7 +278,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
   - **The approval record** is root-owned and names one approved image ID. Root writes it at G5, from the owner's approval of the sealed build record. It is separate from any verifier pass.
   - **No load can name an image.** A validating stream filter refuses any name-bearing archive member before it reaches `docker load` (G1). This is a proposed design, conditional on U15 and on the filter's acceptance condition (see "The G1 stream filter").
   - **Approval before activation.** G5 verifies against the installed tree first; root then records the ID; activation tags only the recorded ID.
-  - **Starts are bound to the ID.** Compose starts receive the record's ID, not a tag. At runtime, U14 (OB8, provisionally selected) makes tags non-authoritative for the runner and preflight.
+  - **Starts are bound to the ID.** Compose starts receive the record's ID, not a tag. At runtime, U14 (OB8 option C, confirmed 2026-11-23) makes tags non-authoritative for the runner and preflight.
   - See "Image loading and activation".
 - **KTD13: acceptance evidence comes from the final release commit and its artifacts.**
   - **What counts:** acceptance evidence (U3, U4's rehearsal, P0-P3 and the G-steps) is taken only on the approved release commit (by tree hash) and on the artifacts built from it (the wheel's sha256, the image ID).
@@ -348,7 +353,7 @@ flowchart TD
   AM --> U10[U10 PR-2: merge gate]
   AM --> U11[U11 PR-3: backend pin]
   AM --> OB8{OB8}
-  OB8 -->|provisionally selected| U14[U14 runtime identity]
+  OB8 -->|selected, option C| U14[U14 runtime identity]
   U10 --> U13[U13 loading and activation]
   U14 -->|record reader| U13
   AM --> U15[U15 Docker probe and M8 characterization]
@@ -368,7 +373,7 @@ flowchart TD
 - **U10 before U13:** both change `load-image.sh`, and merging U10 first avoids stacked branches. U10 changes neither the wheel nor the image, and acceptance is taken on the release commit and its artifacts in any case (KTD13).
 - **U11 is independent of U10** (different files), but must land before the release commit, which needs equal wheels from both paths.
 - **U15 before U13:** U13's load contract depends on Docker behaviour (K14, K15) that only a real daemon shows. Settling it before the release commit avoids a new release commit and a full U3 rerun later.
-- **U14 before U13** (OB8 provisionally selected): U14 owns the single approval-record reader that U13's scripts and Compose wrapper call. If OB8 is reversed, U13 defines the record and its reader.
+- **U14 before U13** (OB8 option C, confirmed 2026-11-23): U14 owns the single approval-record reader that U13's scripts and Compose wrapper call. If OB8 is reversed, U13 defines the record and its reader.
 - **U16 after U10** (added 2026-11-18): it extends U10's `scripts/uv-clean.sh` and its tests. It needs no Docker and is independent of U11-U15, but must be in the release commit (X21).
 - **U3 runs only on the release commit.** U6 does not depend on it and may proceed after U2, as before.
 
@@ -568,7 +573,10 @@ The harness runs in a user namespace on a tmpfs `/opt`, with `--map-auto` and `s
 | B | **tag-free staging and ID-bound starts, scripts only (U13).** A validating stream filter refuses any name-bearing archive member before `docker load` receives it. G5 verifies against the installed tree, then root records the ID, then activation tags `:local` by that ID. Every Compose start receives the record's ID from a wrapper, under a lock | F1-F4, F6-F8 prevented or fail closed. **F5 is not prevented** once the freeze ends: the runner still creates containers by tag |
 | C | **B plus runtime identity enforcement (U14).** Preflight requires `sandbox.image` to resolve to the record's ID, and the proxy container to run it. The runner creates every container by the resolved ID | F1-F8 prevented or fail closed; F5 closed by U14 |
 
-**Selected provisionally: option C (OB8, 2026-11-16).** It is a planning decision, subject to this contract and to SP3 acceptance, and authorizes no implementation.
+**Selected: option C (OB8).**
+- It was provisionally selected on 2026-11-16 and confirmed by the owner on 2026-11-23.
+- It remains subject to this contract and to SP3 acceptance.
+- The confirmation authorizes no implementation; each U14 step has its own authorization.
 
 **U14: value, cost and SP3.**
 - **Value:**
@@ -650,7 +658,10 @@ A pre-start tag check followed by `compose up` is a time-of-check/time-of-use ra
   - **Creating subcommands** (`up`, `create`, `run`): under the image lock, it reads the record through U14's reader and sets the variable to the record's **ID** (DV7). It clears any inherited value, passes an empty env file, and refuses a project directory that holds a `.env` file.
   - **Non-creating subcommands** (`stop`, `down`, `start`, `restart`, `ps`, `logs`): it sets the variable to a fixed reference that names no image, without reading the record. Stopping and rollback therefore work even with a missing or unsafe record. `pull_policy: never` keeps that reference from ever being fetched.
   - `validate.sh`'s lab stop goes through the wrapper, and a failed stop is a FAIL (no `|| true`).
-- **Selection rule:** the same as U14's. Enforce when an anchor exists and either the effective user is the anchor's account or the store is production-class. Otherwise resolve `:local` to an ID once and pass the ID. So a developer on a host that has an anchor is unaffected.
+- **Selection rule:** the same as U14's (D1-D3; see U14).
+  - Enforce when an anchor exists and either the effective or the real user ID is the anchor's account, or the store is production-class.
+  - Otherwise, resolve `:local` to an ID once and pass the ID. So a developer on a host that has an anchor is unaffected.
+  - **D4 (2026-11-23):** production creating operations take an explicit, validated configuration. The wrapper never infers `data_dir` from the working directory. U13 implements this.
 - **Root's record changes are serialized too.** G5b and G5r take the same lock, opened read-only with `O_NOFOLLOW`, so a wrapped start never reads a record that is about to change. The wrapper re-reads the record after the start, before releasing the lock.
 - **If DV7 shows Compose rejects an ID reference:** a name that embeds the full ID is still a tag, and any tag is mutable. The image lock serializes only the kit's own tools, not an independent `docker tag` or `docker load`. So this fallback is allowed only if U15, U13's real-daemon tests and U3 demonstrate race-safe enforcement: an independent retag of that name between the wrapper's check and container creation cannot make Compose create a container from another image. A check after the start is containment and does not count. If immutable identity at creation cannot be guaranteed this way, it is a **STOP and owner review**, never an accepted residual or a redesign by the implementer.
 - **Containment:** after each creating subcommand, the wrapper confirms that the three sandbox-image services run the record's ID. On a mismatch it stops and removes the container and fails. This is detection, not prevention.
@@ -1196,7 +1207,11 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
   - `docs/concepts/security.md`, `docs/runbooks/service-account.md` (the M7 row), `docs/project/status.md`;
   - a new residual-findings page.
 - **Approach:**
-  - **When enforcement applies:** `prepare_runtime` decides for every caller, without opening a store. That includes the storeless commands `run`, `sandbox check`, `sandbox selftest`, `proxy` and `registry collect`. Enforcement applies when an anchor exists and **either** the effective user is the anchor's account (whatever the store) **or** `identity.classify(config.data_dir, anchor)` is production. An anchor that is unreadable or unsafe, or a classify error, is a named preflight failure.
+  - **When enforcement applies** (amended 2026-11-23 by D1-D3):
+    - `prepare_runtime` decides for every caller, without opening a store. That includes the storeless commands `run`, `sandbox check`, `sandbox selftest`, `proxy` and `registry collect`.
+    - With an anchor, enforcement applies when **either** the effective **or** the real user ID is the anchor's account (whatever the store), **or** `identity.classify(config.data_dir, anchor)` is production.
+    - Without an anchor, the selection is refused when the code runs from an installation or `data_dir` classifies as production; otherwise it is a development host.
+    - An unsafe anchor, an unknown anchor account, or a classify error is a named preflight failure.
   - **Enforcing:** a missing, unsafe or malformed record, a tag resolving to another ID, or a proxy container on another image ID is a named preflight failure. Sandbox stages are disabled, and the unknowns stay visible.
   - **Lab mode as the anchor's account is enforced like any other mode**: containers are created by the record's ID, and the lab sandbox proxy must run it.
   - **Not enforcing** (no anchor, or another account such as the developer's): the tag is resolved once per run, and no approval is needed, in every mode.
@@ -1220,7 +1235,26 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
   - the owner's merge approval.
 
   SP3 runs again on the release commit in U3 and under the account at G8.
-- **If OB8 is reversed:** U14 becomes a new backlog item, a prerequisite of the first `run` with sandbox stages on the live store and of B16, through its own promotion.
+- **If OB8 is reversed:** U14 becomes a new backlog item, a prerequisite of the first `run` with sandbox stages on the live store and of B16, through its own promotion. (No longer planned: OB8 was confirmed on 2026-11-23.)
+- **Selection decisions (owner, 2026-11-23):**
+  - **D1, missing anchor.** Development behaviour is kept only when the host is safely identifiable as development. A missing anchor is refused (`anchor_missing`) when this code runs from an installation, or when the configured store classifies as production. With no anchor, that means only by the store marker in `data_dir` itself. An unsafe anchor or an unclassifiable store is refused, never treated as development. Detection reuses `identity` and `policy`; there is no second production detector.
+  - **D2, unknown account.** An anchor whose account does not exist on the host is refused as `anchor_account_unknown`.
+  - **D3, real and effective user IDs.** Neither can bypass enforcement: it applies when either one is the anchor's account. Opening the production store still requires both to be the account's (`policy.authorize`).
+  - **D4, Compose.** Production creating operations use explicit, validated configuration, and `data_dir` is never inferred from the working directory. This is recorded for U13 and is not implemented in U14.
+- **Subunits:**
+  - **Approval-record reader:** done. `src/brandsentinel/store/approval.py`, merged as #35 (`main` `859f458`, 2026-11-23).
+  - **Selection rule:** `src/brandsentinel/store/image_selection.py` (`decide`, `gather`, `select`), with the approval record isolated in `tests/conftest.py`. In development. No `sandbox/` change.
+  - **Remaining:** preflight and runtime enforcement, under SP3. Every path that creates a container must take the ID resolved once per run:
+    - `prepare_runtime` and `check_runtime` (resolve `sandbox.image`, compare with the record, check the proxy container's image ID);
+    - the runners built directly outside `prepare_runtime`: `sandbox check` and `sandbox selftest`, `sandbox sweep`, `check_runtime`'s other caller in `src/brandsentinel/cli.py`, and the partial-check fallback in `src/brandsentinel/pipeline/orchestrator.py`;
+    - the per-spec image override in `src/brandsentinel/sandbox/runner.py` (`spec.image`), which must not name anything other than the resolved ID when enforcing;
+    - `sandbox check --strict` reporting the approval state;
+    - the docs listed above.
+
+    Compose enforcement is U13's (D4).
+- **Open before U3/U4 release acceptance:** two pre-existing findings in the anchor parser, which the selection rule depends on. Both need a scoped triage; neither is changed in U14 so far. They are recorded in `docs/residual-review-findings/feat-b7-image-approval-reader.md`.
+  - duplicate anchor keys are accepted, and the last value wins;
+  - the account pattern accepts a trailing newline.
 
 ### U15. Docker-behaviour probe and M8 characterization [DEV-AUTH]: development evidence only; **done** (2026-11-22)
 
@@ -1565,7 +1599,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
 - U15 reviewed; AU3-A, AU3-B and AU3-C authorized; OB9 decided; the developer's Docker use authorized for U15, U13's and U14's merge gates and U4;
 - P0-P3 passed.
 
-**Owner decisions** (provisional directions of 2026-11-11 are recorded; OB8-OB10 were added 2026-11-16: OB8 is provisionally selected, OB9 is open; OB10 was decided on 2026-11-18 and U10 is merged; OB11 was added and decided (a) on 2026-11-18; none is an authorization):
+**Owner decisions** (provisional directions of 2026-11-11 are recorded; OB8-OB10 were added 2026-11-16: OB8 was provisionally selected and is confirmed 2026-11-23, OB9 is open; OB10 was decided on 2026-11-18 and U10 is merged; OB11 was added and decided (a) on 2026-11-18; none is an authorization):
 
 | ID | Decision | Direction so far | Blocks |
 |---|---|---|---|
@@ -1577,7 +1611,7 @@ On a STOP: stop, classify, preserve, report. Never retry without a new authoriza
 | OB5 | quarantine of pre-B3 trees | root-only quarantine provisionally accepted, subject to the U5 path and rollback review | G10 |
 | OB6 | recovery point | reuse only if equivalence and restore usability are established (P1) | P1, G3 |
 | OB7 | Docker and egress for G8 | not authorized yet | G8 |
-| OB8 | runtime image identity enforcement (U14) in 0.2.1 | **provisionally selected 2026-11-16: option C, U14 included**, subject to a defensible I-IMG contract ("How I-IMG is enforced") and SP3 acceptance. A planning decision, not implementation authorization. If reversed: option B, an owner-accepted exception for F5, and U14 as a backlog gate before the first sandbox-executing `run` | U13's dependency on U14; the release commit |
+| OB8 | runtime image identity enforcement (U14) in 0.2.1 | **confirmed 2026-11-23: option C, U14 included** (provisionally selected 2026-11-16), subject to the I-IMG contract ("How I-IMG is enforced") and SP3 acceptance. Not an implementation authorization. The U14 selection-rule decisions D1-D4 were approved on the same date (see U14). The reversal path (option B with an F5 exception) is no longer planned | U13's dependency on U14; the release commit |
 | OB9 | isolation for U3's real-ownership runs (the offline suite and the 8 `installed_layout` tests): the network contained, no user namespace around the code (X12, X18) | **open**; see "OB9 comparison" below. Leaning (a), with the privilege contract stated there | U3 |
 | OB10 | U10 merge | **decided 2026-11-18:** conditional GO after its merge gate; merged as #26 into `main` `f4de71d` | U13; the release commit |
 | OB11 | the uv binary's binding for U16 (added 2026-11-18): **(a)** `install.sh` checks the sha256 of the `uv` it resolves against a committed pin and runs only that file, or **(b)** the binding stays procedural (U3's check and a recorded path and hash in `INSTALL`). Second part: whether the uv and archive pins, measured on first use from one developer environment, are cross-checked against upstream-published checksums | **decided 2026-11-18: (a).** The pin check and the run refer to the same resolved executable path. The swap residual between check and run is kept (U16). The upstream cross-check of both pins is **required before U3's release acceptance**. This does not authorize network access: the cross-check needs its own authorization, or an owner-held copy of the upstream checksums | U16; U3 |

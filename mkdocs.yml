@@ -140,3 +140,4 @@ nav:
           - B7 sandbox image verification: residual-review-findings/fix-b7-image-manifest.md
           - B7 build backend pin: residual-review-findings/fix-b7-build-backend-pin.md
           - B7 image approval reader: residual-review-findings/feat-b7-image-approval-reader.md
+          - B7 image selection rule: residual-review-findings/feat-b7-image-selection-rule.md
