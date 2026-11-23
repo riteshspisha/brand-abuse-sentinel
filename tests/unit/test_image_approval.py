@@ -58,12 +58,12 @@ def _refused() -> str:
 
 
 def test_the_record_lives_beside_the_anchor_at_the_approved_path():
-    assert Path("/etc/brandsentinel/image-approval.yaml") == approval.APPROVAL_PATH
-    # tests/conftest.py redirects identity.ANCHOR_PATH for every test: compare the source.
+    # tests/conftest.py redirects both locations for every test: compare the sources.
+    source = inspect.getsource(approval)
+    assert 'APPROVAL_PATH = Path("/etc/brandsentinel/image-approval.yaml")' in source
+    assert 'CHAIN_ROOT = Path("/")' in source
+    assert "TRUSTED_UID = 0\n" in source
     assert 'ANCHOR_PATH = Path("/etc/brandsentinel/production.yaml")' in inspect.getsource(identity)
-    assert approval.APPROVAL_PATH.parent == Path("/etc/brandsentinel")
-    assert Path("/") == approval.CHAIN_ROOT
-    assert approval.TRUSTED_UID == 0
 
 
 def test_no_environment_variable_selects_the_record():

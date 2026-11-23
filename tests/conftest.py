@@ -54,7 +54,8 @@ def _anchor_free_root(tmp_path_factory) -> Path:
 @pytest.fixture(autouse=True)
 def _no_host_anchor(monkeypatch, _anchor_free_root):
     """In-process tests never read the host's production anchor or detect the host's
-    installation (B3). Subprocess CLI tests are not covered: they read the real host.
+    installation (B3), nor the host's image approval record (B7 U14). Subprocess CLI tests
+    are not covered: they read the real host.
     On code without the identity module (the D4 run on the old commit) this does nothing."""
     try:
         from brandsentinel.store import identity
@@ -66,6 +67,18 @@ def _no_host_anchor(monkeypatch, _anchor_free_root):
         identity, "ANCHOR_PATH", _anchor_free_root / "etc" / "brandsentinel" / "production.yaml"
     )
     monkeypatch.setattr(identity, "install_record_candidates", lambda: [])
+    # The image approval record (B7 U14), beside the anchor in the same empty root.
+    try:
+        from brandsentinel.store import approval
+    except ImportError:
+        return
+    monkeypatch.setattr(approval, "CHAIN_ROOT", _anchor_free_root)
+    monkeypatch.setattr(approval, "TRUSTED_UID", os.getuid())
+    monkeypatch.setattr(
+        approval,
+        "APPROVAL_PATH",
+        _anchor_free_root / "etc" / "brandsentinel" / "image-approval.yaml",
+    )
 
 
 class FakeClock:
