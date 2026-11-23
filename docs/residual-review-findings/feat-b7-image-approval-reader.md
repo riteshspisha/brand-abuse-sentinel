@@ -53,16 +53,47 @@ Nothing in this step enforces image identity. The record `/etc/brandsentinel/ima
 - **Group ownership and ACLs.** The file's group is not checked; group write is refused instead. With POSIX ACLs, the mode's group bits carry the ACL mask, so a named entry granting write shows as group write and is refused.
 - **A missing record is not an error here.** A host with the anchor but no record yields `None`. Enforcement must treat that as a failure (U14's next steps). The tests cover the reader only.
 - **Linux descriptors.** The walk uses `O_PATH` where the platform has it. Without it, a directory that others can traverse but not read is refused (EACCES), which fails closed.
-- **`close` errors.** A failure of `close` on a descriptor would surface as an `OSError` carrying no path. It is not wrapped.
+- **`close` errors.** A failing `close` is refused as `approval_unsafe`, and it is never retried: Linux releases the descriptor even when `close` reports an error.
+  - While walking the chain, the reader hands over to the next directory's descriptor before it closes the previous one. A failing close therefore closes nothing twice and leaks nothing.
+  - The tests stub `close` to fail at each of the four closes of a valid read.
+  - Two other close paths have no regression test: closing a refused directory, and the final close after a missing entry returns `None`. Both were refused as unsafe in review experiments.
+- **Interruption.** An asynchronous exception, such as `KeyboardInterrupt`, arriving between a successful `open` and the assignment of its descriptor could leak that descriptor. This is theoretical and not tested.
 
-## Pre-existing finding (not changed here)
+## Pre-existing anchor findings (unresolved, not changed here)
 
-**The anchor's parser keeps the last of duplicate keys.** `identity._parse_anchor` reads the anchor with `yaml.safe_load`. PyYAML keeps the last value of a duplicate key, and the key-order check still passes. So an anchor with two `account:` lines is read with the second one.
-- **Severity:** low. The anchor is root-owned and written by the owner's procedure.
-- **Status:** not changed in this step, and recorded for an owner decision. The approval record does not inherit the problem, because it is matched on its fixed form.
+Both findings concern `src/brandsentinel/store/identity.py`, which this change does not modify. They need a **scoped triage before U3/U4 release acceptance**. The approval record inherits neither of them, because it is matched on its fixed form.
+
+1. **Duplicate keys are accepted.**
+   - `identity._parse_anchor` reads the anchor with `yaml.safe_load`, and PyYAML keeps the last value of a duplicate key.
+   - The key-order check still passes, so an anchor with two `account:` lines is read with the second one.
+2. **The account check accepts a trailing newline.**
+   - `_ACCOUNT` is a `^…$` pattern used with `.match`, and `$` also matches before a final newline.
+   - A double-quoted `account: "name\n"` is therefore accepted, with a newline in the account name.
+   - The likely effect is a mismatch against the real account name, which fails closed.
+
+- **Severity:** low for both. The anchor is root-owned and written by the owner's procedure.
+- **Status:** open, and needs an owner decision. Both were found and verified during this unit's reviews (2026-11-22 and 2026-11-23).
 
 ## Verification (development only, 2026-11-22)
 
 - `tests/unit/test_image_approval.py` failed first at collection on `main` `5422511`, because the module did not exist.
 - A test fails when each guard is removed: the link count, the "others may read" bit, `O_NOFOLLOW` on the file and on the directories, the size check, directory modes, the exact match, and missing-versus-unsafe.
 - Nothing ran as root. Nothing read `/etc` or used Docker.
+
+**Hardening follow-up (2026-11-23).** An independent review and a mutation re-run found three gaps:
+- no test pinned the directory owner check, because the only chain-owner test also failed the record's owner check;
+- no test pinned that a missing entry beneath an unsafe directory is refused;
+- descriptors were mishandled when `close` failed.
+
+The follow-up adds tests for each, and fixes how the descriptors are handed over:
+- **Directory owner:** one directory is reported as foreign while the record stays trusted. The tests fail with the owner check removed.
+- **Missing beneath unsafe:** a missing record or directory below a directory that is group-writable, other-writable, not traversable or foreign-owned is refused.
+- **Descriptors:** every descriptor is closed exactly once on 13 paths, among them valid, missing, refused and malformed. A failing `close` at each of the four closes is refused, with no leak and no double close. Those four tests failed before the fix.
+
+**Mutation run:** 26 mutants.
+- **Killed by an assertion:** 22.
+- **Survived:** 2, both equivalent in effect:
+  - the `S_ISDIR` check, because `O_DIRECTORY` already refuses a non-directory;
+  - the path-normalization pre-check, because the relative-path checks refuse the same inputs.
+- **Timed out:** 1. Without `O_NONBLOCK`, the FIFO test blocks.
+- **Exhausted memory:** 1. Without the read cap, the growing-record test exhausts memory.

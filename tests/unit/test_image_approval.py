@@ -340,6 +340,199 @@ def test_every_descriptor_is_closed(host, monkeypatch):
     assert opened
 
 
+# --- ownership and descriptor lifecycle ------------------------------------------------
+
+
+def _report_as_foreign(monkeypatch, path: Path) -> None:
+    """fstat reports `path` (matched by device and inode) as owned by another UID. Every
+    other stat is real, so the record itself still passes its owner check."""
+    target = path.stat()
+    key = (target.st_dev, target.st_ino)
+    real_fstat = os.fstat
+
+    def fstat(fd):
+        st = real_fstat(fd)
+        if (st.st_dev, st.st_ino) == key:
+            fields = list(st)
+            fields[stat.ST_UID] = ME + 1
+            return os.stat_result(fields)
+        return st
+
+    monkeypatch.setattr(approval.os, "fstat", fstat)
+
+
+@pytest.mark.parametrize("which", ["root", "etc", "dir"])
+def test_a_directory_owned_by_someone_else_is_refused_while_the_record_is_trusted(
+    host, monkeypatch, which
+):
+    host.write()
+    assert approval.load_approval() == approval.ImageApproval(image_id=ID)  # the control
+    _report_as_foreign(monkeypatch, getattr(host, which))
+    assert _refused() == "approval_unsafe"
+
+
+def test_only_the_foreign_directory_differs_in_the_owner_regression(host, monkeypatch):
+    """The regression above changes one directory's owner and nothing else: with the
+    record reported as foreign instead, the record's own check is what refuses it."""
+    host.write()
+    _report_as_foreign(monkeypatch, host.record)
+    assert _refused() == "approval_unsafe"
+    monkeypatch.undo()
+    monkeypatch.setattr(approval, "CHAIN_ROOT", host.root)
+    monkeypatch.setattr(approval, "APPROVAL_PATH", host.record)
+    monkeypatch.setattr(approval, "TRUSTED_UID", ME)
+    assert approval.load_approval() == approval.ImageApproval(image_id=ID)
+
+
+_UNSAFE_STATES = {
+    "group-writable": 0o775,
+    "other-writable": 0o757,
+    "not-traversable-by-others": 0o750,
+    "foreign-owner": None,
+}
+
+
+@pytest.mark.parametrize("state", sorted(_UNSAFE_STATES))
+@pytest.mark.parametrize("which", ["root", "etc", "dir"])
+def test_a_missing_entry_beneath_an_unsafe_directory_is_refused_not_absent(
+    host, monkeypatch, which, state
+):
+    """Absence is reported only below directories that passed their checks."""
+    below = {"root": [host.dir, host.etc], "etc": [host.dir], "dir": []}[which]
+    for d in below:
+        d.rmdir()
+    target = getattr(host, which)
+    assert approval.load_approval() is None  # the control: safe chain, entry missing
+    mode = _UNSAFE_STATES[state]
+    if mode is None:
+        _report_as_foreign(monkeypatch, target)
+    else:
+        target.chmod(mode)
+    try:
+        assert _refused() == "approval_unsafe"
+    finally:
+        target.chmod(0o755)
+
+
+def _setup_symlinked_dir(h):
+    h.write()
+    real = h.tmp / "real-dir"
+    h.dir.rename(real)
+    h.dir.symlink_to(real)
+
+
+def _setup_hard_link(h):
+    h.write()
+    os.link(h.record, h.tmp / "second-name")
+
+
+_LIFECYCLE = {
+    "valid": (lambda h: h.write(), "ok"),
+    "missing-record": (lambda h: None, "none"),
+    "missing-dir": (lambda h: h.dir.rmdir(), "none"),
+    "missing-etc": (lambda h: (h.dir.rmdir(), h.etc.rmdir()), "none"),
+    "unsafe-dir-mode": (lambda h: (h.write(), h.etc.chmod(0o775)), "unsafe"),
+    "unsafe-dir-missing-record": (lambda h: h.dir.chmod(0o775), "unsafe"),
+    "symlinked-dir": (_setup_symlinked_dir, "unsafe"),
+    "unsafe-record-mode": (lambda h: h.write(mode=0o666), "unsafe"),
+    "symlinked-record": (lambda h: h.record.symlink_to(h.tmp / "elsewhere"), "unsafe"),
+    "fifo-record": (lambda h: os.mkfifo(h.record, 0o644), "unsafe"),
+    "hard-linked-record": (_setup_hard_link, "unsafe"),
+    "oversized-record": (lambda h: h.write("x" * (approval.MAX_APPROVAL_BYTES + 1)), "unsafe"),
+    "malformed-record": (lambda h: h.write("image_id: nope\ncomplete: true\n"), "malformed"),
+}
+
+
+class _Descriptors:
+    """Tracks the descriptors the reader holds. Numbers are reused once closed, so it
+    keeps the set of open ones: closing one that is not open is a double close, and one
+    still open at the end is a leak."""
+
+    def __init__(self) -> None:
+        self.live: set[int] = set()
+        self.opens = 0
+        self.closes = 0
+        self.double_closes = 0
+
+
+def _track_descriptors(monkeypatch, fail_on_close: int | None = None) -> _Descriptors:
+    """With `fail_on_close`, that close call releases the descriptor and then reports an
+    error, as Linux close does."""
+    fds = _Descriptors()
+    real_open, real_close = os.open, os.close
+
+    def tracking_open(*a, **k):
+        fd = real_open(*a, **k)
+        fds.live.add(fd)
+        fds.opens += 1
+        return fd
+
+    def tracking_close(fd):
+        fds.closes += 1
+        if fd in fds.live:
+            fds.live.discard(fd)
+            real_close(fd)
+        else:
+            fds.double_closes += 1
+        if fds.closes == fail_on_close:
+            raise OSError(5, "I/O error")
+
+    monkeypatch.setattr(approval.os, "open", tracking_open)
+    monkeypatch.setattr(approval.os, "close", tracking_close)
+    return fds
+
+
+def _outcome() -> str:
+    try:
+        result = approval.load_approval()
+    except ApprovalRefused as e:
+        return e.check.removeprefix("approval_")
+    return "none" if result is None else "ok"
+
+
+@pytest.mark.parametrize("case", sorted(_LIFECYCLE))
+def test_every_descriptor_is_closed_exactly_once_on_every_path(host, monkeypatch, case):
+    setup, expected = _LIFECYCLE[case]
+    setup(host)
+    fds = _track_descriptors(monkeypatch)
+    try:
+        assert _outcome() == expected
+    finally:
+        for d in (host.root, host.etc, host.dir):
+            if d.is_dir() and not d.is_symlink():
+                d.chmod(0o755)
+    assert fds.live == set()
+    assert fds.double_closes == 0
+    assert fds.opens == fds.closes
+
+
+@pytest.mark.parametrize("failing_close", [1, 2, 3, 4])
+def test_a_failing_close_is_unsafe_without_a_leak_or_a_double_close(
+    host, monkeypatch, failing_close
+):
+    """A valid read closes four descriptors: the chain root and etc as the walk moves
+    down, the record, then the record's directory. Whichever close reports an error, the
+    result is a named refusal, every successor descriptor is still closed, and no
+    descriptor is closed twice."""
+    host.write()
+    fds = _track_descriptors(monkeypatch, fail_on_close=failing_close)
+    with pytest.raises(ApprovalRefused) as e:
+        approval.load_approval()
+    assert e.value.check == "approval_unsafe"
+    assert e.value.__cause__ is None
+    assert fds.live == set()
+    assert fds.double_closes == 0
+
+
+def test_a_valid_read_closes_four_descriptors(host, monkeypatch):
+    """Pins the count the failing-close test above relies on."""
+    host.write()
+    fds = _track_descriptors(monkeypatch)
+    assert approval.load_approval() is not None
+    assert fds.opens == fds.closes == 4
+    assert fds.live == set()
+
+
 # --- the record's content -------------------------------------------------------------
 
 H = "0123456789abcdef" * 4

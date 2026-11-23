@@ -45,7 +45,7 @@ class ApprovalRefused(Exception):
     """The record exists but may not be believed. `check` is a stable name; no path or
     content is kept, and the underlying OS error is not chained."""
 
-    UNSAFE = "approval_unsafe"  # location, type, ownership, mode, links or size
+    UNSAFE = "approval_unsafe"  # location, type, ownership, mode, links, size or I/O
     MALFORMED = "approval_malformed"  # the content is not exactly the fixed form
 
     def __init__(self, check: str) -> None:
@@ -60,6 +60,15 @@ class ImageApproval:
 
 def _unsafe() -> ApprovalRefused:
     return ApprovalRefused(ApprovalRefused.UNSAFE)
+
+
+def _close(fd: int) -> None:
+    """Close `fd` once. Linux releases a descriptor even when close reports an error, so
+    it is never retried; the error is refused as unsafe instead of escaping unnamed."""
+    try:
+        os.close(fd)
+    except OSError:
+        raise _unsafe() from None
 
 
 def _safe_directory(st: os.stat_result) -> bool:
@@ -113,11 +122,13 @@ def load_approval() -> ImageApproval | None:
                 return None  # every existing ancestor passed: no record on this host
             if next_fd is None:
                 raise _unsafe()
-            os.close(fd)
-            fd = next_fd
+            # Hand over before closing: if the close fails, `fd` already names the
+            # successor, so the `finally` closes that one and nothing is closed twice.
+            previous, fd = fd, next_fd
+            _close(previous)
         data = _read_record(name, fd)
     finally:
-        os.close(fd)
+        _close(fd)
     if data is None:
         return None
     match = _RECORD.fullmatch(data)
@@ -140,7 +151,7 @@ def _open_directory(name: str, dir_fd: int | None) -> int | None:
             return fd
     except OSError:
         pass
-    os.close(fd)
+    _close(fd)
     return None
 
 
@@ -166,7 +177,7 @@ def _read_record(name: str, dir_fd: int) -> bytes | None:
     except OSError:
         raise _unsafe() from None
     finally:
-        os.close(fd)
+        _close(fd)
     if data is None:
         raise _unsafe()
     return data
