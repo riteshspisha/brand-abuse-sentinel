@@ -51,13 +51,13 @@ origin: docs/plans/2026-11-09-001-post-i1-engineering-backlog.md
   - U1 and U2 are done, and so is U9 (PR-1, #25).
   - U10 (PR-2) is merged: #26 into `main` `f4de71d`, 2026-11-18, under OB10 (corrected 2026-11-18).
   - U16 is merged: #31 into `main` `a29f29d`, 2026-11-19. X21 is resolved for U3's release build (U3 prerequisite 1). The OB11 upstream cross-check of the uv and archive pins is a separate requirement, still outstanding, and still gates U3's release acceptance (added 2026-11-19).
-  - U12 is merged: #28 into `main` `5f33409`, 2026-11-16. U11 is merged: #29 into `main` `749c8b8`, 2026-11-17. U13 and U14 have not started, and U3 is on HOLD (corrected 2026-11-19).
+  - U12 is merged: #28 into `main` `5f33409`, 2026-11-16. U11 is merged: #29 into `main` `749c8b8`, 2026-11-17. U13 and U14 have not started, and U3 is on HOLD (corrected 2026-11-19). Update 2026-11-25: U14 is implemented on `feat/b7-u14-runtime-enforcement` (see the next item); U13 has not started.
   - U15 is done: development evidence, reviewed by the owner on 2026-11-22 (see "U15 results"). The U10 correction it led to is merged: #33 into `main` `b628cf7`, 2026-11-22.
   - **U14 has started (2026-11-23).**
     - OB8 option C is confirmed.
     - The approval-record reader is merged: #35 into `main` `859f458`.
-    - The selection rule is in development, under decisions D1-D4 (see U14).
-    - U14 is not complete: preflight, the runner, by-ID creation and SP3 remain. U13 has not started.
+    - The selection rule is merged: #36 into `main` `986c7c4`, 2026-11-23, under decisions D1-D4 (see U14).
+    - **Update 2026-11-25:** preflight, the runner and by-ID creation are implemented (`76b8548`). The first SP3 run on that commit failed on a pre-existing lab-mode DNS lookup; the fix (`fbfbdc6`) is merged into the U14 branch as `4cf97f9`, and SP3 passed on that commit (622 passed, 0 failed, 0 errors, 0 skipped). This is development evidence. U14 is not merged; the owner's merge approval is open. U13 has not started.
 
   Each step marked **[AUTH]** or **[PRIV-READ]** needs its own explicit owner authorization (`AGENTS.md` §6).
 - **Authority:**
@@ -165,7 +165,7 @@ The owner holds the U1 report and its sealed evidence. Repository-derivable fact
 | U11 | PR-3 | not started |
 | U12 | none | not started |
 | U13 | none | not started; needs this amendment |
-| U14 | none | not started; scope decision OB8. **Update 2026-11-23:** OB8 option C confirmed. The approval-record reader is merged (#35, `main` `859f458`). The selection rule is in development. Preflight, runner and by-ID enforcement, and SP3, are open |
+| U14 | none | not started; scope decision OB8. **Update 2026-11-23:** OB8 option C confirmed. The approval-record reader is merged (#35, `main` `859f458`). The selection rule is merged (#36, `main` `986c7c4`). **Update 2026-11-25:** preflight, runner and by-ID enforcement implemented; SP3 passed on `4cf97f9` after the lab-mode DNS fix (see U14). Not merged |
 | U15 | none | not started; Docker-behaviour probe and M8 characterization before U13 (review finding, revision 2026-11-16). **Update 2026-11-22:** done, development evidence, owner-reviewed ("U15 results") |
 
 ---
@@ -1235,6 +1235,8 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
   - the owner's merge approval.
 
   SP3 runs again on the release commit in U3 and under the account at G8.
+
+  **Prerequisite discovered 2026-11-25:** the lab-mode refusal before DNS (`fbfbdc6`), merged into U14 after the first SP3 run failed. **Status 2026-11-25:** SP3 passed on `4cf97f9`. It counts for a U14 pull request whose head is that commit; any other head (including a documentation commit on top) has a different tree hash and needs its own SP3 (KTD11, KTD13). The full-depth reviews are recorded in the residual pages; the owner's merge approval is open.
 - **If OB8 is reversed:** U14 becomes a new backlog item, a prerequisite of the first `run` with sandbox stages on the live store and of B16, through its own promotion. (No longer planned: OB8 was confirmed on 2026-11-23.)
 - **Selection decisions (owner, 2026-11-23):**
   - **D1, missing anchor.** Development behaviour is kept only when the host is safely identifiable as development. A missing anchor is refused (`anchor_missing`) when this code runs from an installation, or when the configured store classifies as production. With no anchor, that means only by the store marker in `data_dir` itself. An unsafe anchor or an unclassifiable store is refused, never treated as development. Detection reuses `identity` and `policy`; there is no second production detector.
@@ -1243,9 +1245,10 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
   - **D4, Compose.** Production creating operations use explicit, validated configuration, and `data_dir` is never inferred from the working directory. This is recorded for U13 and is not implemented in U14.
 - **Subunits:**
   - **Approval-record reader:** done. `src/brandsentinel/store/approval.py`, merged as #35 (`main` `859f458`, 2026-11-23).
-  - **Selection rule:** `src/brandsentinel/store/image_selection.py` (`decide`, `gather`, `select`), with the approval record isolated in `tests/conftest.py`. In development. No `sandbox/` change.
-  - **Runtime enforcement (2026-11-23):** implemented in development on `feat/b7-u14-runtime-enforcement` with stubbed Docker and a full-depth review; see `docs/residual-review-findings/feat-b7-image-runtime-enforcement.md`. SP3 and the owner's merge approval are open.
-  - **Remaining:** preflight and runtime enforcement, under SP3. Every path that creates a container must take the ID resolved once per run:
+  - **Selection rule:** `src/brandsentinel/store/image_selection.py` (`decide`, `gather`, `select`), with the approval record isolated in `tests/conftest.py`. Merged as #36 (`main` `986c7c4`, 2026-11-23). No `sandbox/` change.
+  - **Runtime enforcement (2026-11-23):** implemented in development on `feat/b7-u14-runtime-enforcement` with stubbed Docker and a full-depth review; see `docs/residual-review-findings/feat-b7-image-runtime-enforcement.md`. SP3 passed on 2026-11-25 on `4cf97f9` (see the SP3 item below); the owner's merge approval is open.
+  - **SP3 (2026-11-25):** the first run, on `76b8548`, failed: 592 passed, 1 failed, 1 error, 0 skipped, both on `tests/lab/test_lab_sites_up.py::test_host_fetcher_refuses_public_urls_in_lab_mode`. The cause was pre-existing and outside U14: in lab mode the host fetcher resolved a public name before refusing it, which the B7 PR-1 resolver tripwire turns into a failure. The fix makes the fetcher refuse before any DNS query (`fbfbdc6`; [residual findings](../residual-review-findings/fix-b7-lab-mode-dns-before-policy.md)) and is merged into the U14 branch as `4cf97f94f54c96139d2241801e0f3fd988162a7f` (non-fast-forward, both parents signed). SP3 on that commit, on an isolated scratch rootless daemon: **622 passed, 0 failed, 0 errors, 0 skipped**, every named regression test passed, image inventory unchanged, no pulls, and the preserved daemon's store unchanged. This is development evidence for U14's merge gate and the fix's `net/` gate (`AGENTS.md` D5), not release acceptance (KTD13).
+  - **Implemented in `76b8548`** (formerly listed as remaining), under SP3. Every path that creates a container takes the ID resolved once per run:
     - `prepare_runtime` and `check_runtime` (resolve `sandbox.image`, compare with the record, check the proxy container's image ID);
     - the runners built directly outside `prepare_runtime`: `sandbox check` and `sandbox selftest`, `sandbox sweep`, `check_runtime`'s other caller in `src/brandsentinel/cli.py`, and the partial-check fallback in `src/brandsentinel/pipeline/orchestrator.py`;
     - the per-spec image override in `src/brandsentinel/sandbox/runner.py` (`spec.image`), which must not name anything other than the resolved ID when enforcing;

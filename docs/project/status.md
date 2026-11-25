@@ -99,7 +99,8 @@ built, installed or promoted; production runs 0.2.0.
 B7 also adds runtime image identity (U14): containers are created by the image ID resolved
 once per run and, where enforced, only by the root-approved ID, with the proxy checked by
 its container ([security model](../concepts/security.md#image-identity)). It is
-development-tested with stubbed Docker only: its Docker gate (SP3) has not yet run, it is
+development-tested: its Docker gate (SP3) failed on 2026-11-25 on a pre-existing lab-mode DNS
+lookup, since fixed, and then passed on the integration commit (622 passed, 0 skipped). It is
 not yet merged or promoted, and Compose starts by ID (U13) have not started.
 
 Until all of them ship, the
