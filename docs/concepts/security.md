@@ -34,6 +34,9 @@ implemented and the risks they leave. The requirement IDs (R37–R50) are from t
 - IP literals are parsed as browsers parse them (`2130706433`, `0x7f.1`, `127.1`).
 - Lab mode adds exactly the pinned lab subnet for listed hostnames. Test ranges are
   accepted only as a constructor argument, never from configuration.
+- In lab mode the host fetcher validates lab-only: any other hostname, on the first hop
+  or a redirect, is refused as `not_lab_host` before it is resolved, so no DNS query
+  leaves the host for it. IP literals keep their address classification first.
 
 ### Hardened static fetcher (`net/fetcher.py`)
 
