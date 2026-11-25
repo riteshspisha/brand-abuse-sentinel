@@ -141,7 +141,8 @@ Read [`AGENTS.md`](AGENTS.md) first. In short:
 - change code with tests;
 - keep `uv run ruff check` and the offline suite green;
 - run the security and Docker gates for any change under `src/brandsentinel/net/` or
-  `src/brandsentinel/sandbox/`;
+  `src/brandsentinel/sandbox/`, or to shared test infrastructure that the Docker, lab or
+  security suites load (see AGENTS.md);
 - update the documentation in the same change when public behaviour, configuration,
   architecture, security properties or deployment change
   ([documentation system](docs/development/documentation.md)).

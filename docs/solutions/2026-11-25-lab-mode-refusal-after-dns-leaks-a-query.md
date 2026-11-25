@@ -112,11 +112,10 @@ released or promoted.
   failure without Docker
   (`test_shipped_lab_config_refuses_public_urls_without_the_host_resolver`).
 - Shared test infrastructure is SP3-relevant: `tests/conftest.py`, the tripwire,
-  autouse fixtures and pytest configuration load in the Docker and lab suites. The
-  standing-gate triggers in AGENTS.md name only `src/brandsentinel/net/` and
-  `src/brandsentinel/sandbox/`; widening them is a separate change. Until then, run `docker or security` for such changes anyway, and
-  run the full gate early on a scratch daemon rather than only as the final merge
-  gate.
+  autouse fixtures and pytest configuration load in the Docker and lab suites.
+  AGENTS.md section 4 now includes shared test infrastructure in SP3's triggers;
+  this lesson motivated it. Also run the full gate early on a scratch daemon, not
+  only as the final merge gate.
 
 **Gate evidence practice.** Lessons from running the gate twice in one day:
 
