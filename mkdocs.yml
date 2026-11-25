@@ -124,6 +124,7 @@ nav:
           - BLAS threads and the PID limit: solutions/2026-10-11-blas-threads-exhaust-the-pid-limit.md
           - Cancelled cleanup leaves a container: solutions/2026-10-28-cancelled-cleanup-leaves-sandbox-container.md
           - OOMKilled for a child of init: solutions/2026-10-11-oomkilled-not-set-for-child-of-init.md
+          - Lab-mode refusal after DNS: solutions/2026-11-25-lab-mode-refusal-after-dns-leaks-a-query.md
       - Review findings by milestone:
           - M0 foundation: residual-review-findings/feat-m0-foundation.md
           - M1 registry and matching: residual-review-findings/feat-m1-registry-matching.md

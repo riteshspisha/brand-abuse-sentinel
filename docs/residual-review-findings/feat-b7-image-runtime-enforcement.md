@@ -7,8 +7,10 @@ move between the preflight and the creation. It builds on the
 [approval reader](feat-b7-image-approval-reader.md) and the
 [selection rule](feat-b7-image-selection-rule.md), and changes neither.
 
-**Status:** development-tested with stubbed Docker only. The SP3 gate (`docker or
-security`, 0 skipped) has not run on this change. Not merged, not released, not promoted.
+**Status:** development-tested. The first SP3 run (`docker or security`, 0 skipped) on this
+change, on 2026-11-25, failed on a pre-existing lab-mode DNS lookup outside U14
+([fix](fix-b7-lab-mode-dns-before-policy.md)). With the fix merged in (`4cf97f9`), SP3 passed:
+622 passed, 0 failed, 0 errors, 0 skipped. Merged as #37 (2026-11-25); not released, not promoted.
 
 ## What it does
 
@@ -87,5 +89,5 @@ security`, 0 skipped) has not run on this change. Not merged, not released, not 
   - tests added for a production-class store with a valid record, a proxy on another
     image through `sandbox check`, a refused runtime starting no probe, and the `image:`
     line states; documentation wording corrected.
-- **Added for SP3** (not run here): a Docker test that a container created by the runner
+- **Added for SP3** (passed in the 2026-11-25 run on `4cf97f9`): a Docker test that a container created by the runner
   reports the resolved ID as its `.Image`, and that the tag resolves to the same ID.

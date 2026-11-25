@@ -23,8 +23,9 @@ half of the M4 proxy lesson ("Host header checked before DNS", [M4](feat-m4-sand
 **Evidence.** Tests that count resolver queries (`StaticResolver.calls`) for direct fetches, redirects to public names
 and literals, canonical spellings, numeric and IPv6 literal forms, and ordering against a caller's `host_allowed`
 check; plus an offline reproduction of the SP3 failure with the shipped lab configuration under the tripwire. On the old
-code 26 of them failed and one errored; all pass on the fix. The live `docker or security` gate has not yet run on this
-change.
+code 26 of them failed and one errored; all pass on the fix. The live `docker or security` gate passed on 2026-11-25 with this change merged into U14
+(`4cf97f9`): 622 passed, 0 failed, 0 errors, 0 skipped, including `test_host_fetcher_refuses_public_urls_in_lab_mode`
+and every lab-only refusal test.
 
 ## Accepted limits
 
