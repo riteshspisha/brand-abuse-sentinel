@@ -26,7 +26,12 @@ def lab_guard() -> NetGuard:
     )
 
 
-def lab_fetch(harness, url: str, calls: list, *, proxy: bool = True):
+def lab_fetch(
+    harness, url: str, calls: list, *, proxy: bool = True, guard: NetGuard | None = None, **fetch_kw
+):
+    """`guard` is the fetcher's (default `lab_guard()`); pass one with a known
+    StaticResolver to count the fetcher's DNS queries."""
+
     async def main():
         egress = EgressProxy(
             ProxySettings(lab_only=True),
@@ -37,11 +42,11 @@ def lab_fetch(harness, url: str, calls: list, *, proxy: bool = True):
         port = servers[0].sockets[0].getsockname()[1]
         fetcher = Fetcher(
             FetchSettings(total_timeout_seconds=10),
-            lab_guard(),
+            guard or lab_guard(),
             lab_proxy=f"http://127.0.0.1:{port}" if proxy else None,
         )
         try:
-            return await fetcher.fetch(url)
+            return await fetcher.fetch(url, **fetch_kw)
         finally:
             for s in servers:
                 s.close()
@@ -75,6 +80,72 @@ def test_private_and_lab_literals_stay_blocked_in_lab_mode(harness, url):
     calls: list = []
     r = lab_fetch(harness, url, calls)
     assert r.outcome == "blocked" and calls == []
+
+
+def spy_guard(answers: dict) -> NetGuard:
+    """A lab-mode guard whose resolver records every query (`guard.resolver.calls`)."""
+    lab = LabSettings(enabled=True, hosts={LAB_HOST: LAB_IP})
+    return NetGuard(NetSettings(lab=lab), StaticResolver(answers))
+
+
+@pytest.mark.parametrize("answers", [{"public.example": ["93.184.215.14"]}, {}])
+def test_public_url_in_lab_mode_is_refused_before_any_dns_query(harness, decisions, answers):
+    calls: list = []
+    guard = spy_guard(answers)
+    r = lab_fetch(harness, "http://public.example/", calls, guard=guard)
+    assert r.outcome == "blocked" and r.error["kind"] == "not_lab_host" and r.hops == []
+    assert guard.resolver.calls == [] and calls == [] and decisions.records == []
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "http://public.example/",
+        "http://PUBLIC.Example./",
+        "http://93.184.215.14/",  # a public literal: no DNS needed, still not a lab host
+        "http://1572394766/",  # the same address in browser-style decimal form
+    ],
+)
+def test_lab_redirect_to_a_non_lab_destination_is_refused_before_any_dns_query(
+    harness, decisions, target
+):
+    calls: list = []
+    guard = spy_guard({"public.example": ["93.184.215.14"]})
+    r = lab_fetch(harness, f"http://{LAB_HOST}/redirect?to={target}", calls, guard=guard)
+    assert r.outcome == "blocked_redirect" and r.error["kind"] == "not_lab_host"
+    assert guard.resolver.calls == [] and calls == [(LAB_IP, 80)]  # only the lab hop went out
+
+
+def test_lab_policy_refuses_before_the_callers_host_check_and_before_dns(harness):
+    """A caller's host_allowed (reference collection) never sees a non-lab host in
+    lab mode: the lab refusal comes first, with no DNS query."""
+    calls: list = []
+    seen: list = []
+    guard = spy_guard({"public.example": ["93.184.215.14"]})
+    r = lab_fetch(
+        harness,
+        "http://public.example/",
+        calls,
+        guard=guard,
+        host_allowed=lambda h: seen.append(h) or False,
+    )
+    assert r.outcome == "blocked" and r.error["kind"] == "not_lab_host"
+    assert guard.resolver.calls == [] and seen == [] and calls == []
+
+
+def test_shipped_lab_config_refuses_public_urls_without_the_host_resolver():
+    """The SP3 failure of 2026-11-25, offline: the real lab configuration and resolver
+    (no explicit nameservers, so the host's), under the resolver tripwire. A public
+    name must be refused by policy; any DNS query would trip the tripwire."""
+    from pathlib import Path
+
+    from brandsentinel.config import load_config
+    from brandsentinel.pipeline.stages import build_network
+
+    config = load_config(Path(__file__).resolve().parents[2] / "config" / "lab.yaml")
+    _, fetcher = build_network(config)
+    r = asyncio.run(fetcher.fetch("http://example.com/"))
+    assert r.outcome == "blocked" and r.error["kind"] == "not_lab_host" and r.hops == []
 
 
 def test_lab_redirect_to_metadata_is_refused_before_the_proxy(harness, decisions):

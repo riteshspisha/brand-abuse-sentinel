@@ -14,8 +14,10 @@ Refused:
 
 IP literals are parsed the way browsers do (`2130706433`, `0x7f.1`, `127.1`), so
 a numeric trick cannot slip past as a "hostname". Lab mode (KTD13) adds exactly
-the pinned lab subnet, and only for hostnames in the lab map. Test address ranges
-are accepted only as a constructor argument, never from configuration.
+the pinned lab subnet, and only for hostnames in the lab map. A lab-only caller
+(`validate(url, lab_only=True)`: the host fetcher in lab mode) gets `not_lab_host`
+for any other hostname before it is resolved, so no DNS query leaves for it. Test
+address ranges are accepted only as a constructor argument, never from configuration.
 """
 
 import asyncio
@@ -375,16 +377,24 @@ class NetGuard:
     def parse(self, url: str) -> Target:
         return parse_url(url, allowed_ports=self.allowed_ports)
 
-    async def validate(self, url: str) -> Validated:
+    async def validate(self, url: str, *, lab_only: bool = False) -> Validated:
+        """`lab_only` accepts lab hostnames only (`not_lab_host` otherwise). Another
+        hostname is refused before it is resolved, so no DNS query is sent for it; an IP
+        literal needs no query and keeps its address classification first."""
         t = self.parse(url)
         lab_host = t.host in self._lab_hosts
         if t.ip_literal:
             addresses = [t.host]
         elif lab_host:
             addresses = [self._lab_hosts[t.host]]
+        elif lab_only:
+            raise PolicyViolation("not_lab_host", {"host": t.host})
         else:
             addresses = await self.resolver.resolve(t.host)
-        return self.check_addresses(t, addresses, lab_host=lab_host)
+        validated = self.check_addresses(t, addresses, lab_host=lab_host)
+        if lab_only and not validated.lab:
+            raise PolicyViolation("not_lab_host", {"host": t.host})
+        return validated
 
     def check_addresses(
         self, t: Target, addresses: list[str], *, lab_host: bool = False
