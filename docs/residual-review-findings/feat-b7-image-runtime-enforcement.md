@@ -10,7 +10,7 @@ move between the preflight and the creation. It builds on the
 **Status:** development-tested. The first SP3 run (`docker or security`, 0 skipped) on this
 change, on 2026-11-25, failed on a pre-existing lab-mode DNS lookup outside U14
 ([fix](fix-b7-lab-mode-dns-before-policy.md)). With the fix merged in (`4cf97f9`), SP3 passed:
-622 passed, 0 failed, 0 errors, 0 skipped. Not merged, not released, not promoted.
+622 passed, 0 failed, 0 errors, 0 skipped. Merged as #37 (2026-11-25); not released, not promoted.
 
 ## What it does
 

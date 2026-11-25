@@ -25,7 +25,7 @@ These are the accepted limits of `scripts/service-account/image_manifest.py`, af
 
       **The uv binary (OB11 (a)).** `PATH` must have only absolute entries. `uv` is resolved once to a regular file, its sha256 must equal the committed pin, and that same file runs. Its path and sha256 go on `INSTALL`'s `uv:` line. Limits:
       - **Swap between check and run.** A uv file the developer can write may be replaced between the check and the run. This is kept by owner decision; file ownership is the boundary there.
-      - **Trust on first use.** The uv pin and the archive pin were measured from one developer environment. They are cross-checked upstream before U3's release acceptance (OB11).
+      - **Trust on first use.** The uv pin and the archive pin were measured from one developer environment. They are cross-checked upstream before U3's release acceptance (OB11); that cross-check was done on 2026-11-19 and accepted by the owner, and U3 cites it.
       - **Self-reported version.** The result check reads the interpreter's own version. It catches the wrong release or a second installation, not a substitution; provenance comes from the pinned uv's built-in checksum.
       - **A stricter PATH.** A relative or empty `PATH` entry now makes `install.sh` refuse.
       - **Other uv calls are not pinned.** `install.sh`'s venv, install and build calls and `build-sandbox-image.sh` still run the first `uv` on `PATH` (see below).

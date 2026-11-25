@@ -100,7 +100,8 @@ ordering against `host_allowed` (`tests/security/test_netguard.py`,
 failed and one errored. After the fix was merged into the U14 branch, SP3 gave
 622 passed, 0 failed, 0 errors, 0 skipped (2747 deselected), with every named
 regression test passing, the lab test included. That is development evidence
-(AGENTS.md D5); the branch is not merged, and nothing here is released.
+(AGENTS.md D5). U14 and the fix were merged together (#37); nothing here is
+released or promoted.
 
 **Prevention.**
 
