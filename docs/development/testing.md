@@ -17,7 +17,7 @@ Tests are pytest suites under `tests/`, selected by markers declared in `pyproje
 |---|---|---|
 | `uv run pytest -m "not docker and not lab and not models"` | everything that runs without containers | 1524 passed, 1 skipped, 118 deselected, 56.3 s: clean clone on the developer machine, 2026-11-06, `87c0d16` |
 | `uv run pytest -m security` | network policy and fetcher against the adversarial harness | included in the line above |
-| `uv run pytest -m "docker or security"` | the standing security gate (SP3) | 517 passed, 0 skipped: developer's rootless runtime, M8 branch (*reported* in `docs/runbooks/handoff.md`) |
+| `uv run pytest -m "docker or security"` | the standing security gate (SP3) | 622 passed, 0 failed, 0 errors, 0 skipped, 2747 deselected, 280.8 s: isolated scratch rootless daemon on the developer's account, 2026-11-25, `4cf97f9` (merged as #37) |
 | `uv run pytest -m lab` | lab-site expectations (static, media, browser) | passing at M7 and M8 on the developer runtime (*reported*) |
 | `uv run ruff check` | lint, including Trojan-Source bidi characters | clean |
 | `uv run pytest tests/unit/test_docs.py tests/integration/test_offline_demo.py` | documentation checks and the offline demo | see [Documentation system](documentation.md) |
@@ -28,7 +28,16 @@ this page. Re-run them before relying on them.
 ## Rules
 
 - **Zero skips on the security gate.** For any change under `src/brandsentinel/net/` or
-  `src/brandsentinel/sandbox/`, `-m "docker or security"` must pass with no skipped tests.
+  `src/brandsentinel/sandbox/`, and for any change to shared test infrastructure that the
+  Docker, lab or security suites load, `-m "docker or security"` must pass with no skipped
+  tests. Shared test infrastructure includes, for example, `tests/conftest.py`,
+  `tests/docker_support.py`, `tests/fake_docker.py`, `tests/resolver_tripwire.py`, autouse
+  fixtures and the pytest configuration in `pyproject.toml`; the list is not complete, and
+  any shared fixture, helper, tripwire or setting that materially affects how those suites
+  run counts. A change to a listed file is always inside the gate. A change you decide is
+  outside it says in its D5 evidence which suites it can affect and why the gate does not
+  apply; that record never replaces running the gate. When in doubt, run it
+  ([why](../solutions/2026-11-25-lab-mode-refusal-after-dns-leaks-a-query.md)).
   A skipped Docker test means Docker was unreachable, and that is not a pass. Removing or
   weakening one of these tests needs an explicit review note (SP3).
 - **Regression tests fail on the old code.** Several suites are built this way. For

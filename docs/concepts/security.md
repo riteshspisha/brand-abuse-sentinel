@@ -277,8 +277,10 @@ only enforcement in production.
 - The real-container suites (`-m docker`) cover OOM kills, PID limits, wall-time kills,
   output caps and orphan removal. A bypass suite shows no TCP/UDP/DNS/IPv6/gateway/metadata
   route out of `bs_sandbox`, with a positive control on an ordinary network.
-- **Standing gate (SP3):** any change under `net/` or `sandbox/` must pass
-  `-m "docker or security"` with zero skipped tests.
+- **Standing gate (SP3):** any change under `net/` or `sandbox/`, or to shared test
+  infrastructure that the Docker, lab or security suites load
+  ([Testing](../development/testing.md#rules)), must pass `-m "docker or security"` with
+  zero skipped tests.
 
 See [Testing](../development/testing.md).
 

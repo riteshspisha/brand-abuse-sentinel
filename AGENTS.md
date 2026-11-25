@@ -89,7 +89,17 @@ uv run python docs/demo/offline_demo.py /tmp/bs-demo      # end-to-end demo on s
   harness. Linux only, because it binds `127.77.0.0/24`.
 - `-m "docker or security"` needs rootless Docker, the sandbox image and the lab stack
   (`docs/runbooks/sandbox.md`). It must pass with **zero skipped tests** for any change
-  under `src/brandsentinel/net/` or `src/brandsentinel/sandbox/` (standing gate SP3).
+  under `src/brandsentinel/net/` or `src/brandsentinel/sandbox/`, **and for any change to
+  shared test infrastructure that the Docker, lab or security suites load** (standing gate
+  SP3). Examples, not a complete list: `tests/conftest.py`, `tests/docker_support.py`,
+  `tests/fake_docker.py`, `tests/resolver_tripwire.py`, any autouse fixture, and the pytest
+  configuration in `pyproject.toml` (markers, `addopts`, plugins). Any shared fixture,
+  helper, tripwire or test setting that materially affects how those suites run is
+  covered too. A change to a listed file is always inside the gate. If you decide another
+  change is outside it, say in its D5 evidence which suites it can affect and why the gate
+  does not apply, so a reviewer can challenge that; recording the decision never replaces
+  running the gate. When in doubt, run it. Why: a test tripwire that landed without this gate broke a lab test for 14 days
+  ([lesson](docs/solutions/2026-11-25-lab-mode-refusal-after-dns-leaks-a-query.md)).
 - `-m models` needs Kev or Laya servers, which do not exist in this repository yet.
 
 Always run CLI commands that touch a store with an explicit, scratch config:
@@ -158,7 +168,7 @@ but D8 and D9. Rationale: the
 | D2 | **Trust boundaries** | Which boundary is touched (untrusted host, sandbox or container, privilege and account, the store, operator input)? Which section 3 invariant could break? Does every new failure fail closed? Is any privilege, egress, file write or dependency added? | the answers, or why none apply |
 | D3 | **Adversarial and failure cases** | A boundary change has a test of the refused case and of hostile input, beside the positive test. Think through partial failure, interruption and concurrency | test names |
 | D4 | **Tests and regressions** | Tests land with the code: `tests/unit` for pure logic, `tests/integration` for the queue, stages and store, `tests/security` for anything touching the network policy. A bug or security fix has a regression test **shown failing on the old code** | the failing result, then the passing one |
-| D5 | **Implementation verified** | The smallest change that follows existing patterns, with abandoned attempts removed. `uv run ruff check` and the offline suite pass. Under `net/` or `sandbox/`, the `docker or security` gate passes with no skips; if you cannot run it, say so and do not claim it. Scoring changes bump the policy `version`, then run `tests/unit/test_policy*.py` and the lab expectations (`tests/unit/test_lab_fixtures.py`, `tests/lab/` with the lab stack) | commands, counts, commit, date (section 8) |
+| D5 | **Implementation verified** | The smallest change that follows existing patterns, with abandoned attempts removed. `uv run ruff check` and the offline suite pass. Under `net/`, `sandbox/` or shared test infrastructure (section 4), the `docker or security` gate passes with no skips; if you cannot run it, say so and do not claim it. Scoring changes bump the policy `version`, then run `tests/unit/test_policy*.py` and the lab expectations (`tests/unit/test_lab_fixtures.py`, `tests/lab/` with the lab stack) | commands, counts, commit, date (section 8) |
 | D6 | **Observability** | A new failure mode has a named error and a stable exit code. Log fields stay on the allowlist (section 3, item 7). `status` shows new persistent state. Unknown stays visible | a test or sample output |
 | D7 | **Documentation** | Updated in the same change (section 9), with `uv run pytest tests/unit/test_docs.py` and the strict site build passing | the changed pages |
 | D8 | **Review** | `ce-code-review` or a human review of every non-mechanical diff, at full depth for a D2 change. Findings are fixed, or recorded in the PR's known residuals and in `docs/residual-review-findings/` | the review summary |
