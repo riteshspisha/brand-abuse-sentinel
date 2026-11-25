@@ -47,7 +47,7 @@ owner-operated, as the service account
 | `replay` | Re-ingest the discovery raw log (idempotent: nothing is duplicated). |
 | `report` | Write self-contained HTML analyst reports (escaped, strict CSP, no live links). |
 | `run` | Run discovery (CertStream, dnstwist) and the pipeline until interrupted. |
-| `sandbox check` | Run the sandbox preflight: account, rootless runtime and (with a direct-egress probe container) the sandbox network. Exits 1 if any check fails. |
+| `sandbox check` | Run the sandbox preflight: account, rootless runtime, image identity and (with a direct-egress probe container) the sandbox network. Exits 1 if any check fails. |
 | `sandbox selftest` | Run a worker in a real sandbox container and check its gate (media: hashing, OCR, QR, bomb and format rejection, no network; browser: after the network check, Chromium's own sandbox, an unprivileged worker, and no direct route for a browser without a proxy). Exits 1 if any check fails. |
 | `sandbox sweep` | Remove every sandbox container labelled with this instance (normally done automatically at startup, before job leases are recovered). |
 | `status` | Show store, queue, artifact and raw-log status. |
@@ -225,7 +225,7 @@ Run discovery (CertStream, dnstwist) and the pipeline until interrupted.
 
 ## `brandsentinel sandbox check`
 
-Run the sandbox preflight: account, rootless runtime and (with a direct-egress probe container) the sandbox network. Exits 1 if any check fails.
+Run the sandbox preflight: account, rootless runtime, image identity and (with a direct-egress probe container) the sandbox network. Exits 1 if any check fails.
 
 | Parameter | Kind | Description |
 |---|---|---|

@@ -1244,6 +1244,7 @@ Status (production-accepted, *operator-reported*), `deployment.md` and `AGENTS.m
 - **Subunits:**
   - **Approval-record reader:** done. `src/brandsentinel/store/approval.py`, merged as #35 (`main` `859f458`, 2026-11-23).
   - **Selection rule:** `src/brandsentinel/store/image_selection.py` (`decide`, `gather`, `select`), with the approval record isolated in `tests/conftest.py`. In development. No `sandbox/` change.
+  - **Runtime enforcement (2026-11-23):** implemented in development on `feat/b7-u14-runtime-enforcement` with stubbed Docker and a full-depth review; see `docs/residual-review-findings/feat-b7-image-runtime-enforcement.md`. SP3 and the owner's merge approval are open.
   - **Remaining:** preflight and runtime enforcement, under SP3. Every path that creates a container must take the ID resolved once per run:
     - `prepare_runtime` and `check_runtime` (resolve `sandbox.image`, compare with the record, check the proxy container's image ID);
     - the runners built directly outside `prepare_runtime`: `sandbox check` and `sandbox selftest`, `sandbox sweep`, `check_runtime`'s other caller in `src/brandsentinel/cli.py`, and the partial-check fallback in `src/brandsentinel/pipeline/orchestrator.py`;

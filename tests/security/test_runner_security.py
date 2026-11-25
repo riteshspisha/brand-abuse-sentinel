@@ -5,15 +5,24 @@ prove a caller cannot widen it. Real-runtime enforcement of the same settings is
 in tests/integration/test_runner.py and tests/security/test_docker_isolation.py.
 """
 
-import pytest
+import asyncio
 
-from brandsentinel.config import SandboxSettings
+import pytest
+from tests.fake_docker import image_id
+
+from brandsentinel.config import Config, RuntimeSettings, SandboxLimits, SandboxSettings
+from brandsentinel.sandbox import preflight
 from brandsentinel.sandbox.runner import DockerCli, SandboxError, SandboxRunner, SandboxSpec
 
 pytestmark = pytest.mark.security
 
+APPROVED = "sha256:" + "a" * 64
+OTHER = "sha256:" + "b" * 64
+TAG = SandboxSettings().image
+
 
 def runner(**kw) -> SandboxRunner:
+    kw.setdefault("image_id", APPROVED)
     return SandboxRunner(SandboxSettings(), DockerCli("unix:///fake.sock"), **kw)
 
 
@@ -44,7 +53,7 @@ def test_container_configuration_is_hardened_by_default():
     assert opt(head, "--ipc") == ["private"] and opt(head, "--pull") == ["never"]
     assert opt(head, "--tmpfs") == ["/tmp:rw,nosuid,nodev,noexec,size=64m"]
     assert "core=0" in opt(head, "--ulimit")
-    assert a[sep + 1] == SandboxSettings().image
+    assert a[sep + 1] == APPROVED  # the resolved ID, never the tag (B7 U14)
 
 
 def test_no_option_can_mount_escalate_or_share_host_namespaces():
@@ -128,6 +137,140 @@ def test_seccomp_cannot_be_disabled_or_point_nowhere(profile):
 def test_image_reference_cannot_smuggle_options(image):
     with pytest.raises(SandboxError):
         runner().validate(SandboxSpec(role="media", command=("x",), image=image))
+
+
+# --- image identity (B7 U14, KTD12 option C: F5) ---------------------------------------
+
+
+def image_of(args: list[str]) -> str:
+    return args[args.index("--") + 1]
+
+
+def test_containers_are_created_by_the_resolved_id_never_by_the_tag():
+    a = args_for(BASE)
+    assert image_of(a) == APPROVED
+    assert TAG not in a and not any(TAG in x for x in a)
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        TAG,  # the configured tag itself: mutable
+        OTHER,  # another, immutable, image
+        "brandsentinel-sandbox@" + APPROVED,  # a digest reference is still a name lookup
+        APPROVED.upper(),
+        APPROVED[:19],  # a short ID prefix
+        "",
+    ],
+)
+def test_a_spec_cannot_name_any_image_but_the_runners_id(image):
+    spec = SandboxSpec(role="media", command=("x",), image=image or None)
+    if image == "":
+        assert image_of(args_for(spec)) == APPROVED  # no override: the runner's ID
+        return
+    with pytest.raises(SandboxError, match="another image"):
+        runner().validate(spec)
+    with pytest.raises(SandboxError, match="another image"):
+        runner().create_args(spec, "bs-main-media-1-0", "1", 0)
+
+
+def test_a_spec_may_repeat_the_runners_own_id():
+    spec = SandboxSpec(role="media", command=("x",), image=APPROVED)
+    assert image_of(args_for(spec)) == APPROVED
+
+
+def test_an_enforcing_runner_also_refuses_a_spec_override():
+    r = runner(image_enforced=True)
+    with pytest.raises(SandboxError, match="another image"):
+        r.validate(SandboxSpec(role="media", command=("x",), image=OTHER))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        TAG,
+        "sha256:" + "a" * 63,
+        "sha256:" + "A" * 64,
+        "sha256:" + "a" * 64 + "\n",
+        "sha512:" + "a" * 64,
+        " sha256:" + "a" * 64,
+        "sha256:" + "g" * 64,
+        "sha256:" + "\u0661" * 64,  # non-ASCII digits
+    ],
+)
+def test_a_runner_takes_only_a_full_image_id(bad):
+    with pytest.raises(SandboxError, match="image ID"):
+        runner(image_id=bad)
+
+
+def test_the_runners_image_cannot_be_rebound_after_construction():
+    r = runner(image_enforced=True)
+    with pytest.raises(AttributeError):
+        r.image_id = TAG
+    with pytest.raises(AttributeError):
+        r.image_enforced = False
+    assert r.image_id == APPROVED and r.image_enforced
+
+
+def test_an_enforcing_runner_needs_an_id():
+    with pytest.raises(SandboxError, match="image ID"):
+        runner(image_id=None, image_enforced=True)
+
+
+def test_a_runner_built_without_an_id_cannot_create_containers(fake_docker):
+    # `sandbox sweep` and the orchestrator's sweep fallback build runners outside the
+    # preflight: they may list and remove containers, never create one.
+    docker = DockerCli("unix:///fake.sock", str(fake_docker.binary))
+    r = SandboxRunner(SandboxSettings(), docker)
+    assert r.image_id is None and not r.image_enforced
+    with pytest.raises(SandboxError, match="no resolved image ID"):
+        r.validate(BASE)
+    with pytest.raises(SandboxError, match="no resolved image ID"):
+        r.create_args(BASE, "bs-main-media-1-0", "1", 0)
+    with pytest.raises(SandboxError, match="no resolved image ID"):
+        asyncio.run(r.run(BASE, job="1", attempt=0))
+    assert not any("create" in c for c in fake_docker.calls())
+    assert r.sweep_orphans() == 0  # sweeping still works
+
+
+def _prepared(fake, tmp_path):
+    fake.set_info(
+        {
+            "SecurityOptions": ["name=seccomp,profile=builtin", "name=rootless"],
+            "CgroupVersion": "2",
+            "MemoryLimit": True,
+            "PidsLimit": True,
+            "CpuCfsQuota": True,
+        }
+    )
+    config = Config(
+        data_dir=tmp_path / "data",
+        runtime=RuntimeSettings(docker_host="unix:///fake.sock", docker_binary=str(fake.binary)),
+        sandbox=SandboxSettings(limits=SandboxLimits(wall_seconds=10), kill_grace_seconds=5),
+    )
+    runner, report = asyncio.run(preflight.prepare_runtime(config))
+    assert runner is not None, report.reasons()
+    return runner
+
+
+def test_a_tag_moved_after_preflight_does_not_change_the_created_image(fake_docker, tmp_path):
+    runner = _prepared(fake_docker, tmp_path)
+    resolved = runner.image_id
+    assert resolved == image_id("echo")
+    fake_docker.set_tag(TAG, image_id("fail"))  # the tag moves between preflight and create
+    result = asyncio.run(runner.run(BASE, job="7", attempt=0))
+    assert result.status == "ok" and result.output == {"echo": ""}
+    creates = [c for c in fake_docker.calls() if "create" in c]
+    assert len(creates) == 1 and image_of(creates[0]) == resolved
+    assert not any(TAG in arg for c in fake_docker.calls() if "create" in c for arg in c)
+
+
+def test_the_tag_is_resolved_once_per_preflight(fake_docker, tmp_path):
+    runner = _prepared(fake_docker, tmp_path)
+    for job in ("1", "2"):
+        asyncio.run(runner.run(BASE, job=job, attempt=0))
+    lookups = [c for c in fake_docker.calls() if c[2:4] == ["image", "inspect"]]
+    assert len(lookups) == 1
 
 
 @pytest.mark.parametrize("role", ["Media", "media-1", "", "a" * 17])

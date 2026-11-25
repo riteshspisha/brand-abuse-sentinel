@@ -263,23 +263,41 @@ def _print_checks(title: str, report) -> None:
         typer.echo(f"    WARNING {c.name}: {escape_terminal(c.detail)}")
 
 
+def _print_image(report) -> None:
+    """The image identity state of a runtime Report (B7 U14). Stable check names and
+    shortened IDs only: no record path, account name or record content."""
+    from brandsentinel.sandbox.preflight import short_id
+
+    reason = escape_terminal(report.image_reason or "unknown")
+    failed = {c.name for c in report.failures}
+    if not any(c.name == "image_selection" for c in report.checks):
+        state = "not checked"
+    elif report.image_enforced is None:
+        state = f"REFUSED ({reason})"
+    elif report.image_id:
+        verb = "approved" if report.image_enforced else "resolved"
+        state = f"{'' if report.image_enforced else 'not '}enforced ({reason}), {verb}"
+        state += f" {short_id(report.image_id)}"
+    elif failed & {"image_approval", "image_approved", "sandbox_image"}:
+        state = f"{'' if report.image_enforced else 'not '}enforced ({reason}), REFUSED"
+    else:  # another runtime check failed first: the image was not judged
+        state = f"{'' if report.image_enforced else 'not '}enforced ({reason}), not resolved"
+    typer.echo(f"  image: {state}")
+
+
 def _print_sandbox(config: Config) -> None:
     from brandsentinel.sandbox import preflight
-    from brandsentinel.sandbox.runner import DockerCli
 
     if not config.sandbox.enabled:
         typer.echo("sandbox: disabled by configuration")
         return
     account = preflight.check_account(config)
-    runtime = asyncio.run(
-        preflight.check_runtime(
-            DockerCli(config.runtime.docker_host, config.runtime.docker_binary), config.sandbox
-        )
-    )
+    _, runtime = asyncio.run(preflight.prepare_runtime(config))
     enabled = account.ok and runtime.ok
     typer.echo(f"sandbox: {'available' if enabled else 'DISABLED'}")
     _print_checks("account", account)
     _print_checks("runtime", runtime)
+    _print_image(runtime)
 
 
 def _ago(ts: float | None, now: float) -> str:
@@ -629,22 +647,20 @@ def sandbox_check(
         ),
     ] = False,
 ) -> None:
-    """Run the sandbox preflight: account, rootless runtime and (with a direct-egress
-    probe container) the sandbox network. Exits 1 if any check fails."""
+    """Run the sandbox preflight: account, rootless runtime, image identity and (with a
+    direct-egress probe container) the sandbox network. Exits 1 if any check fails."""
     _refuse_root()
     from brandsentinel.sandbox import preflight
-    from brandsentinel.sandbox.runner import DockerCli, SandboxRunner
 
     config = _load(ctx)
-    docker = DockerCli(config.runtime.docker_host, config.runtime.docker_binary)
     account = preflight.check_account(config)
-    runtime = asyncio.run(preflight.check_runtime(docker, config.sandbox))
+    runner, runtime = asyncio.run(preflight.prepare_runtime(config))
     _print_checks("account", account)
     _print_checks("runtime", runtime)
+    _print_image(runtime)
     reports = [account, runtime]
-    if network and runtime.ok:
-        runner = SandboxRunner(config.sandbox, docker)
-        net = asyncio.run(preflight.check_network(docker, config.sandbox, runner))
+    if network and runner is not None:
+        net = asyncio.run(preflight.check_network(runner.docker, config.sandbox, runner))
         _print_checks(f"network {config.sandbox.network}", net)
         for c in net.checks:
             if c.ok and c.name == "direct_egress_blocked":
@@ -669,6 +685,7 @@ def sandbox_sweep(ctx: typer.Context) -> None:
     config = _load(ctx)
     docker = DockerCli(config.runtime.docker_host, config.runtime.docker_binary)
     try:
+        # No image ID: this runner lists and removes containers, and cannot create one.
         removed = SandboxRunner(config.sandbox, docker).sweep_orphans()
     except SandboxError as e:
         typer.echo(escape_terminal(str(e)), err=True)

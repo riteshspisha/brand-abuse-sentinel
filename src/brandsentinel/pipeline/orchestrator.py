@@ -375,6 +375,8 @@ async def _prepare_sandbox(orch: Orchestrator, config) -> None:
     runner, report = await prepare_runtime(config)
     runner = gate_hostile_content(config, runner, report)
     passed = {c.name for c in report.checks if c.ok}
+    # The fallback sweeper has no image ID, so it can remove containers but never
+    # create one (B7 U14): only the preflight's runner creates, by the resolved ID.
     sweeper = runner or (
         SandboxRunner(config.sandbox, report.docker) if {"endpoint", "rootless"} <= passed else None
     )

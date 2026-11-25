@@ -243,6 +243,112 @@ def test_lab_host_is_refused_when_lab_mode_is_off():
     assert e.value.detail["class"] == "private"
 
 
+def lab_only_guard(answers: dict, *, enabled: bool = True) -> NetGuard:
+    lab = LabSettings(enabled=enabled, hosts={LAB_HOST: "172.31.250.10"} if enabled else {})
+    return NetGuard(NetSettings(lab=lab), StaticResolver(answers))
+
+
+def validate_lab_only(g: NetGuard, url: str):
+    return asyncio.run(g.validate(url, lab_only=True))
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        {"public.example": ["93.184.215.14"]},  # resolvable
+        {},  # unresolvable: must still be the policy refusal, not a DNS error
+        {"public.example": ResolutionFailed("dns_timeout", {"name": "public.example"})},
+    ],
+)
+def test_lab_only_refuses_other_hostnames_before_any_resolution(answers):
+    g = lab_only_guard(answers)
+    with pytest.raises(PolicyViolation) as e:
+        validate_lab_only(g, "http://public.example/")
+    assert e.value.reason == "not_lab_host" and e.value.detail == {"host": "public.example"}
+    assert g.resolver.calls == []
+
+
+def test_lab_only_still_validates_lab_hosts_from_the_lab_map_without_dns():
+    g = lab_only_guard({LAB_HOST: ["93.184.215.14"]})  # a leaky resolver is never asked
+    v = validate_lab_only(g, f"http://{LAB_HOST}/")
+    assert v.lab and v.addresses == ("172.31.250.10",) and g.resolver.calls == []
+
+
+def test_lab_only_classifies_literals_first_and_refuses_public_literals():
+    g = lab_only_guard({})
+    with pytest.raises(PolicyViolation) as e:
+        validate_lab_only(g, "http://169.254.169.254/")
+    assert e.value.reason == "blocked_address" and e.value.detail["class"] == "link_local"
+    with pytest.raises(PolicyViolation) as e:  # a lab-subnet literal is not a lab host
+        validate_lab_only(g, "http://172.31.250.10/")
+    assert e.value.reason == "blocked_address" and e.value.detail["class"] == "private"
+    with pytest.raises(PolicyViolation) as e:
+        validate_lab_only(g, "http://93.184.215.14/")
+    assert e.value.reason == "not_lab_host"
+    assert g.resolver.calls == []
+
+
+@pytest.mark.parametrize(
+    "url", [f"http://{LAB_HOST.upper()}/", f"http://{LAB_HOST}./", f"http://{LAB_HOST}:80/"]
+)
+def test_lab_only_accepts_canonical_spellings_of_a_lab_host_without_dns(url):
+    g = lab_only_guard({})
+    v = validate_lab_only(g, url)
+    assert v.lab and v.host == LAB_HOST and v.addresses == ("172.31.250.10",)
+    assert g.resolver.calls == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://PUBLIC.EXAMPLE/",
+        "http://public.example./",
+        "http://b\u00fccher.example/",  # IDNA
+        "http://xn--bcher-kva.example/",
+        f"http://{LAB_HOST}.evil.example/",  # a lab name as a prefix
+        "http://lab/",
+    ],
+)
+def test_lab_only_refuses_other_spellings_without_dns(url):
+    g = lab_only_guard({})
+    with pytest.raises(PolicyViolation) as e:
+        validate_lab_only(g, url)
+    assert e.value.reason == "not_lab_host" and g.resolver.calls == []
+
+
+@pytest.mark.parametrize(
+    "url, reason",
+    [
+        ("http://1572394766/", "not_lab_host"),  # 93.184.215.14, browser decimal form
+        ("http://[2606:2800:220:1:248:1893:25c8:1946]/", "not_lab_host"),
+        ("http://2130706433/", "blocked_address"),  # 127.0.0.1
+        ("http://0x7f.1/", "blocked_address"),
+        ("http://[::ffff:169.254.169.254]/", "blocked_address"),
+    ],
+)
+def test_lab_only_literal_forms_never_resolve(url, reason):
+    g = lab_only_guard({})
+    with pytest.raises(PolicyViolation) as e:
+        validate_lab_only(g, url)
+    assert e.value.reason == reason and g.resolver.calls == []
+
+
+def test_lab_only_outside_lab_mode_refuses_everything_without_dns():
+    g = lab_only_guard({"public.example": ["93.184.215.14"]}, enabled=False)
+    with pytest.raises(PolicyViolation) as e:
+        validate_lab_only(g, "http://public.example/")
+    assert e.value.reason == "not_lab_host" and g.resolver.calls == []
+
+
+def test_without_lab_only_a_lab_mode_guard_still_resolves_public_hosts():
+    """The default is unchanged: a lab-mode guard used without lab_only (a proxy that
+    is not lab-only) resolves and pins public hosts as before."""
+    g = lab_only_guard({"public.example": ["93.184.215.14"]})
+    v = validate(g, "http://public.example/")
+    assert not v.lab and v.addresses == ("93.184.215.14",)
+    assert g.resolver.calls == ["public.example"]
+
+
 def test_lab_config_with_another_subnet_fails_validation():
     with pytest.raises(ValueError):
         LabSettings(enabled=True, subnet="10.0.0.0/8")

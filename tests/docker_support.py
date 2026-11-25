@@ -10,6 +10,7 @@ import asyncio
 import json
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from brandsentinel.config import SandboxLimits, SandboxSettings
+from brandsentinel.config import Config, SandboxLimits, SandboxSettings
 from brandsentinel.sandbox import preflight
 from brandsentinel.sandbox.runner import DockerCli, SandboxRunner, SandboxSpec
 
@@ -67,20 +68,66 @@ LAB_SANDBOX_NET = SandboxNet(
 SANDBOX_NETS = (PRODUCTION_NET, LAB_SANDBOX_NET)
 
 
+# The sandbox image ID each endpoint's preflight resolved, once per session (B7 U14):
+# every test container is created by this ID, never by the tag.
+_IMAGE_IDS: dict[str, str] = {}
+
+
+_IMAGE_CHECKS = ("image_selection", "image_approval", "image_approved")
+
+
+def _preflight(docker: DockerCli) -> preflight.Report:
+    """The runtime preflight as a developer: the anchor and the approval record are
+    pointed at an empty root here, because module-scoped fixtures call this before
+    conftest's function-scoped isolation applies. The store path does not exist."""
+    from tests.conftest import isolate_host_anchor
+
+    scratch = Path(tempfile.mkdtemp(prefix="bs-docker-tests-"))
+    root = scratch / "no-anchor-root"
+    root.mkdir(mode=0o755)
+    with pytest.MonkeyPatch.context() as mp:
+        isolate_host_anchor(mp, root)
+        report = asyncio.run(preflight.check_runtime(docker, Config(data_dir=scratch / "data")))
+    if report.ok:
+        _IMAGE_IDS[docker.host] = report.image_id
+    return report
+
+
 def runtime_or_skip() -> DockerCli:
     docker = DockerCli()
-    report = asyncio.run(preflight.check_runtime(docker, SandboxSettings()))
+    report = _preflight(docker)
+    image = [c for c in report.failures if c.name in _IMAGE_CHECKS]
+    if image:  # never a reason to skip: the isolated developer selection must pass
+        pytest.fail("image identity preflight failed: " + "; ".join(report.reasons()))
     if not report.ok:
         pytest.skip("rootless sandbox runtime unavailable: " + "; ".join(report.reasons()))
     return docker
 
 
+def sandbox_image_id(docker: DockerCli) -> str:
+    """The configured sandbox image's ID, as the runtime preflight resolved it."""
+    if docker.host not in _IMAGE_IDS:
+        report = _preflight(docker)
+        assert report.ok, report.reasons()
+    return _IMAGE_IDS[docker.host]
+
+
 def make_runner(
-    docker: DockerCli, networks=(), *, net: SandboxNet = PRODUCTION_NET, **limits
+    docker: DockerCli,
+    networks=(),
+    *,
+    net: SandboxNet = PRODUCTION_NET,
+    image_id: str | None = None,
+    **limits,
 ) -> SandboxRunner:
     """A test-instance runner whose own sandbox network (exclusive lease,
-    untrusted-member checks) is `net`."""
-    return SandboxRunner(net_settings(net, **limits), docker, networks=networks)
+    untrusted-member checks) is `net`, creating containers by the resolved image ID."""
+    return SandboxRunner(
+        net_settings(net, **limits),
+        docker,
+        networks=networks,
+        image_id=image_id or sandbox_image_id(docker),
+    )
 
 
 def net_settings(net: SandboxNet = PRODUCTION_NET, **limits) -> SandboxSettings:

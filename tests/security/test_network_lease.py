@@ -10,6 +10,7 @@ import os
 import stat
 
 import pytest
+from tests.fake_docker import image_id
 
 from brandsentinel.config import SandboxLimits, SandboxSettings
 from brandsentinel.sandbox.runner import (
@@ -34,17 +35,18 @@ def runtime_dir(tmp_path, monkeypatch):
     return d
 
 
-def runner(fake) -> SandboxRunner:
+def runner(fake, image="echo") -> SandboxRunner:
     settings = SandboxSettings(limits=SandboxLimits(wall_seconds=10), kill_grace_seconds=5)
-    return SandboxRunner(settings, DockerCli("unix:///fake.sock", str(fake.binary)))
+    docker = DockerCli("unix:///fake.sock", str(fake.binary))
+    return SandboxRunner(settings, docker, image_id=image_id(image))
 
 
 def members(fake, *names: str) -> None:
     fake.set_network(NET, {"Name": NET, "Containers": {n: {"Name": n} for n in names}})
 
 
-def spec(image="fake/echo", network=NET) -> SandboxSpec:
-    return SandboxSpec(role="browser", command=("run",), image=image, network=network)
+def spec(network=NET) -> SandboxSpec:
+    return SandboxSpec(role="browser", command=("run",), network=network)
 
 
 def run(r, s, job="7"):
@@ -98,14 +100,14 @@ def test_uninspectable_network_counts_as_busy(fake_docker):
 
 
 def test_post_start_check_kills_the_job_when_another_container_joined(fake_docker, monkeypatch):
-    r = runner(fake_docker)
+    r = runner(fake_docker, image="sleep")
 
     async def nobody(network, own=None):
         return []  # the pre-create check passed; something joined in between
 
     monkeypatch.setattr(r, "untrusted_members", nobody)
     members(fake_docker, "bs-egress-proxy", "bs-main-browser-7-1", "intruder")
-    result = run(r, spec(image="fake/sleep"))
+    result = run(r, spec())
     assert result.status == "network_shared" and result.killed
     assert "intruder" in result.error and result.removed
 

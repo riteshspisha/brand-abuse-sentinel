@@ -103,7 +103,7 @@ def test_seccomp_profile_is_dockers_default_plus_only_what_chromium_needs():
 
 
 def test_browser_container_arguments_are_fixed_and_unprivileged():
-    runner = make_runner(DockerCli("unix:///nonexistent.sock"))
+    runner = make_runner(DockerCli("unix:///nonexistent.sock"), image_id="sha256:" + "a" * 64)
     spec = browser_spec(SandboxSettings(), BrowserSettings())
     args = runner.create_args(spec, "bs-test-browser-j-0", "j", 0)
     joined = " ".join(args)

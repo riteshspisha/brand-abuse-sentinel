@@ -23,6 +23,7 @@ from tests.docker_support import (
     make_runner,
     probe,
     runtime_or_skip,
+    sandbox_image_id,
     wait_running,
 )
 
@@ -127,7 +128,7 @@ CRASHING_APP = """
 import asyncio, sys
 from brandsentinel.config import SandboxSettings
 from brandsentinel.sandbox.runner import DockerCli, SandboxRunner, SandboxSpec
-runner = SandboxRunner(SandboxSettings(instance=sys.argv[1]), DockerCli())
+runner = SandboxRunner(SandboxSettings(instance=sys.argv[1]), DockerCli(), image_id=sys.argv[3])
 spec = SandboxSpec(role="browser", command=("sleep", "300"))
 asyncio.run(runner.run(spec, job=sys.argv[2], attempt=1))
 """
@@ -135,7 +136,7 @@ asyncio.run(runner.run(spec, job=sys.argv[2], attempt=1))
 
 def start_crashing_app(instance: str, job: str) -> subprocess.Popen:
     return subprocess.Popen(  # noqa: S603 - fixed argv
-        [sys.executable, "-c", CRASHING_APP, instance, job],
+        [sys.executable, "-c", CRASHING_APP, instance, job, sandbox_image_id(DockerCli())],
         cwd=REPO,
         start_new_session=True,
     )
@@ -196,7 +197,9 @@ def test_retry_removes_the_earlier_attempts_container_first(docker):
         os.killpg(app.pid, signal.SIGKILL)
         app.wait()
         runner = SandboxRunner(
-            SandboxSettings(instance=INSTANCE, limits=SandboxLimits(wall_seconds=30)), docker
+            SandboxSettings(instance=INSTANCE, limits=SandboxLimits(wall_seconds=30)),
+            docker,
+            image_id=sandbox_image_id(docker),
         )
         spec = SandboxSpec(role="browser", command=("python3", "-c", "print('{}')"))
         r = asyncio.run(runner.run(spec, job=job, attempt=2))
@@ -220,7 +223,9 @@ def test_a_shutdown_during_removal_still_removes_the_container(docker):
             return await super().call(*args, timeout=timeout)
 
     runner = SandboxRunner(
-        SandboxSettings(instance=INSTANCE, limits=SandboxLimits(wall_seconds=30)), SlowRemove()
+        SandboxSettings(instance=INSTANCE, limits=SandboxLimits(wall_seconds=30)),
+        SlowRemove(),
+        image_id=sandbox_image_id(docker),
     )
 
     async def main() -> None:
@@ -232,3 +237,23 @@ def test_a_shutdown_during_removal_still_removes_the_container(docker):
 
     asyncio.run(main())
     assert labelled(docker) == []
+
+
+def test_a_container_runs_the_image_id_it_was_created_by(docker):
+    # B7 U14: the runner creates by the ID the preflight resolved, and the daemon reports
+    # that same ID as the container's image (the proxy check compares exactly these).
+    runner = make_runner(docker)
+    spec = SandboxSpec(role="media", command=("true",))
+    job = job_id("imgid")
+    name = runner.container_name("media", job, 0)
+    created = docker.call_sync(*runner.create_args(spec, name, job, 0))
+    try:
+        assert created.ok, created.stderr
+        image = docker.call_sync("container", "inspect", "--format", "{{.Image}}", name)
+        assert image.ok and image.stdout.strip() == runner.image_id
+        tag = docker.call_sync(
+            "image", "inspect", "--format", "{{.Id}}", "--", SandboxSettings().image
+        )
+        assert tag.ok and tag.stdout.strip() == runner.image_id
+    finally:
+        docker.call_sync("rm", "--force", name)

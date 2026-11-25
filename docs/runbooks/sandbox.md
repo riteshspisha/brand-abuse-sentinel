@@ -243,7 +243,8 @@ Sandbox image `brandsentinel-sandbox:local`, 3.97 GB.
   verified at argument level, not by a crash-and-wait test.
 - Proxy refusals carry `X-BrandSentinel-Proxy: <reason>`; in lab mode the fetcher
   records them (and refused CONNECTs) as transport outcomes, never as the site's
-  response. The lab-only proxy refuses other names before any DNS query.
+  response. The lab-only proxy and the lab-mode host fetcher (first hop and redirects)
+  refuse other names before any DNS query.
 - One client address may hold at most `proxy.max_connections_per_client` slots.
 - Lab mode refuses to use `bs_sandbox` for sandboxes (its proxy reaches the
   Internet, not the lab). Since M7, lab-mode networked sandboxes (the browser)

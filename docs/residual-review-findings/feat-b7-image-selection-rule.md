@@ -7,7 +7,7 @@ This step of U14 in the [B7 plan](../plans/2026-11-10-002-chore-b7-production-pr
 - no container is created by ID;
 - no Compose change.
 
-Nothing in this step enforces image identity.
+Nothing in this step enforces image identity. The later runtime step calls it from the preflight: see [runtime image identity](feat-b7-image-runtime-enforcement.md).
 
 ## What the rule decides
 

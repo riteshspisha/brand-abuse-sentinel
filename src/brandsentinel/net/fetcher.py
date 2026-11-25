@@ -16,7 +16,8 @@ TLS has two modes:
   result records `tls_verification_failed` with the error. Evidence-mode results
   are tagged untrusted and can never become reference content.
 
-Lab mode (KTD13): the fetcher accepts only lab hostnames and sends every request
+Lab mode (KTD13): the fetcher accepts only lab hostnames, refusing any other before
+it is resolved (netguard `lab_only`, on every hop), and sends every request
 through the lab proxy's loopback-published port, because rootless Docker does not
 route the host into container networks. The proxy hop is a configured transport,
 not a fetch target, so netguard's loopback block is unchanged; the lab proxy
@@ -345,11 +346,11 @@ class Fetcher:
         for index in range(self.settings.max_redirects + 1):
             redirected = index > 0
             try:
-                target = await self.guard.validate(current)
+                # Lab mode: netguard refuses a non-lab hostname before resolving it,
+                # on the first hop and on every redirect.
+                target = await self.guard.validate(current, lab_only=self.guard.lab_mode)
                 if host_allowed is not None and not host_allowed(target.host):
                     raise PolicyViolation("host_not_allowed", {"host": target.host})
-                if self.guard.lab_mode and not target.lab:
-                    raise PolicyViolation("not_lab_host", {"host": target.host})
                 if reference and target.scheme != "https":
                     raise PolicyViolation("scheme_downgrade", {"scheme": target.scheme})
             except PolicyViolation as e:

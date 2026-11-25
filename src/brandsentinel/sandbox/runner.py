@@ -13,6 +13,12 @@ state is inspected (to tell a memory-limit kill from a crash) and the container
 is then force-removed, even when the job is cancelled meanwhile; no container
 outlives its `run` call.
 
+Every container is created from one image ID, resolved once per run by the preflight
+(`preflight.prepare_runtime`, B7 U14, KTD12 option C), never from a tag: a tag can move
+between the check and the creation. A runner built without that ID (the orphan sweeps)
+can list and remove containers but never create one, and a job spec cannot name any
+other image. When image identity is enforced, the ID is the one root approved.
+
 The container configuration is fixed here and cannot be widened by a caller: no
 mounts, no devices, no added capabilities, read-only root with a small noexec
 tmpfs, `no-new-privileges`, all capabilities dropped, memory (without swap), CPU
@@ -60,7 +66,9 @@ LABEL_ATTEMPT = "brandsentinel.attempt"
 _ROLE = re.compile(r"^[a-z]{1,16}$")
 _JOB = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 _ENV_KEY = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
-_IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$")
+# A full image ID (the manifest digest under the containerd store, U15 DV1): immutable,
+# unlike a tag. Used with `fullmatch`, so no trailing newline or prefix slips through.
+IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 # Networks a sandbox may never join, whatever the caller asks for.
 _FORBIDDEN_NETWORKS = frozenset({"host", "bridge", "default"})
 _CONTROL_OUTPUT = 1024 * 1024  # cap on output of docker management commands
@@ -220,7 +228,7 @@ class SandboxSpec:
     command: tuple[str, ...]
     network: str = "none"
     limits: SandboxLimits | None = None  # None: the configured default limits
-    image: str | None = None  # None: the configured sandbox image
+    image: str | None = None  # None or the runner's own image ID; nothing else is accepted
     user: str | None = None  # None: the image's (non-root) user
     env: tuple[tuple[str, str], ...] = ()
     seccomp_profile: str | None = None  # absolute path; None: the runtime default
@@ -269,16 +277,39 @@ class SandboxRunner:
         docker: DockerCli,
         *,
         networks: Iterable[str] = (),
+        image_id: str | None = None,
+        image_enforced: bool = False,
     ) -> None:
         """`networks` are the named networks a spec may join besides `none`; the
-        configured sandbox network is always one of them."""
+        configured sandbox network is always one of them. `image_id` is the full ID
+        every container is created from; without it the runner cannot create
+        containers. `image_enforced` records that the ID is root's approved one, so
+        the network preflight also requires the proxy to run it."""
+        if image_id is not None and not (
+            isinstance(image_id, str) and IMAGE_ID.fullmatch(image_id)
+        ):
+            raise SandboxError("the sandbox image must be a full image ID (sha256:<64 hex>)")
+        if image_enforced and image_id is None:
+            raise SandboxError("an enforcing runner needs the approved image ID")
         self.settings = settings
         self.docker = docker
+        self._image_id = image_id
+        self._image_enforced = image_enforced
         self.instance = settings.instance
         self.networks = frozenset({settings.network, *networks})
         bad = self.networks & _FORBIDDEN_NETWORKS
         if bad or any(n.startswith("container:") for n in self.networks):
             raise SandboxError(f"network(s) never allowed for sandboxes: {sorted(bad)}")
+
+    @property
+    def image_id(self) -> str | None:
+        """The image ID every container is created from (read-only)."""
+        return self._image_id
+
+    @property
+    def image_enforced(self) -> bool:
+        """Whether `image_id` is root's approved ID (read-only)."""
+        return self._image_enforced
 
     # --- naming and arguments ----------------------------------------------------
 
@@ -292,9 +323,7 @@ class SandboxRunner:
             raise SandboxError(f"network {spec.network!r} is not a sandbox network")
         if not spec.command or any(not c or "\0" in c for c in spec.command):
             raise SandboxError("command must be non-empty strings")
-        image = spec.image or self.settings.image
-        if not _IMAGE.match(image):
-            raise SandboxError("invalid image reference")
+        self._image(spec)
         if spec.user is not None:
             parts = spec.user.split(":")
             if len(parts) > 2 or any(
@@ -312,7 +341,16 @@ class SandboxRunner:
         ):
             raise SandboxError("seccomp profile must be an existing absolute path")
 
+    def _image(self, spec: SandboxSpec) -> str:
+        """The image ID a container for `spec` is created from: always the runner's."""
+        if self.image_id is None:
+            raise SandboxError("this runner has no resolved image ID and cannot create containers")
+        if spec.image is not None and spec.image != self.image_id:
+            raise SandboxError("a sandbox spec may not name another image than the runner's ID")
+        return self.image_id
+
     def create_args(self, spec: SandboxSpec, name: str, job: str, attempt: int) -> list[str]:
+        image = self._image(spec)
         lim = spec.limits or self.settings.limits
         args = [
             "create",
@@ -373,7 +411,7 @@ class SandboxRunner:
         # still ends; the runner's kill by name and the startup sweep remain the
         # enforcement (a process in the container could kill this `timeout`).
         deadline = int(lim.wall_seconds + self.settings.kill_grace_seconds) + 1
-        args += ["--", spec.image or self.settings.image]
+        args += ["--", image]
         args += ["timeout", "--signal=KILL", f"{deadline}s", *spec.command]
         return args
 

@@ -34,6 +34,9 @@ implemented and the risks they leave. The requirement IDs (R37–R50) are from t
 - IP literals are parsed as browsers parse them (`2130706433`, `0x7f.1`, `127.1`).
 - Lab mode adds exactly the pinned lab subnet for listed hostnames. Test ranges are
   accepted only as a constructor argument, never from configuration.
+- In lab mode the host fetcher validates lab-only: any other hostname, on the first hop
+  or a redirect, is refused as `not_lab_host` before it is resolved, so no DNS query
+  leaves the host for it. IP literals keep their address classification first.
 
 ### Hardened static fetcher (`net/fetcher.py`)
 
@@ -78,7 +81,8 @@ Each job is a fresh container, created with:
   - the endpoint is rootless;
   - cgroup v2 with the memory, pids and cpu controllers;
   - seccomp is available;
-  - the image is present;
+  - the image resolves to a full image ID, and, where image identity is enforced, that ID
+    is the approved one ([Image identity](#image-identity));
   - the account gate passes.
 - **Browser stage, in addition:** the network check, including a direct-egress probe that
   must fail.
@@ -94,6 +98,37 @@ Each job is a fresh container, created with:
     blocked, dialogs dismissed and popups closed.
   - WebSockets are refused, and WebRTC and workers are removed.
   - Output is strictly validated (`render_rejected` otherwise).
+
+#### Image identity
+
+Implemented in the repository for B7 U14 (KTD12, option C); **not released or
+promoted**. Compose still creates the proxies by tag until U13.
+
+- **One resolution per run.** The runtime preflight (`prepare_runtime`) resolves
+  `sandbox.image` to its full ID once. The runner it returns creates every container by
+  that ID with `--pull never`, so a tag moved later is never used. A job spec cannot
+  name another image. A runner built without an ID (the orphan sweeps in `sandbox sweep`
+  and in `run`'s startup) can list and remove containers but cannot create one.
+- **Whether identity is enforced** is decided before any Docker call by the
+  [selection rule](../residual-review-findings/feat-b7-image-selection-rule.md): with an
+  anchor, when the effective or the real user ID is the anchor's account, or the store is
+  production class. Lab mode follows the same rule.
+- **When enforcing**, the root-owned approval record (`/etc/brandsentinel/image-approval.yaml`,
+  read by `store/approval.py`) must exist, be safe and well formed, and name the
+  resolved ID. The network check also requires the configured proxy container
+  (`sandbox.proxy_container`; `bs-lab-sandbox-proxy` in the lab configuration) to run that
+  ID, read from the container itself.
+- **Failures are named and fail closed:** `image_selection` (a refused selection),
+  `image_approval` (`approval_missing`, `approval_unsafe`, `approval_malformed`),
+  `image_approved` (the tag names another ID), `sandbox_image` (not found or not a
+  full ID) and `proxy_image`. Each disables the sandbox stages or the browser gate, so
+  `needs_media` and `needs_render` stay visible. No error is read as "not enforced".
+- `status` and `sandbox check` print the state on an `image:` line: enforced or not,
+  the selection's reason, and a shortened ID. They never print the record's path,
+  content or the account.
+- **Limits:** the record is read once per run, so a change during a run is not seen;
+  the account controls its own daemon; Compose starts are U13's. See
+  [the U14 runtime findings](../residual-review-findings/feat-b7-image-runtime-enforcement.md).
 
 ### Account (`sandbox/preflight.py`, SP1)
 

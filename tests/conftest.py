@@ -51,34 +51,37 @@ def _anchor_free_root(tmp_path_factory) -> Path:
     return root
 
 
-@pytest.fixture(autouse=True)
-def _no_host_anchor(monkeypatch, _anchor_free_root):
-    """In-process tests never read the host's production anchor or detect the host's
-    installation (B3), nor the host's image approval record (B7 U14). Subprocess CLI tests
-    are not covered: they read the real host.
+def isolate_host_anchor(monkeypatch, root: Path) -> None:
+    """Point the production anchor, the install records and the image approval record
+    at an empty `root`, so nothing reads the host's. Shared by the autouse fixture below
+    and by tests/docker_support.py, whose module-scoped fixtures run before it.
     On code without the identity module (the D4 run on the old commit) this does nothing."""
     try:
         from brandsentinel.store import identity
     except ImportError:
         return
-    monkeypatch.setattr(identity, "CHAIN_ROOT", _anchor_free_root)
+    monkeypatch.setattr(identity, "CHAIN_ROOT", root)
     monkeypatch.setattr(identity, "TRUSTED_UID", os.getuid())
-    monkeypatch.setattr(
-        identity, "ANCHOR_PATH", _anchor_free_root / "etc" / "brandsentinel" / "production.yaml"
-    )
+    monkeypatch.setattr(identity, "ANCHOR_PATH", root / "etc" / "brandsentinel" / "production.yaml")
     monkeypatch.setattr(identity, "install_record_candidates", lambda: [])
     # The image approval record (B7 U14), beside the anchor in the same empty root.
     try:
         from brandsentinel.store import approval
     except ImportError:
         return
-    monkeypatch.setattr(approval, "CHAIN_ROOT", _anchor_free_root)
+    monkeypatch.setattr(approval, "CHAIN_ROOT", root)
     monkeypatch.setattr(approval, "TRUSTED_UID", os.getuid())
     monkeypatch.setattr(
-        approval,
-        "APPROVAL_PATH",
-        _anchor_free_root / "etc" / "brandsentinel" / "image-approval.yaml",
+        approval, "APPROVAL_PATH", root / "etc" / "brandsentinel" / "image-approval.yaml"
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_host_anchor(monkeypatch, _anchor_free_root):
+    """In-process tests never read the host's production anchor or detect the host's
+    installation (B3), nor the host's image approval record (B7 U14). Subprocess CLI tests
+    are not covered: they read the real host."""
+    isolate_host_anchor(monkeypatch, _anchor_free_root)
 
 
 class FakeClock:
@@ -235,11 +238,21 @@ class FakeDocker:
     def set_container(self, name: str, doc: dict) -> None:
         (self.state / "containers" / f"{name}.json").write_text(self._json.dumps(doc))
 
+    def set_tag(self, tag: str, image: str) -> None:
+        """Point `tag` at `image` (an ID), as `docker tag` or a name-bearing load would."""
+        from tests.fake_docker import tags
+
+        table = tags(self.state)
+        table[tag] = image
+        (self.state / "tags.json").write_text(self._json.dumps(table))
+
     def add_container(self, name: str, labels: dict, status: str = "running") -> None:
+        from tests.fake_docker import image_id
+
         state = self.containers()
         state[name] = {
             "Id": f"id-{name}",
-            "Image": "fake/sleep",
+            "Image": image_id("sleep"),
             "Labels": labels,
             "State": {"Status": status, "ExitCode": 0, "OOMKilled": False},
             "pid": None,

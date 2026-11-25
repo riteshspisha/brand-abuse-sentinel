@@ -343,8 +343,9 @@ def test_sandbox_check_strict_turns_warnings_into_failures(monkeypatch, tmp_path
     warned.add("not_code_owner", True, "owns the code (allowed by override)", warning=True)
     clean = preflight.Report()
     clean.add("rootless", True)
+    clean.image_id = "sha256:" + "a" * 64
 
-    async def runtime(docker, settings):
+    async def runtime(docker, config):
         return clean
 
     monkeypatch.setattr(preflight, "check_account", lambda config: warned)
